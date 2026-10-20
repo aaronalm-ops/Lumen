@@ -40,6 +40,8 @@ class MainActivity : ComponentActivity() {
     private var controllerFuture: ListenableFuture<MediaController>? = null
     private var controller: MediaController? = null
     private var ticker: Job? = null
+    /** A file picked while the controller was still reconnecting (the picker stops this activity). */
+    private var pendingUri: Uri? = null
 
     private val openDocument = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) onFilePicked(uri)
@@ -93,6 +95,11 @@ class MainActivity : ComponentActivity() {
                     refreshFromController(c)
                     startTicker()
                     RingLog.i("ui", "controller connected")
+                    pendingUri?.let { uri ->
+                        pendingUri = null
+                        RingLog.i("ui", "playing file picked while reconnecting")
+                        startItem(c, uri)
+                    }
                 } catch (t: Throwable) {
                     RingLog.e("ui", "controller connection failed", t)
                 }
@@ -117,24 +124,32 @@ class MainActivity : ComponentActivity() {
         } catch (t: Throwable) {
             RingLog.w("ui", "persistable permission not granted for $uri: $t")
         }
+        RingLog.i("ui", "picked $uri")
+        val c = controller
+        if (c == null) {
+            // The document picker stops this activity, which releases the controller; the result
+            // arrives before the new connection completes. Keep the file and play it on connect.
+            RingLog.i("ui", "controller reconnecting, file queued")
+            pendingUri = uri
+            return
+        }
+        startItem(c, uri)
+    }
+
+    private fun startItem(c: MediaController, uri: Uri) {
         val displayName = queryDisplayName(uri)
-        RingLog.i("ui", "picked $uri ($displayName)")
         val item = MediaItem.Builder()
             .setMediaId(uri.toString())
             .setUri(uri)
             .setRequestMetadata(MediaItem.RequestMetadata.Builder().setMediaUri(uri).build())
             .setMediaMetadata(MediaMetadata.Builder().setTitle(displayName).build())
             .build()
-        val c = controller
-        if (c == null) {
-            RingLog.w("ui", "controller not ready, file ignored")
-            return
-        }
         // setMediaItem goes through PlaybackService.SessionCallback.onSetMediaItems, which looks
         // up the stored position for this URI and seeks 3 s before it.
         c.setMediaItem(item)
         c.prepare()
         c.play()
+        RingLog.i("ui", "started $displayName")
     }
 
     private fun playOrResume(c: MediaController) {

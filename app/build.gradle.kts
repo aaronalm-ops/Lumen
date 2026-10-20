@@ -1,0 +1,108 @@
+plugins {
+    alias(libs.plugins.android.application)
+    alias(libs.plugins.kotlin.compose)
+    alias(libs.plugins.ksp)
+}
+
+// Values that CI injects through the environment. Every one of them has a safe default so a
+// local build, or a CI build with no secrets configured, still succeeds.
+val githubOwner: String = (project.findProperty("githubOwner") as String?)?.takeIf { it.isNotBlank() } ?: "aaronalmeida"
+val envVersionName: String = System.getenv("VERSION_NAME")?.takeIf { it.isNotBlank() } ?: "0.1.0"
+val envVersionCode: Int = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
+
+// Named env* so they cannot be confused with the SigningConfig properties of the same name.
+val envKeystorePath: String? = System.getenv("KEYSTORE_PATH")
+val envKeystorePassword: String? = System.getenv("KEYSTORE_PASSWORD")
+val envKeyAlias: String? = System.getenv("KEY_ALIAS")
+val envKeyPassword: String? = System.getenv("KEY_PASSWORD")
+val hasReleaseKey: Boolean =
+    !envKeystorePath.isNullOrBlank() &&
+        !envKeystorePassword.isNullOrBlank() &&
+        !envKeyAlias.isNullOrBlank() &&
+        !envKeyPassword.isNullOrBlank() &&
+        file(envKeystorePath.orEmpty()).exists()
+
+android {
+    namespace = "app.lumen.player"
+    // Compose 1.12 and later require compileSdk 37 (developer.android.com/develop/ui/compose/compiler);
+    // lifecycle 2.11.0 is also compiled against API 37. targetSdk stays 36.
+    compileSdk = 37
+
+    defaultConfig {
+        applicationId = "app.lumen.player"
+        minSdk = 29
+        targetSdk = 36
+        versionCode = envVersionCode
+        versionName = envVersionName
+        buildConfigField("String", "GITHUB_OWNER", "\"$githubOwner\"")
+    }
+
+    signingConfigs {
+        if (hasReleaseKey) {
+            create("release") {
+                storeFile = file(envKeystorePath!!)
+                storePassword = envKeystorePassword
+                keyAlias = envKeyAlias
+                keyPassword = envKeyPassword
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            // Phase 0 stays unminified so stack traces in diagnostics are readable.
+            isMinifyEnabled = false
+            isShrinkResources = false
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            signingConfig = if (hasReleaseKey) signingConfigs.getByName("release") else signingConfigs.getByName("debug")
+        }
+        debug {
+            applicationIdSuffix = ".debug"
+            versionNameSuffix = "-debug"
+        }
+    }
+
+    buildFeatures {
+        compose = true
+        buildConfig = true
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    lint {
+        // The spike must never fail to build because of a lint finding.
+        checkReleaseBuilds = false
+        abortOnError = false
+    }
+
+    packaging {
+        resources {
+            excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        }
+    }
+}
+
+dependencies {
+    implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.androidx.core)
+    implementation(libs.androidx.activity.compose)
+    implementation(libs.androidx.lifecycle.runtime.ktx)
+
+    implementation(platform(libs.compose.bom))
+    implementation(libs.compose.ui)
+    implementation(libs.compose.foundation)
+    implementation(libs.compose.material3)
+    implementation(libs.compose.ui.tooling.preview)
+    debugImplementation(libs.compose.ui.tooling)
+
+    implementation(libs.media3.exoplayer)
+    implementation(libs.media3.session)
+    implementation(libs.media3.common)
+
+    // room-ktx was merged into room-runtime in 2.7.0 and is an empty artifact since then.
+    implementation(libs.room.runtime)
+    ksp(libs.room.compiler)
+}

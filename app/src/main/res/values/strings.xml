@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Lumen</string>
+    <string name="pick_file">Pick a file</string>
+    <string name="share_diagnostics">Share diagnostics</string>
+    <string name="seek_back">Back 10 seconds</string>
+    <string name="seek_forward">Forward 30 seconds</string>
+    <string name="play">Play</string>
+    <string name="pause">Pause</string>
+    <string name="update_available">Update %1$s available</string>
+    <string name="update_action">Update</string>
+    <string name="no_file">No file loaded</string>
+</resources>

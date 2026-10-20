@@ -95,10 +95,13 @@ class MainActivity : ComponentActivity() {
                     refreshFromController(c)
                     startTicker()
                     RingLog.i("ui", "controller connected")
-                    pendingUri?.let { uri ->
+                    val pending = pendingUri
+                    if (pending != null) {
                         pendingUri = null
                         RingLog.i("ui", "playing file picked while reconnecting")
-                        startItem(c, uri)
+                        startItem(c, pending)
+                    } else if (c.currentMediaItem == null) {
+                        restoreLastItem(c)
                     }
                 } catch (t: Throwable) {
                     RingLog.e("ui", "controller connection failed", t)
@@ -150,6 +153,29 @@ class MainActivity : ComponentActivity() {
         c.prepare()
         c.play()
         RingLog.i("ui", "started $displayName")
+    }
+
+    /**
+     * Fresh process (reboot, swipe-away while paused, force stop): the player is empty, so the
+     * screen would say "No file loaded" until play is pressed. Load the last item, paused, at its
+     * saved position so the title and timecode are there the moment the app opens.
+     */
+    private fun restoreLastItem(c: MediaController) {
+        lifecycleScope.launch {
+            val last = LumenApp.from(this@MainActivity).store.lastItem() ?: return@launch
+            if (controller !== c || c.currentMediaItem != null) return@launch
+            RingLog.i("ui", "restoring last item paused: ${last.title}")
+            val uri = Uri.parse(last.uri)
+            val item = MediaItem.Builder()
+                .setMediaId(last.uri)
+                .setUri(uri)
+                .setRequestMetadata(MediaItem.RequestMetadata.Builder().setMediaUri(uri).build())
+                .setMediaMetadata(MediaMetadata.Builder().setTitle(last.title).build())
+                .build()
+            c.setMediaItem(item)
+            c.prepare()
+            refreshFromController(c)
+        }
     }
 
     private fun playOrResume(c: MediaController) {

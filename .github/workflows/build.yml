@@ -28,8 +28,15 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
         with:
-          # compileSdk is 37 (required by Compose 1.12+); AGP 9.4 defaults to build-tools 36.0.0.
-          packages: platform-tools platforms;android-37 build-tools;36.0.0
+          # Only platform-tools here; AGP downloads the exact platform and build-tools it needs
+          # (licences are accepted by this action), so a renamed SDK package cannot fail the job.
+          packages: platform-tools
+
+      - name: List available SDK platforms (diagnostic)
+        shell: bash
+        continue-on-error: true
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --list 2>/dev/null | grep -E "platforms;android-3[5-9]|build-tools;3[6-9]" | sed 's/^ *//' | sort -u | head -40 || true
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v5

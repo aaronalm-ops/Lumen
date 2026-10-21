@@ -1,9 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Adaptive icon foreground slot. Today it carries the flat Resume arc vector; when the glow
-     PNG lands at res/mipmap-xxxhdpi/ic_launcher_foreground_glow.png (432 by 432 px, artwork
-     inside the central 66 percent), change the one drawable below to
-     @mipmap/ic_launcher_foreground_glow. The <monochrome> layer in
-     mipmap-anydpi-v26/ic_launcher.xml must keep pointing at @drawable/ic_launcher_foreground. -->
+<!-- Adaptive icon foreground: the light-trail glow raster (432 px at xxxhdpi, trail inside the
+     central safe zone). The <monochrome> layer in mipmap-anydpi-v26/ic_launcher.xml keeps the
+     flat Resume arc vector for themed icons. -->
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
-    <item android:drawable="@drawable/ic_launcher_foreground" />
+    <item android:drawable="@mipmap/ic_launcher_foreground_glow" />
 </layer-list>

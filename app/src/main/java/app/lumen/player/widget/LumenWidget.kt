@@ -182,6 +182,9 @@ class WidgetActionReceiver : BroadcastReceiver() {
         const val ACTION_BACK = "app.lumen.player.widget.BACK"
         const val ACTION_FORWARD = "app.lumen.player.widget.FORWARD"
 
+        private const val CONNECT_TIMEOUT_MS = 8_000L
+        private const val RELEASE_DELAY_MS = 400L
+
         fun intent(context: Context, action: String): Intent =
             Intent(context, WidgetActionReceiver::class.java).setAction(action)
     }
@@ -190,8 +193,20 @@ class WidgetActionReceiver : BroadcastReceiver() {
         val action = intent.action ?: return
         val pending = goAsync()
         val app = context.applicationContext
+        val handler = android.os.Handler(android.os.Looper.getMainLooper())
         val token = SessionToken(app, ComponentName(app, PlaybackService::class.java))
         val future = MediaController.Builder(app, token).buildAsync()
+        val done = java.util.concurrent.atomic.AtomicBoolean(false)
+        val finish = Runnable {
+            if (done.compareAndSet(false, true)) {
+                MediaController.releaseFuture(future)
+                pending.finish()
+            }
+        }
+        // The system allows a receiver about ten seconds after goAsync. If the service never
+        // answers (it is being killed, or the bind is refused) release and finish before then,
+        // rather than letting the receiver be killed with the controller still bound.
+        handler.postDelayed(finish, CONNECT_TIMEOUT_MS)
         future.addListener(
             {
                 try {
@@ -206,13 +221,8 @@ class WidgetActionReceiver : BroadcastReceiver() {
                     RingLog.e("widget", "controller failed for $action", t)
                 } finally {
                     // Give the command a moment to cross the binder before releasing.
-                    android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(
-                        {
-                            MediaController.releaseFuture(future)
-                            pending.finish()
-                        },
-                        400L,
-                    )
+                    handler.removeCallbacks(finish)
+                    handler.postDelayed(finish, RELEASE_DELAY_MS)
                 }
             },
             MoreExecutors.directExecutor(),

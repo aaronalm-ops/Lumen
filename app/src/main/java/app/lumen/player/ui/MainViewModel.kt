@@ -179,8 +179,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (uri.isBlank()) flowOf(emptyList()) else mediaRepo.bookmarks(uri)
     }.state(emptyList())
 
-    val continueItem: StateFlow<LibraryItem?> = combine(currentItem, recent) { current, recent ->
-        current ?: recent.firstOrNull()
+    /**
+     * What the Continue card shows. While the player holds an item the card shows that item
+     * (null when it is not in the library, in which case the card reads the player directly);
+     * only an empty player falls back to the most recent row. Resume then acts on what is shown.
+     */
+    val continueItem: StateFlow<LibraryItem?> = combine(player, currentItem, recent) { p, current, recent ->
+        current ?: if (p.hasItem) null else recent.firstOrNull()
     }.state(null)
 
     init {
@@ -247,7 +252,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun disconnect() {
         ticker?.cancel()
         ticker = null
-        _controller.value?.removeListener(controllerListener)
+        _controller.value?.let { c ->
+            c.removeListener(controllerListener)
+            // "Audio only when you leave" also covers leaving the app with Now Playing open:
+            // the surface goes with the activity, so drop the video track before the controller
+            // is released. Reconnecting re-enables it through the effect in LumenRoot.
+            if (audioOnly.value && _player.value.isVideo) {
+                try {
+                    c.trackSelectionParameters = c.trackSelectionParameters.buildUpon()
+                        .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, true)
+                        .build()
+                } catch (t: Throwable) {
+                    RingLog.w("ui", "audio only on leave failed: $t")
+                }
+            }
+        }
         _controller.value = null
         controllerFuture?.let { MediaController.releaseFuture(it) }
         controllerFuture = null

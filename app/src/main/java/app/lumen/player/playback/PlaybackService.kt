@@ -10,6 +10,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.Timeline
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.CommandButton
@@ -107,6 +108,14 @@ class PlaybackService : MediaLibraryService() {
     private var heartbeat: Job? = null
     private var sleepJob: Job? = null
     private var transitionJob: Job? = null
+
+    /**
+     * Media id of an item whose saved position is still being looked up after a transition.
+     * While set, no snapshot of the player is written for that item: the player sits at 0 (or
+     * wherever the queue put it) and a "ready", "isPlaying=false" or heartbeat save in that
+     * window would overwrite the real position with it.
+     */
+    private var pendingResumeId: String? = null
     private val effects = AudioEffects()
     private var settings = Settings()
 
@@ -133,7 +142,7 @@ class PlaybackService : MediaLibraryService() {
             .setSeekForwardIncrementMs(30_000)
             .build()
         // A stable, explicit audio session so the effects bind before the first frame.
-        val sessionId = C.generateAudioSessionIdV21(this)
+        val sessionId = (getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager).generateAudioSessionId()
         exo.setAudioSessionId(sessionId)
         player = SkipPlayer(exo)
         player.addListener(playerListener)
@@ -217,10 +226,9 @@ class PlaybackService : MediaLibraryService() {
     private fun scheduleSleep(endAt: Long) {
         sleepJob?.cancel()
         sleepJob = null
-        if (endAt <= 0L) {
-            player.volume = 1f
-            return
-        }
+        // A timer replaced or cleared mid-fade must not leave the volume where the fade stopped.
+        player.volume = 1f
+        if (endAt <= 0L) return
         val now = System.currentTimeMillis()
         if (endAt <= now) {
             scope.launch { settingsRepo.clearSleep() }
@@ -291,12 +299,30 @@ class PlaybackService : MediaLibraryService() {
 
     private data class Snapshot(val uri: String, val title: String, val positionMs: Long, val durationMs: Long)
 
+    /** True while the current item's resume position is still being looked up. */
+    private fun resumePending(): Boolean {
+        val pending = pendingResumeId ?: return false
+        return pending == player.currentMediaItem?.mediaId
+    }
+
+    private fun clearPending(id: String) {
+        if (pendingResumeId == id) pendingResumeId = null
+    }
+
     private fun save(reason: String) {
+        if (resumePending()) {
+            RingLog.i("store", "skipped $reason save: resume position still pending")
+            return
+        }
         val s = currentSnapshot() ?: return
         store.save(s.uri, s.title, s.positionMs, s.durationMs, reason)
     }
 
     private fun saveBlocking(reason: String) {
+        if (resumePending()) {
+            RingLog.i("store", "skipped $reason save: resume position still pending")
+            return
+        }
         val s = currentSnapshot() ?: return
         runBlocking {
             withTimeoutOrNull(DESTROY_SAVE_TIMEOUT_MS) {
@@ -366,28 +392,56 @@ class PlaybackService : MediaLibraryService() {
 
     private fun onNewItem(item: MediaItem, lookUpPosition: Boolean) {
         transitionJob?.cancel()
+        val id = item.mediaId
+        // Set before the coroutine starts so no save can slip in between the transition and the
+        // seek below. A cancelled earlier job only clears the flag for its own id.
+        if (lookUpPosition) pendingResumeId = id
         transitionJob = scope.launch {
-            val (media, labelNames) = resolveMedia(item)
-            if (player.currentMediaItem?.mediaId != item.mediaId) return@launch
-            val speech = isSpeech(item, media, labelNames)
-            player.setPlaybackSpeed(if (speech) settings.speed else 1.0f)
-            val preset = presetFor(speech, labelNames)
-            if (preset != settings.eqPreset) settingsRepo.setActivePreset(preset)
-            if (lookUpPosition) {
-                if (speech) {
-                    val saved = store.latestFor(MediaItems.uriOf(item), MediaItems.fingerprint(item) ?: media?.fingerprint)
-                    if (saved != null && player.currentMediaItem?.mediaId == item.mediaId) {
-                        val target = PositionStore.resumePosition(saved.positionMs)
-                        RingLog.i("session", "transition resume ${item.mediaId} at $target")
-                        player.seekTo(player.currentMediaItemIndex, target)
+            try {
+                val (media, labelNames) = resolveMedia(item)
+                if (player.currentMediaItem?.mediaId != id) return@launch
+                val speech = isSpeech(item, media, labelNames)
+                player.setPlaybackSpeed(if (speech) settings.speed else 1.0f)
+                val preset = presetFor(speech, labelNames)
+                if (preset != settings.eqPreset) settingsRepo.setActivePreset(preset)
+                if (lookUpPosition) {
+                    val saved = if (speech) {
+                        store.latestFor(MediaItems.uriOf(item), MediaItems.fingerprint(item) ?: media?.fingerprint)
+                    } else {
+                        null
                     }
-                } else {
-                    // Music always starts at the top; nothing to do, the player is at 0.
-                    save("transition")
+                    if (player.currentMediaItem?.mediaId != id) return@launch
+                    if (saved != null) {
+                        val target = PositionStore.resumePosition(saved.positionMs)
+                        RingLog.i("session", "transition resume $id at $target")
+                        // The seek's own discontinuity save is skipped while the flag is set; the
+                        // "resume" save below records the item as current without moving its
+                        // stored position back by the rewind (see PositionStore.saveNow).
+                        player.seekTo(player.currentMediaItemIndex, target)
+                        clearPending(id)
+                        save("resume")
+                    } else {
+                        // Music, or speech never played: the player is at 0 and nothing stored
+                        // can be lost. Write it so Continue points at this item.
+                        clearPending(id)
+                        save("transition")
+                    }
                 }
+                publishWidget()
+            } finally {
+                clearPending(id)
             }
-            publishWidget()
         }
+    }
+
+    /** Duration of the window a discontinuity left, when that window is still in the timeline. */
+    private fun durationOf(info: Player.PositionInfo): Long {
+        val index = info.mediaItemIndex
+        val timeline = player.currentTimeline
+        if (index < 0 || index >= timeline.windowCount) return 0L
+        val window = timeline.getWindow(index, Timeline.Window())
+        if (window.uid != info.windowUid || window.durationMs == C.TIME_UNSET) return 0L
+        return window.durationMs
     }
 
     private val playerListener = object : Player.Listener {
@@ -408,12 +462,19 @@ class PlaybackService : MediaLibraryService() {
             newPosition: Player.PositionInfo,
             reason: Int,
         ) {
-            if (oldPosition.mediaItemIndex != newPosition.mediaItemIndex) {
-                // Queue moved on (auto or next/previous): keep the old item's last position.
+            // Queue moved on (auto, next/previous, or a new queue set at the same index): keep
+            // the old item's last position. A new queue gives every period a new uid, so the
+            // index alone would miss the case where the replacement lands at the same index.
+            val leftItem = oldPosition.mediaItemIndex != newPosition.mediaItemIndex ||
+                oldPosition.periodUid != newPosition.periodUid
+            if (leftItem) {
                 val old = oldPosition.mediaItem ?: return
                 val uri = MediaItems.uriOf(old)
                 val title = old.mediaMetadata.title?.toString() ?: uri
-                val duration = old.mediaMetadata.durationMs ?: 0L
+                // The player's duration for that window, not the scanner's: the two can differ by
+                // a few ms and the progress key is uri|duration. Zero lets the store write into
+                // the row the uri already has.
+                val duration = durationOf(oldPosition)
                 store.save(uri, title, oldPosition.positionMs.coerceAtLeast(0L), duration, "left item")
                 return
             }
@@ -486,10 +547,28 @@ class PlaybackService : MediaLibraryService() {
             val index = if (startIndex == C.INDEX_UNSET) 0 else startIndex.coerceIn(0, resolved.size - 1)
             val first = resolved[index]
             val uri = MediaItems.uriOf(first)
+
+            // The item already loaded keeps its place: the store may be up to a heartbeat behind
+            // the player, and a queue that starts with the current item is a continuation.
+            val current = player.currentMediaItem
+            val state = player.playbackState
+            if (current != null && MediaItems.uriOf(current) == uri && state != Player.STATE_IDLE && state != Player.STATE_ENDED) {
+                val position = player.currentPosition.coerceAtLeast(0L)
+                RingLog.i("session", "setMediaItems uri=$uri continues at $position")
+                future.set(MediaSession.MediaItemsWithStartPosition(resolved, index, position))
+                return future
+            }
+
             scope.launch {
-                val saved = store.latestFor(uri, MediaItems.fingerprint(first))
+                // Speech resumes at saved minus 3 s; music starts at the top. An item without the
+                // speech extra and without a media row (a Phase 0 uri) resumes, as Phase 0 did.
+                val speech = MediaItems.speechOrNull(first) ?: run {
+                    val (media, names) = resolveMedia(first)
+                    if (media == null) true else MediaRepository.isSpeech(media, names, settings.layoutOverrides[uri])
+                }
+                val saved = if (speech) store.latestFor(uri, MediaItems.fingerprint(first)) else null
                 val position = if (saved == null) C.TIME_UNSET else PositionStore.resumePosition(saved.positionMs)
-                RingLog.i("session", "setMediaItems uri=$uri resumeAt=$position")
+                RingLog.i("session", "setMediaItems uri=$uri speech=$speech resumeAt=$position")
                 future.set(MediaSession.MediaItemsWithStartPosition(resolved, index, position))
             }
             return future

@@ -15,6 +15,7 @@ import app.lumen.player.diag.RingLog
 import java.io.File
 import java.io.FileOutputStream
 import java.security.MessageDigest
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -125,7 +126,14 @@ class MediaRepository(
             try {
                 val treeUri = Uri.parse(folder.uri)
                 val found = ArrayList<Found>()
-                walk(context.contentResolver, treeUri, DocumentsContract.getTreeDocumentId(treeUri), "", found, 0)
+                val rootOk = walk(context.contentResolver, treeUri, DocumentsContract.getTreeDocumentId(treeUri), "", found, 0)
+                if (!rootOk) {
+                    // A revoked grant or an absent provider throws on the root query. An empty
+                    // result here must not be taken as "every file is gone": keep the rows and
+                    // their labels for when the folder is reachable again.
+                    RingLog.w("scan", "${folder.name}: root query failed (permission=${hasReadPermission(treeUri)}), rows kept")
+                    return@withLock
+                }
                 val existing = dao.mediaInFolder(folder.uri).associateBy { it.uri }
                 val seen = HashSet<String>()
                 var added = 0
@@ -134,10 +142,17 @@ class MediaRepository(
                     seen += f.uri
                     val old = existing[f.uri]
                     if (old != null && old.sizeBytes == f.size && old.modifiedAt == f.modified) continue
-                    val entity = readMetadata(folder, f, old)
-                    dao.upsertMedia(entity)
-                    applySunoRule(entity)
-                    if (old == null) added++ else updated++
+                    try {
+                        val entity = readMetadata(folder, f, old)
+                        dao.upsertMedia(entity)
+                        applySunoRule(entity)
+                        if (old == null) added++ else updated++
+                    } catch (t: CancellationException) {
+                        throw t
+                    } catch (t: Throwable) {
+                        // One bad file must not stop the rest of the folder.
+                        RingLog.w("scan", "skipped ${f.name}: $t")
+                    }
                 }
                 val gone = existing.keys.filter { it !in seen }
                 if (gone.isNotEmpty()) dao.deleteMedia(gone)
@@ -150,6 +165,15 @@ class MediaRepository(
         }
     }
 
+    /** True when the tree's persisted read grant is still held. */
+    private fun hasReadPermission(treeUri: Uri): Boolean = try {
+        context.contentResolver.persistedUriPermissions.any { it.uri == treeUri && it.isReadPermission }
+    } catch (t: Throwable) {
+        RingLog.w("scan", "permission check failed: $t")
+        true
+    }
+
+    /** Lists one directory and recurses into its subdirectories. Returns false when the query itself failed. */
     private fun walk(
         resolver: ContentResolver,
         treeUri: Uri,
@@ -157,8 +181,8 @@ class MediaRepository(
         relPath: String,
         out: MutableList<Found>,
         depth: Int,
-    ) {
-        if (depth > 12) return
+    ): Boolean {
+        if (depth > 12) return true
         val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, documentId)
         val projection = arrayOf(
             DocumentsContract.Document.COLUMN_DOCUMENT_ID,
@@ -172,7 +196,7 @@ class MediaRepository(
         } catch (t: Throwable) {
             RingLog.w("scan", "query failed for $relPath: $t")
             null
-        } ?: return
+        } ?: return false
         cursor.use { c ->
             while (c.moveToNext()) {
                 val id = c.getString(0) ?: continue
@@ -189,6 +213,7 @@ class MediaRepository(
                 }
             }
         }
+        return true
     }
 
     private fun readMetadata(folder: FolderEntity, f: Found, old: MediaEntity?): MediaEntity {

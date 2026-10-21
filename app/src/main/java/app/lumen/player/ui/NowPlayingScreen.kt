@@ -482,9 +482,11 @@ private fun KidsLock(player: PlayerState, actions: NowPlayingActions) {
                                 view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
                                 actions.unlockKids()
                             }
-                            val released = tryAwaitRelease()
+                            // Released or cancelled (finger slid off), the hold is over either
+                            // way; a cancelled press must not unlock two seconds later.
+                            tryAwaitRelease()
                             holding = false
-                            if (released) job.cancel()
+                            job.cancel()
                         },
                     )
                 },

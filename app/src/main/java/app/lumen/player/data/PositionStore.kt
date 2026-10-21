@@ -13,6 +13,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
@@ -33,10 +35,24 @@ class PositionStore(context: Context, private val dao: ProgressDao) {
             if (durationMs > 0) "$uri|$durationMs" else "$uri|$UNKNOWN_DURATION"
 
         fun resumePosition(savedMs: Long): Long = maxOf(0L, savedMs - RESUME_REWIND_MS)
+
+        /**
+         * Saves made right after an item is loaded or resumed. The player then sits at the saved
+         * position minus the rewind, and writing that back would move the stored position 3 s
+         * earlier on every launch or transition without a second of playback.
+         */
+        private val RESUME_REASONS = setOf("transition", "ready", "resume")
     }
 
     private val backupFile = File(context.filesDir, "positions.jsonl")
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /**
+     * Saves are fire-and-forget from player callbacks, so two can be in flight at once (an item
+     * left and the next one started, for example). The lock makes them land in the order they
+     * were requested; its waiters are served first in, first out.
+     */
+    private val writeLock = Mutex()
     private val clock = SimpleDateFormat("HH:mm:ss", Locale.UK)
 
     private val _lastSaved = MutableStateFlow("nothing saved yet")
@@ -48,7 +64,7 @@ class PositionStore(context: Context, private val dao: ProgressDao) {
     }
 
     /** Blocking-capable write used from Service.onDestroy. */
-    suspend fun saveNow(uri: String, title: String, positionMs: Long, durationMs: Long, reason: String) {
+    suspend fun saveNow(uri: String, title: String, positionMs: Long, durationMs: Long, reason: String): Unit = writeLock.withLock {
         val now = System.currentTimeMillis()
         var effectiveDuration = durationMs
         if (durationMs <= 0) {
@@ -64,16 +80,31 @@ class PositionStore(context: Context, private val dao: ProgressDao) {
                 if (existing.durationMs <= 0 && reason != "ready") {
                     // Same unknown row; nothing better to write yet.
                     RingLog.i("store", "skipped unknown-duration save for $uri reason=$reason")
-                    return
+                    return@withLock
                 }
                 effectiveDuration = existing.durationMs
             }
         }
+        val key = keyFor(uri, effectiveDuration)
+        var effectivePosition = positionMs
+        if (reason in RESUME_REASONS) {
+            // Loading an item puts the player at the stored position minus the rewind. That is
+            // not progress, so keep the stored position; only a real move forward or a user seek
+            // (which saves under its own reason) changes it.
+            val prior = try {
+                dao.get(key)
+            } catch (t: Throwable) {
+                null
+            }
+            if (prior != null && prior.positionMs > positionMs && prior.positionMs - positionMs <= RESUME_REWIND_MS) {
+                effectivePosition = prior.positionMs
+            }
+        }
         val entity = ProgressEntity(
-            key = keyFor(uri, effectiveDuration),
+            key = key,
             uri = uri,
             title = title,
-            positionMs = positionMs,
+            positionMs = effectivePosition,
             durationMs = effectiveDuration,
             updatedAt = now,
         )
@@ -82,8 +113,8 @@ class PositionStore(context: Context, private val dao: ProgressDao) {
             dao.putKv(KvEntity(KEY_LAST_ITEM, entity.key))
             appendBackup(entity, reason)
             val stamp = synchronized(clock) { clock.format(Date(now)) }
-            _lastSaved.value = "${formatTime(positionMs)} at $stamp ($reason)"
-            RingLog.i("store", "saved ${entity.key} pos=$positionMs dur=$durationMs reason=$reason")
+            _lastSaved.value = "${formatTime(effectivePosition)} at $stamp ($reason)"
+            RingLog.i("store", "saved ${entity.key} pos=$effectivePosition dur=$effectiveDuration reason=$reason")
         } catch (t: Throwable) {
             RingLog.e("store", "save failed", t)
         }

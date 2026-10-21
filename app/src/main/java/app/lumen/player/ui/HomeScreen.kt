@@ -145,7 +145,10 @@ fun rowMeta(item: LibraryItem, labels: List<LabelEntity>): String {
 @Composable
 private fun ContinueCard(item: LibraryItem?, player: PlayerState, labels: List<LabelEntity>, onResume: () -> Unit) {
     val c = Lumen.colours
-    val live = player.hasItem && (item == null || player.mediaId == item.uri)
+    // The ViewModel hands over the player's own item (or null when it is not in the library)
+    // whenever the player holds one, so a loaded player always means live figures here. The
+    // uri check alone would miss a copy of the same file under another folder.
+    val live = player.hasItem
     val title = if (live) player.title else item?.media?.title.orEmpty()
     val who = if (live && player.artist.isNotBlank()) player.artist else item?.media?.artist.orEmpty()
     val position = if (live) player.positionMs else item?.positionMs ?: 0L

@@ -8,6 +8,10 @@ import app.lumen.player.data.MediaPermissions
 import app.lumen.player.data.MediaRepository
 import app.lumen.player.data.PositionStore
 import app.lumen.player.data.SettingsRepository
+import app.lumen.player.data.backup.BackupManager
+import app.lumen.player.data.drive.Connectivity
+import app.lumen.player.data.drive.DriveAuth
+import app.lumen.player.data.drive.DriveRepository
 import app.lumen.player.diag.RingLog
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -26,9 +30,19 @@ class LumenApp : Application() {
         private set
     lateinit var media: MediaRepository
         private set
+    lateinit var connectivity: Connectivity
+        private set
+    lateinit var drive: DriveRepository
+        private set
+    lateinit var backup: BackupManager
+        private set
 
     /** Application-wide work that must outlive any screen: seeding labels, the start-up scan. */
     val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /** True until the first activity has shown the branded splash; nothing else reads it. */
+    @Volatile
+    var coldStart: Boolean = true
 
     override fun onCreate() {
         super.onCreate()
@@ -37,6 +51,9 @@ class LumenApp : Application() {
         settings = SettingsRepository(db.progressDao())
         labels = LabelRepository(db.labelDao(), settings)
         media = MediaRepository(this, db.mediaDao(), labels, settings)
+        connectivity = Connectivity(this)
+        drive = DriveRepository(this, db.mediaDao(), labels, settings, DriveAuth(this), connectivity)
+        backup = BackupManager(this, db, store, settings, labels, drive)
         RingLog.i("app", "process start, version ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
         appScope.launch {
             try {
@@ -53,6 +70,23 @@ class LumenApp : Application() {
                 }
             } catch (t: Throwable) {
                 RingLog.e("app", "start-up scan failed", t)
+            }
+        }
+        appScope.launch {
+            try {
+                // Drive: a stale listing is refreshed silently when the grant still holds; a
+                // refused silent token only sets the "Sign in to Drive again" line.
+                val folderId = settings.get(SettingsRepository.KEY_DRIVE_FOLDER_ID).orEmpty()
+                if (folderId.isNotBlank() && BuildConfig.PICKER_API_KEY.isNotBlank()) {
+                    val lastScan = settings.get(SettingsRepository.KEY_DRIVE_SCAN_AT)?.toLongOrNull() ?: 0L
+                    if (System.currentTimeMillis() - lastScan > DriveRepository.RESCAN_AFTER_MS) {
+                        RingLog.i("app", "drive scan is stale, rescanning")
+                        drive.scan()
+                    }
+                    backup.autoBackupIfDue()
+                }
+            } catch (t: Throwable) {
+                RingLog.e("app", "start-up drive work failed", t)
             }
         }
     }

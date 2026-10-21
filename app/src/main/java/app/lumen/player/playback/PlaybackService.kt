@@ -13,6 +13,7 @@ import androidx.media3.common.Player
 import androidx.media3.common.Timeline
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.CommandButton
 import androidx.media3.session.LibraryResult
 import androidx.media3.session.MediaLibraryService
@@ -28,6 +29,7 @@ import app.lumen.player.data.MediaRepository
 import app.lumen.player.data.PositionStore
 import app.lumen.player.data.Settings
 import app.lumen.player.data.SettingsRepository
+import app.lumen.player.data.drive.DriveRepository
 import app.lumen.player.diag.RingLog
 import app.lumen.player.widget.WidgetSnapshot
 import app.lumen.player.widget.WidgetState
@@ -134,7 +136,11 @@ class PlaybackService : MediaLibraryService() {
             .setUsage(C.USAGE_MEDIA)
             .build()
 
+        // Phase 1b, the one change Drive streaming needs here: a data source factory that
+        // keeps DefaultDataSource for local uris and routes drive:// through the cached HTTP
+        // source. MediaItems still carry the drive:// uri, so the progress keys are unchanged.
         exo = ExoPlayer.Builder(this)
+            .setMediaSourceFactory(DefaultMediaSourceFactory(this).setDataSourceFactory(lumenDataSourceFactory(this)))
             .setAudioAttributes(audioAttributes, true)
             .setHandleAudioBecomingNoisy(true)
             .setWakeMode(C.WAKE_MODE_LOCAL)
@@ -434,6 +440,27 @@ class PlaybackService : MediaLibraryService() {
         }
     }
 
+    /**
+     * Phase 1b: a Drive row is listed with duration 0 and learns it from the player on first
+     * play. This writes the media row only; the progress key for the current item was already
+     * settled by the "ready" save above, so the position promise is untouched.
+     */
+    private fun learnDriveDuration() {
+        val item = player.currentMediaItem ?: return
+        val uri = MediaItems.uriOf(item)
+        if (!uri.startsWith(DriveRepository.URI_PREFIX)) return
+        val duration = player.duration
+        if (duration == C.TIME_UNSET || duration <= 0L) return
+        val app = LumenApp.from(this)
+        app.appScope.launch {
+            try {
+                app.drive.setDuration(uri, duration)
+            } catch (t: Throwable) {
+                RingLog.w("drive", "duration write failed: $t")
+            }
+        }
+    }
+
     /** Duration of the window a discontinuity left, when that window is still in the timeline. */
     private fun durationOf(info: Player.PositionInfo): Long {
         val index = info.mediaItemIndex
@@ -504,6 +531,7 @@ class PlaybackService : MediaLibraryService() {
             if (playbackState == Player.STATE_READY) {
                 save("ready")
                 publishWidget()
+                learnDriveDuration()
             }
             if (playbackState == Player.STATE_ENDED) save("ended")
         }

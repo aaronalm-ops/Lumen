@@ -30,11 +30,14 @@ import app.lumen.player.data.MediaRepository
 import app.lumen.player.data.ProgressEntity
 import app.lumen.player.data.Settings
 import app.lumen.player.data.SettingsRepository
+import app.lumen.player.data.drive.DriveRepository
+import app.lumen.player.data.drive.isDrive
 import app.lumen.player.data.isMediaStore
 import app.lumen.player.diag.Diagnostics
 import app.lumen.player.diag.RingLog
 import app.lumen.player.playback.MediaItems
 import app.lumen.player.playback.PlaybackService
+import app.lumen.player.playback.driveRowReachable
 import app.lumen.player.update.UpdateChecker
 import app.lumen.player.update.UpdateInfo
 import com.google.common.util.concurrent.ListenableFuture
@@ -104,6 +107,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val labelRepo: LabelRepository = app.labels
     private val settingsRepo: SettingsRepository = app.settings
     private val store = app.store
+    private val drive: DriveRepository = app.drive
+    private val backup = app.backup
 
     private fun <T> Flow<T>.state(initial: T): StateFlow<T> =
         stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), initial)
@@ -118,6 +123,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val scanning: StateFlow<Boolean> = mediaRepo.scanning
     val scanProgress: StateFlow<Int> = mediaRepo.scanProgress
 
+    // Phase 1b: Drive, downloads, connectivity and backup.
+    val driveScanning: StateFlow<Boolean> = drive.scanning
+    val downloads: StateFlow<Map<String, Float>> = drive.downloads
+    val online: StateFlow<Boolean> = app.connectivity.online
+    val backupResult: StateFlow<String> = backup.lastResult
+    val backupBusy: StateFlow<Boolean> = backup.busy
+
     /** Whether the whole-phone scan may run; refreshed on every start of the activity. */
     val mediaAccess = MutableStateFlow(MediaPermissions.granted(application))
 
@@ -129,6 +141,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val items: StateFlow<List<LibraryItem>> = combine(mediaRows, links, progress, folders) { media, links, progress, folders ->
         buildItems(media, links, progress, folders)
     }.flowOn(Dispatchers.Default).state(emptyList())
+
+    /**
+     * Drive rows that cannot be played right now: offline, no kept copy, not fully cached.
+     * Empty while online, so the cache is only consulted when the network is gone.
+     */
+    val unreachable: StateFlow<Set<String>> = combine(items, online, downloads) { items, online, _ ->
+        if (online) emptySet()
+        else items.asSequence()
+            .filter { it.media.isDrive }
+            .filter { !driveRowReachable(app, it.uri, it.media.offlinePath, online = false) }
+            .map { it.uri }
+            .toSet()
+    }.flowOn(Dispatchers.IO).state(emptySet())
 
     /** The last eight played, from the progress table, resolved against the library. */
     val recent: StateFlow<List<LibraryItem>> = combine(items, progress, mediaRows) { items, progress, rows ->
@@ -219,9 +244,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun sortFolders(folders: List<FolderEntity>): List<FolderEntity> {
-        val picked = folders.filter { !it.isMediaStore }.sortedBy { it.addedAt }
+        val picked = folders.filter { !it.isMediaStore && !it.isDrive }.sortedBy { it.addedAt }
+        val cloud = folders.filter { it.isDrive }
         val buckets = folders.filter { it.isMediaStore }.sortedBy { it.name.lowercase() }
-        return picked + buckets
+        return picked + cloud + buckets
     }
 
     private fun buildItems(
@@ -256,6 +282,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun connect(context: Context) {
         refreshMediaAccess()
         startObservingMediaStore()
+        app.connectivity.start()
         if (controllerFuture != null) return
         val token = SessionToken(context, ComponentName(context, PlaybackService::class.java))
         val future = MediaController.Builder(context, token).buildAsync()
@@ -283,6 +310,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun disconnect() {
         stopObservingMediaStore()
+        app.connectivity.stop()
         ticker?.cancel()
         ticker = null
         _controller.value?.let { c ->
@@ -633,6 +661,52 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun rescan() {
         app.appScope.launch { mediaRepo.rescanAll() }
+        if (settings.value.driveConnected) app.appScope.launch { drive.scan() }
+    }
+
+    // Phase 1b: Drive.
+
+    /** The picker returned a folder: store it and list it. */
+    fun setDriveFolder(folderId: String, folderName: String) {
+        app.appScope.launch { drive.connectFolder(folderId, folderName) }
+    }
+
+    /** The sign-in sheet came back with a grant: clear the line and refresh the listing. */
+    fun onDriveSignedIn() {
+        app.appScope.launch {
+            settingsRepo.setDriveNeedsSignIn(false)
+            if (settings.value.driveConnected) drive.scan()
+        }
+    }
+
+    fun rescanDrive() {
+        app.appScope.launch { drive.scan() }
+    }
+
+    fun disconnectDrive() {
+        app.appScope.launch { drive.disconnect() }
+    }
+
+    fun setMobileDownloads(allow: Boolean) {
+        viewModelScope.launch { settingsRepo.setDriveMobileDownloads(allow) }
+    }
+
+    /** "Keep offline" or "Remove download" for one Drive row; runs in the app scope. */
+    fun toggleOffline(item: LibraryItem) {
+        if (!item.media.isDrive) return
+        app.appScope.launch {
+            if (item.media.offlinePath != null) drive.removeOffline(item.uri) else drive.keepOffline(item.uri)
+        }
+    }
+
+    // Phase 1b: backup.
+
+    fun backupTo(target: Uri) {
+        app.appScope.launch { backup.backupTo(target) }
+    }
+
+    fun restoreFrom(source: Uri) {
+        app.appScope.launch { backup.restoreFrom(source) }
     }
 
     fun openLabelSheet(target: LabelSheetTarget) {

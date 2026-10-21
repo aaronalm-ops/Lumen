@@ -32,6 +32,7 @@ import androidx.compose.ui.unit.dp
 import app.lumen.player.data.FolderEntity
 import app.lumen.player.data.LabelEntity
 import app.lumen.player.data.MediaRepository
+import app.lumen.player.data.drive.isDrive
 import app.lumen.player.data.isMediaStore
 
 /**
@@ -47,6 +48,10 @@ fun LibraryScreen(
     player: PlayerState,
     scanning: Boolean,
     mediaAccessDenied: Boolean,
+    /** Drive rows that cannot be played right now (offline, no copy, not cached). */
+    unreachable: Set<String>,
+    /** Running "Keep offline" downloads, uri to fraction. */
+    downloads: Map<String, Float>,
     search: String,
     sortByName: Boolean,
     folderFilter: String?,
@@ -104,7 +109,11 @@ fun LibraryScreen(
                         folders.forEachIndexed { index, folder ->
                             FolderRow(
                                 name = folder.name,
-                                icon = if (folder.isMediaStore) LumenIcons.Phone else LumenIcons.Folder,
+                                icon = when {
+                                    folder.isMediaStore -> LumenIcons.Phone
+                                    folder.isDrive -> LumenIcons.Cloud
+                                    else -> LumenIcons.Folder
+                                },
                                 count = counts[folder.uri] ?: 0,
                                 selected = folderFilter == folder.uri,
                                 divider = index < folders.lastIndex,
@@ -150,11 +159,18 @@ fun LibraryScreen(
                         val speech = item.media.durationMs > MediaRepository.SPEECH_THRESHOLD_MS ||
                             labels.any { it.id in item.labelIds && it.name == "Sermons" }
                         val time = if (playing) player.positionMs else item.positionMs
+                        val offline = item.uri in unreachable
                         Box(Modifier.fillMaxWidth().cardSegment(first = index == 0, last = index == visible.lastIndex)) {
                             MediaRow(
                                 title = item.media.title,
                                 meta = rowMeta(item, labels),
-                                time = formatTime(if (time > 0) time else item.media.durationMs),
+                                // A Drive row with no duration yet shows "--:--" until first play.
+                                time = when {
+                                    offline -> "Offline"
+                                    time > 0 -> formatTime(time)
+                                    item.media.durationMs > 0 -> formatTime(item.media.durationMs)
+                                    else -> "--:--"
+                                },
                                 icon = when {
                                     item.media.isVideo -> LumenIcons.Video
                                     speech -> LumenIcons.Speech
@@ -164,7 +180,10 @@ fun LibraryScreen(
                                 copies = item.copies,
                                 hues = labels.filter { it.id in item.labelIds }.map { it.hue },
                                 divider = index < visible.lastIndex,
-                                onClick = { onItem(item, visible) },
+                                dimmed = offline,
+                                progress = downloads[item.uri],
+                                // Offline with nothing cached: the tap does nothing and nothing pops up.
+                                onClick = { if (!offline) onItem(item, visible) },
                                 onLongClick = { onItemLongPress(item) },
                             )
                         }

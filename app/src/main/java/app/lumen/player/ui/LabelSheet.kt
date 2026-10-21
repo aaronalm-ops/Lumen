@@ -39,6 +39,7 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.lumen.player.data.LabelEntity
+import app.lumen.player.data.drive.isDrive
 import kotlinx.coroutines.launch
 
 /**
@@ -50,9 +51,11 @@ import kotlinx.coroutines.launch
 fun LabelSheet(
     target: LabelSheetTarget,
     labels: List<LabelEntity>,
+    downloadProgress: Float?,
     onToggle: (LibraryItem, Long) -> Unit,
     onSave: suspend (LabelEntity) -> Boolean,
     onDelete: (LabelEntity) -> Unit,
+    onToggleOffline: (LibraryItem) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val c = Lumen.colours
@@ -95,9 +98,11 @@ fun LabelSheet(
                 ItemLabelsBody(
                     item = target.item,
                     labels = labels,
+                    downloadProgress = downloadProgress,
                     onToggle = onToggle,
                     onEdit = { editing = it; creating = false },
                     onNew = { editing = newLabel(); creating = true },
+                    onToggleOffline = { onToggleOffline(target.item) },
                 )
             }
         }
@@ -110,9 +115,11 @@ private fun newLabel() = LabelEntity(name = "", hue = 5, lockKids = false, noInt
 private fun ItemLabelsBody(
     item: LibraryItem,
     labels: List<LabelEntity>,
+    downloadProgress: Float?,
     onToggle: (LibraryItem, Long) -> Unit,
     onEdit: (LabelEntity) -> Unit,
     onNew: () -> Unit,
+    onToggleOffline: () -> Unit,
 ) {
     val c = Lumen.colours
     val view = LocalView.current
@@ -154,6 +161,47 @@ private fun ItemLabelsBody(
     }
     Spacer(Modifier.height(8.dp))
     TextAction("New label", onClick = onNew)
+    if (item.media.isDrive) {
+        // Phase 1b: the long-press route to "Keep offline" for a Drive row.
+        Spacer(Modifier.height(8.dp))
+        HorizontalDivider(color = c.line, thickness = 1.dp)
+        val kept = item.media.offlinePath != null
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .height(56.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .clickable(enabled = downloadProgress == null, onClick = onToggleOffline),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                if (kept) LumenIcons.Downloaded else LumenIcons.Download,
+                contentDescription = null,
+                tint = if (downloadProgress == null) c.text2 else c.text3,
+                modifier = Modifier.size(20.dp),
+            )
+            Spacer(Modifier.width(14.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    when {
+                        downloadProgress != null -> "Saving for offline"
+                        kept -> "Remove download"
+                        else -> "Keep offline"
+                    },
+                    style = Lumen.type.body,
+                    color = if (downloadProgress == null) c.text else c.text3,
+                )
+                Text(
+                    if (kept) "Plays from this phone, no network needed" else "Downloads on Wi-Fi unless mobile data is allowed in Settings",
+                    style = Lumen.type.bodyS,
+                    color = c.text2,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        if (downloadProgress != null) ProgressLine(fraction = downloadProgress, thickness = 1.dp)
+    }
 }
 
 @Composable

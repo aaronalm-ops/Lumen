@@ -201,6 +201,34 @@ object LumenIcons {
         }
     }
 
+    /** The Drive folder in the Library: a cloud. */
+    val Cloud: ImageVector by lazy {
+        icon("cloud") {
+            stroke {
+                moveTo(7f, 18.5f); lineTo(17.5f, 18.5f); arcTo(4f, 4f, 0f, false, false, 17.5f, 10.5f)
+                lineTo(16.9f, 10.5f); arcTo(5.5f, 5.5f, 0f, false, false, 6.2f, 11.7f)
+                arcTo(3.4f, 3.4f, 0f, false, false, 7f, 18.5f); close()
+            }
+        }
+    }
+
+    /** "Keep offline": an arrow into a tray. */
+    val Download: ImageVector by lazy {
+        icon("download") {
+            stroke { moveTo(12f, 4f); lineTo(12f, 15f) }
+            stroke { moveTo(7.5f, 10.5f); lineTo(12f, 15f); lineTo(16.5f, 10.5f) }
+            stroke { moveTo(4.5f, 19.5f); lineTo(19.5f, 19.5f) }
+        }
+    }
+
+    /** A kept copy: the tray with a tick. */
+    val Downloaded: ImageVector by lazy {
+        icon("downloaded") {
+            stroke { moveTo(6.5f, 10.5f); lineTo(10.5f, 14.5f); lineTo(17.5f, 6.5f) }
+            stroke { moveTo(4.5f, 19.5f); lineTo(19.5f, 19.5f) }
+        }
+    }
+
     val Label: ImageVector by lazy {
         icon("label") {
             stroke { moveTo(4f, 4f); lineTo(11f, 4f); lineTo(20f, 13f); lineTo(13f, 20f); lineTo(4f, 11f); close() }

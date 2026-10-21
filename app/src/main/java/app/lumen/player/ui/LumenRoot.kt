@@ -14,11 +14,15 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
 import androidx.media3.common.util.UnstableApi
+import app.lumen.player.BuildConfig
 
 class RootActions(
     val addFolder: () -> Unit,
@@ -28,6 +32,15 @@ class RootActions(
     val openAppSettings: () -> Unit,
     val openUpdate: () -> Unit,
     val openGitHub: () -> Unit,
+    // Phase 1b.
+    /** Authorises drive.file (the Google sheet only when the grant is missing) and opens the folder picker. */
+    val connectDrive: () -> Unit,
+    /** "Sign in to Drive again": the authorisation alone, no picker. */
+    val driveSignIn: () -> Unit,
+    /** ACTION_CREATE_DOCUMENT for the backup file. */
+    val backupNow: () -> Unit,
+    /** ACTION_OPEN_DOCUMENT for a backup to merge. */
+    val restoreBackup: () -> Unit,
 )
 
 /**
@@ -36,8 +49,9 @@ class RootActions(
  */
 @androidx.annotation.OptIn(UnstableApi::class)
 @Composable
-fun LumenRoot(vm: MainViewModel, actions: RootActions) {
+fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = false) {
     val context = LocalContext.current
+    var brand by remember { mutableStateOf(showBrand) }
     val settings by vm.settings.collectAsState()
     val screen by vm.screen.collectAsState()
     val nowPlayingOpen by vm.nowPlayingOpen.collectAsState()
@@ -65,6 +79,11 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions) {
     val search by vm.librarySearch.collectAsState()
     val sortByName by vm.librarySortByName.collectAsState()
     val folderFilter by vm.libraryFolder.collectAsState()
+    val driveScanning by vm.driveScanning.collectAsState()
+    val downloads by vm.downloads.collectAsState()
+    val unreachable by vm.unreachable.collectAsState()
+    val backupResult by vm.backupResult.collectAsState()
+    val backupBusy by vm.backupBusy.collectAsState()
 
     // Kids lock forces Now Playing open; nothing else can be reached until the corner is held.
     LaunchedEffect(kidsLocked) { if (kidsLocked) vm.nowPlayingOpen.value = true }
@@ -91,6 +110,7 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions) {
                     noInterruptions = noInterruptions,
                     bookmarks = bookmarks,
                     audioOnly = audioOnly,
+                    downloadProgress = currentItem?.let { downloads[it.uri] },
                     actions = NowPlayingActions(
                         close = { vm.nowPlayingOpen.value = false },
                         playPause = vm::playPause,
@@ -110,6 +130,7 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions) {
                         unlockKids = vm::unlockKids,
                         setAudioOnly = { vm.audioOnly.value = it },
                         openLabelSheet = { currentItem?.let { vm.openLabelSheet(LabelSheetTarget.ForItem(it)) } },
+                        toggleOffline = { currentItem?.let { vm.toggleOffline(it) } },
                     ),
                 )
             } else {
@@ -123,7 +144,7 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions) {
                                     labels = labels,
                                     recent = recent,
                                     hasLibrary = items.isNotEmpty(),
-                                    scanning = scanning,
+                                    scanning = scanning || driveScanning,
                                     mediaAccessDenied = mediaAccessDenied,
                                     update = update,
                                     onSettings = { vm.screen.value = Screen.Settings },
@@ -143,8 +164,10 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions) {
                                     folders = folders,
                                     labels = labels,
                                     player = player,
-                                    scanning = scanning,
+                                    scanning = scanning || driveScanning,
                                     mediaAccessDenied = mediaAccessDenied,
+                                    unreachable = unreachable,
+                                    downloads = downloads,
                                     search = search,
                                     sortByName = sortByName,
                                     folderFilter = folderFilter,
@@ -167,6 +190,10 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions) {
                                     mediaAccessDenied = mediaAccessDenied,
                                     update = update,
                                     lastSaved = lastSaved,
+                                    driveScanning = driveScanning,
+                                    driveConfigured = BuildConfig.PICKER_API_KEY.isNotBlank(),
+                                    backupResult = backupResult,
+                                    backupBusy = backupBusy,
                                     actions = SettingsActions(
                                         back = { vm.screen.value = Screen.Home },
                                         scanPhone = actions.scanPhone,
@@ -181,6 +208,13 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions) {
                                         shareDiagnostics = { vm.shareDiagnostics(context) },
                                         openUpdate = { if (update != null) actions.openUpdate() else vm.checkUpdateNow(context) },
                                         openGitHub = actions.openGitHub,
+                                        connectDrive = actions.connectDrive,
+                                        driveSignIn = actions.driveSignIn,
+                                        rescanDrive = vm::rescanDrive,
+                                        disconnectDrive = vm::disconnectDrive,
+                                        setMobileDownloads = vm::setMobileDownloads,
+                                        backupNow = actions.backupNow,
+                                        restoreBackup = actions.restoreBackup,
                                     ),
                                 )
                             }
@@ -212,12 +246,17 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions) {
                 LabelSheet(
                     target = live,
                     labels = labels,
+                    downloadProgress = (live as? LabelSheetTarget.ForItem)?.let { downloads[it.item.uri] },
                     onToggle = vm::toggleLabelOnItem,
                     onSave = { vm.saveLabel(it) },
                     onDelete = vm::deleteLabel,
+                    onToggleOffline = vm::toggleOffline,
                     onDismiss = vm::closeLabelSheet,
                 )
             }
+
+            // Cold start only: the lockup on black for 600 ms, then a fade. Nothing animates after.
+            if (brand) BrandedSplash(onDone = { brand = false })
         }
     }
 }

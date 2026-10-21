@@ -12,6 +12,7 @@ import app.lumen.player.BuildConfig
 import app.lumen.player.LumenApp
 import app.lumen.player.data.MediaPermissions
 import app.lumen.player.data.SettingsRepository
+import app.lumen.player.data.drive.isDrive
 import app.lumen.player.data.isMediaStore
 import app.lumen.player.playback.PlaybackService
 import java.io.File
@@ -78,8 +79,15 @@ object Diagnostics {
         } catch (t: Throwable) {
             0
         }
+        val driveLine = try {
+            app.drive.describe()
+        } catch (t: Throwable) {
+            "drive: unavailable ($t)\n"
+        }
         val libraryReport = buildString {
             append("media permission: ${MediaPermissions.describe(context)}\n")
+            append(driveLine)
+            append("picker api key: ${if (BuildConfig.PICKER_API_KEY.isBlank()) "absent" else "present"}\n")
             append("mediastore last scan: ")
             if (lastScanAt > 0L) {
                 append(SimpleDateFormat("yyyy-MM-dd HH:mm:ss Z", Locale.UK).format(Date(lastScanAt)))
@@ -88,8 +96,8 @@ object Diagnostics {
                 append("never\n")
             }
             append("media rows: $mediaCount (mediastore $mediaStoreCount)\n")
-            append("folders: ${folders.size} (${folders.count { it.isMediaStore }} phone buckets, ${folders.count { !it.isMediaStore }} picked)\n")
-            folders.forEach { append("  ${if (it.isMediaStore) "phone " else "picked"} | ${it.name} | ${it.uri}\n") }
+            append("folders: ${folders.size} (${folders.count { it.isMediaStore }} phone buckets, ${folders.count { it.isDrive }} drive, ${folders.count { !it.isMediaStore && !it.isDrive }} picked)\n")
+            folders.forEach { append("  ${if (it.isMediaStore) "phone " else if (it.isDrive) "drive " else "picked"} | ${it.name} | ${it.uri}\n") }
         }
         return withContext(Dispatchers.IO) {
             val dir = File(context.cacheDir, "diagnostics").apply { mkdirs() }

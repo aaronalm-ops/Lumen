@@ -12,6 +12,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -62,6 +63,7 @@ import androidx.media3.ui.PlayerView
 import app.lumen.player.data.BookmarkEntity
 import app.lumen.player.data.LabelEntity
 import app.lumen.player.data.Settings
+import app.lumen.player.data.drive.isDrive
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -87,6 +89,8 @@ class NowPlayingActions(
     val unlockKids: () -> Unit,
     val setAudioOnly: (Boolean) -> Unit,
     val openLabelSheet: () -> Unit,
+    /** Phase 1b: "Keep offline" or "Remove download" for a Drive item. */
+    val toggleOffline: () -> Unit,
 )
 
 /** True black. Speech or music layout by duration, label or the per-item override. */
@@ -103,6 +107,8 @@ fun NowPlayingScreen(
     noInterruptions: Boolean,
     bookmarks: List<BookmarkEntity>,
     audioOnly: Boolean,
+    /** Fraction of a running "Keep offline" download for this item, null when none. */
+    downloadProgress: Float?,
     actions: NowPlayingActions,
 ) {
     val c = Lumen.colours
@@ -144,18 +150,42 @@ fun NowPlayingScreen(
             IconTap(LumenIcons.Label, "Labels", c.text, enabled = item != null, onClick = actions.openLabelSheet)
         }
 
-        if (speech) SpeechLayout(player, settings, bookmarks, noInterruptions, actions)
-        else MusicLayout(player, controller, item, labels, settings, audioOnly, actions)
+        if (speech) SpeechLayout(player, item, settings, bookmarks, noInterruptions, downloadProgress, actions)
+        else MusicLayout(player, controller, item, labels, settings, audioOnly, downloadProgress, actions)
     }
+}
+
+/**
+ * The overflow chip for a Drive item: "Keep offline" (tray glyph), "Kept" with the tick once the
+ * copy exists (tap removes it), and the 1 dp line under the chip row while it downloads.
+ */
+@Composable
+private fun OfflineChip(item: LibraryItem?, downloadProgress: Float?, onToggle: () -> Unit) {
+    val media = item?.media ?: return
+    if (!media.isDrive) return
+    val kept = media.offlinePath != null
+    StatusChip(
+        text = when {
+            downloadProgress != null -> "Saving"
+            kept -> "Kept"
+            else -> "Keep offline"
+        },
+        icon = if (kept) LumenIcons.Downloaded else LumenIcons.Download,
+        active = kept,
+        enabled = downloadProgress == null,
+        onClick = onToggle,
+    )
 }
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun SpeechLayout(
     player: PlayerState,
+    item: LibraryItem?,
     settings: Settings,
     bookmarks: List<BookmarkEntity>,
     noInterruptions: Boolean,
+    downloadProgress: Float?,
     actions: NowPlayingActions,
 ) {
     val c = Lumen.colours
@@ -180,7 +210,7 @@ private fun SpeechLayout(
         Text(player.artist, style = Lumen.type.body, color = c.text2, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
     Spacer(Modifier.height(12.dp))
-    ChipRow(player, settings, noInterruptions, bookmarks.isNotEmpty(), actions)
+    ChipRow(player, item, settings, noInterruptions, bookmarks.isNotEmpty(), downloadProgress, actions)
     Spacer(Modifier.height(16.dp))
     Scrubber(positionMs = player.positionMs, durationMs = player.durationMs, enabled = player.hasItem, thin = false, onSeek = actions.seekTo)
     Spacer(Modifier.height(24.dp))
@@ -219,11 +249,19 @@ private fun SpeechLayout(
 }
 
 @Composable
-private fun ChipRow(player: PlayerState, settings: Settings, noInterruptions: Boolean, hasBookmarks: Boolean, actions: NowPlayingActions) {
+private fun ChipRow(
+    player: PlayerState,
+    item: LibraryItem?,
+    settings: Settings,
+    noInterruptions: Boolean,
+    hasBookmarks: Boolean,
+    downloadProgress: Float?,
+    actions: NowPlayingActions,
+) {
     val c = Lumen.colours
     val view = LocalView.current
     val sleepLeft = if (settings.sleepActive) ((settings.sleepEndAt - System.currentTimeMillis()) / 60_000L + 1).coerceAtLeast(1) else 0L
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         StatusChip(text = speedLabel(player.speed), active = player.speed != 1.0f, onClick = {
             view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
             actions.cycleSpeed()
@@ -254,7 +292,9 @@ private fun ChipRow(player: PlayerState, settings: Settings, noInterruptions: Bo
                 actions.addBookmark()
             },
         )
+        OfflineChip(item, downloadProgress, actions.toggleOffline)
     }
+    if (downloadProgress != null) ProgressLine(fraction = downloadProgress, thickness = 1.dp, modifier = Modifier.padding(top = 4.dp))
     Text(
         "Long press the title to switch between the speech and music layouts",
         style = Lumen.type.bodyS,
@@ -273,6 +313,7 @@ private fun MusicLayout(
     labels: List<LabelEntity>,
     settings: Settings,
     audioOnly: Boolean,
+    downloadProgress: Float?,
     actions: NowPlayingActions,
 ) {
     val c = Lumen.colours
@@ -316,10 +357,12 @@ private fun MusicLayout(
         Text(player.artist, style = Lumen.type.bodyS, color = c.text2, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
     Spacer(Modifier.height(8.dp))
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         labels.take(2).forEach { LabelChip(name = it.name, hue = it.hue, onClick = actions.openLabelSheet) }
         StatusChip(text = settings.eqPreset, active = settings.eqPreset != "Flat", enabled = settings.eqEngine != "none", onClick = actions.cyclePreset)
+        OfflineChip(item, downloadProgress, actions.toggleOffline)
     }
+    if (downloadProgress != null) ProgressLine(fraction = downloadProgress, thickness = 1.dp, modifier = Modifier.padding(top = 4.dp))
     Spacer(Modifier.height(8.dp))
     Scrubber(positionMs = player.positionMs, durationMs = player.durationMs, enabled = player.hasItem, thin = true, onSeek = actions.seekTo)
     Spacer(Modifier.height(16.dp))

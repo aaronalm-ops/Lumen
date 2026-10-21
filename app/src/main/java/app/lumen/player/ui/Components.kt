@@ -167,7 +167,11 @@ fun StatusChip(
     }
 }
 
-/** 64 dp row: 48 dp thumbnail, title, meta, right-aligned mono time. */
+/**
+ * 64 dp row: 48 dp thumbnail, title, meta, right-aligned mono time. [dimmed] greys a row that
+ * cannot be reached (a Drive file while offline); [progress] draws a 1 dp line under the row
+ * while an offline copy is downloading.
+ */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun MediaRow(
@@ -179,10 +183,14 @@ fun MediaRow(
     copies: Int = 1,
     hues: List<Int> = emptyList(),
     divider: Boolean = true,
+    dimmed: Boolean = false,
+    progress: Float? = null,
     onClick: () -> Unit,
     onLongClick: (() -> Unit)? = null,
 ) {
     val c = Lumen.colours
+    val titleColour = if (dimmed) c.text3 else c.text
+    val metaColour = if (dimmed) c.text3 else c.text2
     Column(Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier
@@ -197,7 +205,7 @@ fun MediaRow(
                 modifier = Modifier.size(48.dp).background(if (c.isDark) c.elevated else c.base, RoundedCornerShape(6.dp)),
                 contentAlignment = Alignment.Center,
             ) {
-                Icon(icon, contentDescription = null, tint = c.text2, modifier = Modifier.size(20.dp))
+                Icon(icon, contentDescription = null, tint = metaColour, modifier = Modifier.size(20.dp))
             }
             Column(Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -205,16 +213,16 @@ fun MediaRow(
                         Box(Modifier.size(6.dp).background(c.accent, CircleShape))
                         Spacer(Modifier.width(6.dp))
                     }
-                    Text(title, style = Lumen.type.bodyStrong, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(title, style = Lumen.type.bodyStrong, color = titleColour, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     hues.take(3).forEach { HueDot(it) }
-                    Text(meta, style = Lumen.type.bodyS, color = c.text2, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(meta, style = Lumen.type.bodyS, color = metaColour, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     if (copies > 1) {
                         Text(
                             "x$copies",
                             style = Lumen.type.labelS,
-                            color = c.text2,
+                            color = metaColour,
                             modifier = Modifier
                                 .border(1.dp, c.line, RoundedCornerShape(6.dp))
                                 .padding(horizontal = 6.dp, vertical = 2.dp),
@@ -222,7 +230,10 @@ fun MediaRow(
                     }
                 }
             }
-            Text(time, style = Lumen.type.timeS, color = if (playing) c.accent else c.text2)
+            Text(time, style = Lumen.type.timeS, color = if (playing) c.accent else metaColour)
+        }
+        if (progress != null) {
+            ProgressLine(fraction = progress, thickness = 1.dp, modifier = Modifier.padding(horizontal = 14.dp))
         }
         if (divider) HorizontalDivider(color = c.line, thickness = 1.dp, modifier = Modifier.padding(horizontal = 14.dp))
     }

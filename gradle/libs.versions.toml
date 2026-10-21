@@ -20,6 +20,9 @@ coroutines = "1.11.0"
 glance = "1.2.0"
 palette = "1.0.0"
 documentfile = "1.1.0"
+# Phase 1b additions (verified 2026-10-21, see README "Phase 1b dependencies")
+playServicesAuth = "22.0.0"
+coreSplashscreen = "1.2.0"
 
 [libraries]
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
@@ -40,6 +43,11 @@ media3-session = { group = "androidx.media3", name = "media3-session", version.r
 media3-common = { group = "androidx.media3", name = "media3-common", version.ref = "media3" }
 
 media3-ui = { group = "androidx.media3", name = "media3-ui", version.ref = "media3" }
+# Phase 1b: SimpleCache, CacheDataSource, DefaultHttpDataSource (media3-datasource) and
+# StandaloneDatabaseProvider (media3-database). Both are already pulled in by media3-exoplayer;
+# they are named here so the version is pinned and the imports are not an accident of transitivity.
+media3-datasource = { group = "androidx.media3", name = "media3-datasource", version.ref = "media3" }
+media3-database = { group = "androidx.media3", name = "media3-database", version.ref = "media3" }
 
 room-runtime = { group = "androidx.room", name = "room-runtime", version.ref = "room" }
 room-compiler = { group = "androidx.room", name = "room-compiler", version.ref = "room" }
@@ -47,6 +55,9 @@ room-compiler = { group = "androidx.room", name = "room-compiler", version.ref =
 glance-appwidget = { group = "androidx.glance", name = "glance-appwidget", version.ref = "glance" }
 palette-ktx = { group = "androidx.palette", name = "palette-ktx", version.ref = "palette" }
 documentfile = { group = "androidx.documentfile", name = "documentfile", version.ref = "documentfile" }
+
+play-services-auth = { group = "com.google.android.gms", name = "play-services-auth", version.ref = "playServicesAuth" }
+core-splashscreen = { group = "androidx.core", name = "core-splashscreen", version.ref = "coreSplashscreen" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

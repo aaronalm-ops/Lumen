@@ -122,7 +122,11 @@ fun HomeScreen(
                             MediaRow(
                                 title = item.media.title,
                                 meta = rowMeta(item, labels),
-                                time = formatTime(if (time > 0) time else item.media.durationMs),
+                                time = when {
+                                    time > 0 -> formatTime(time)
+                                    item.media.durationMs > 0 -> formatTime(item.media.durationMs)
+                                    else -> "--:--"
+                                },
                                 icon = when {
                                     item.media.isVideo -> LumenIcons.Video
                                     speech -> LumenIcons.Speech

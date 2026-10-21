@@ -19,7 +19,7 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
 
-// Phase 0 tables. Unchanged so positions survive the Phase 1a upgrade.
+// Phase 0 tables. Unchanged so positions survive the Phase 1a and 1b upgrades.
 
 @Entity(tableName = "progress")
 data class ProgressEntity(
@@ -70,6 +70,11 @@ data class MediaEntity(
     val tint: Int?,
     /** Last-modified stamp from the provider, used to skip unchanged files on rescan. */
     @ColumnInfo(name = "modified_at") val modifiedAt: Long,
+    /**
+     * Phase 1b. For a Drive row (`drive://<id>`), the local copy under filesDir/offline once
+     * "Keep offline" has finished; null otherwise. Local rows never set it.
+     */
+    @ColumnInfo(name = "offline_path") val offlinePath: String? = null,
 )
 
 @Entity(tableName = "labels")
@@ -138,6 +143,9 @@ interface ProgressDao {
 
     @Query("SELECT * FROM kv")
     fun allKvFlow(): Flow<List<KvEntity>>
+
+    @Query("SELECT * FROM kv")
+    suspend fun allKv(): List<KvEntity>
 }
 
 @Dao
@@ -170,6 +178,17 @@ interface MediaDao {
     @Query("SELECT * FROM media WHERE uri = :uri LIMIT 1")
     suspend fun mediaByUri(uri: String): MediaEntity?
 
+    @Query("SELECT * FROM media WHERE fingerprint = :fingerprint")
+    suspend fun mediaByFingerprint(fingerprint: String): List<MediaEntity>
+
+    /** Phase 1b: the local copy of a Drive row, or null to go back to streaming. */
+    @Query("UPDATE media SET offline_path = :path WHERE uri = :uri")
+    suspend fun setOfflinePath(uri: String, path: String?)
+
+    /** Phase 1b: a Drive row learns its duration (and so its fingerprint) from the player on first play. */
+    @Query("UPDATE media SET duration_ms = :durationMs, fingerprint = :fingerprint WHERE uri = :uri")
+    suspend fun setDuration(uri: String, durationMs: Long, fingerprint: String)
+
     @Query("SELECT * FROM media WHERE folder_uri = :folderUri")
     suspend fun mediaInFolder(folderUri: String): List<MediaEntity>
 
@@ -198,6 +217,12 @@ interface MediaDao {
 
     @Query("SELECT * FROM bookmarks WHERE media_uri = :uri ORDER BY position_ms ASC")
     fun bookmarksFlow(uri: String): Flow<List<BookmarkEntity>>
+
+    @Query("SELECT * FROM bookmarks ORDER BY media_uri ASC, position_ms ASC")
+    suspend fun allBookmarks(): List<BookmarkEntity>
+
+    @Query("SELECT * FROM bookmarks WHERE media_uri = :uri ORDER BY position_ms ASC")
+    suspend fun bookmarksFor(uri: String): List<BookmarkEntity>
 
     @Insert
     suspend fun insertBookmark(bookmark: BookmarkEntity): Long
@@ -232,6 +257,9 @@ interface LabelDao {
     @Query("SELECT * FROM media_labels")
     fun mediaLabelsFlow(): Flow<List<MediaLabelEntity>>
 
+    @Query("SELECT * FROM media_labels")
+    suspend fun allLinks(): List<MediaLabelEntity>
+
     @Query("SELECT label_id FROM media_labels WHERE media_uri = :uri")
     suspend fun labelIdsFor(uri: String): List<Long>
 
@@ -258,7 +286,7 @@ interface LabelDao {
         MediaLabelEntity::class,
         BookmarkEntity::class,
     ],
-    version = 2,
+    version = 3,
     exportSchema = false,
 )
 abstract class LumenDb : RoomDatabase() {
@@ -310,9 +338,19 @@ abstract class LumenDb : RoomDatabase() {
             }
         }
 
+        /**
+         * Phase 1a to Phase 1b. One nullable column on `media` for the offline copy of a Drive
+         * row. `progress` and `kv` are untouched; every saved position survives.
+         */
+        val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `media` ADD COLUMN `offline_path` TEXT")
+            }
+        }
+
         fun build(context: Context): LumenDb =
             Room.databaseBuilder(context.applicationContext, LumenDb::class.java, "lumen.db")
-                .addMigrations(MIGRATION_1_2)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                 // Phase 1 only: if a later Phase 1 build changes the new tables, start those over
                 // rather than crash. The 1 to 2 migration above still runs first, so progress
                 // written in Phase 0 is never dropped by it.

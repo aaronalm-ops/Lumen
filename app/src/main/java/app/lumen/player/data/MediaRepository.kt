@@ -15,6 +15,7 @@ import android.provider.MediaStore
 import androidx.core.graphics.ColorUtils
 import androidx.documentfile.provider.DocumentFile
 import androidx.palette.graphics.Palette
+import app.lumen.player.data.drive.isDrive
 import app.lumen.player.diag.RingLog
 import java.io.File
 import java.io.FileOutputStream
@@ -60,6 +61,9 @@ class MediaRepository(
     companion object {
         const val SPEECH_THRESHOLD_MS = 20L * 60 * 1000
         const val MEDIASTORE_PREFIX = "mediastore:"
+
+        /** Mirrors DriveRepository.FOLDER_PREFIX; named here so this file needs no Drive import for it. */
+        const val DRIVE_FOLDER_PREFIX = "drive:"
 
         /** Notification sounds and the like: anything shorter is not a listen. */
         const val MIN_DURATION_MS = 3_000L
@@ -155,7 +159,8 @@ class MediaRepository(
     }
 
     suspend fun removeFolder(folderUri: String) {
-        if (folderUri.startsWith(MEDIASTORE_PREFIX)) return
+        // Phone buckets come and go with the scan; the Drive folder is DriveRepository's.
+        if (folderUri.startsWith(MEDIASTORE_PREFIX) || folderUri.startsWith(DRIVE_FOLDER_PREFIX)) return
         dao.deleteMediaInFolder(folderUri)
         dao.deleteFolder(folderUri)
         try {
@@ -166,9 +171,9 @@ class MediaRepository(
         RingLog.i("scan", "folder removed: $folderUri")
     }
 
-    /** Rescans every picked folder. MediaStore buckets are not folders to walk; see [scanMediaStore]. */
+    /** Rescans every picked folder. MediaStore buckets and the Drive folder are not trees to walk. */
     suspend fun rescanAll() {
-        dao.folders().filter { !it.isMediaStore }.forEach { scanFolder(it) }
+        dao.folders().filter { !it.isMediaStore && !it.isDrive }.forEach { scanFolder(it) }
     }
 
     private data class Found(
@@ -181,7 +186,7 @@ class MediaRepository(
     )
 
     suspend fun scanFolder(folder: FolderEntity) = withContext(Dispatchers.IO) {
-        if (folder.isMediaStore) return@withContext
+        if (folder.isMediaStore || folder.isDrive) return@withContext
         scanLock.withLock {
             _scanning.value = true
             try {

@@ -19,6 +19,8 @@
     // the API key come from the app through the LumenPicker JavascriptInterface; the picked
     // folder goes back the same way. Folder selection: DocsView(FOLDERS) with
     // setSelectFolderEnabled(true), MIME filter on the folder type.
+    var shown = false;
+    var done = false;
     function setStatus(text) { document.getElementById('status').textContent = text; }
     function setFill(fraction) { document.getElementById('fill').style.width = Math.round(fraction * 100) + '%'; }
     function onApiLoad() {
@@ -26,6 +28,10 @@
       gapi.load('picker', { callback: onPickerApiLoad, onerror: function () { fail('Could not load the picker'); } });
     }
     function fail(reason) {
+      // Reported once, and only while the picker is still loading: a stray error from Google's
+      // own scripts after the sheet is up must not close it under the user.
+      if (done || shown) { return; }
+      done = true;
       setStatus(reason);
       if (window.LumenPicker) { window.LumenPicker.failed(reason); }
     }
@@ -48,19 +54,23 @@
         .build();
       setFill(1);
       setStatus('');
+      shown = true;
       picker.setVisible(true);
     }
     function onPicked(data) {
+      if (done) { return; }
       var action = data[google.picker.Response.ACTION];
       if (action === google.picker.Action.PICKED) {
         var docs = data[google.picker.Response.DOCUMENTS] || [];
+        done = true;
         if (docs.length > 0) {
           var doc = docs[0];
           window.LumenPicker.picked(doc[google.picker.Document.ID], doc[google.picker.Document.NAME] || '');
           return;
         }
-        fail('Nothing picked');
+        window.LumenPicker.failed('Nothing picked');
       } else if (action === google.picker.Action.CANCEL) {
+        done = true;
         window.LumenPicker.cancelled();
       }
     }

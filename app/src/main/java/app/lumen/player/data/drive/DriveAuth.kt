@@ -2,6 +2,7 @@ package app.lumen.player.data.drive
 
 import android.content.Context
 import android.content.Intent
+import android.os.Looper
 import app.lumen.player.diag.RingLog
 import com.google.android.gms.auth.api.identity.AuthorizationRequest
 import com.google.android.gms.auth.api.identity.AuthorizationResult
@@ -36,6 +37,7 @@ class DriveAuth(private val context: Context) {
         /** Access tokens live about an hour; one is reused for 45 minutes, then fetched again. */
         private const val TOKEN_REUSE_MS = 45L * 60 * 1000
         private const val AWAIT_SECONDS = 20L
+        private const val CLEAR_SECONDS = 5L
     }
 
     @Volatile
@@ -89,13 +91,18 @@ class DriveAuth(private val context: Context) {
 
     suspend fun token(forceRefresh: Boolean = false): String? = withContext(Dispatchers.IO) { tokenBlocking(forceRefresh) }
 
-    /** Drops a token Drive refused (401) so the next request asks Play Services for a fresh one. */
+    /**
+     * Drops a token Drive refused (401) so the next request asks Play Services for a fresh one.
+     * Play Services caches the token it handed out, so the clear is awaited (off the main
+     * thread) before anyone asks again; otherwise the forced refresh can return the same token.
+     */
     fun invalidate(token: String?) {
-        if (token != null && token == cachedToken) cachedToken = null
+        if (token == null || token == cachedToken) cachedToken = null
         cachedAt = 0L
         if (token == null) return
         try {
-            Identity.getAuthorizationClient(context).clearToken(ClearTokenRequest.builder().setToken(token).build())
+            val task = Identity.getAuthorizationClient(context).clearToken(ClearTokenRequest.builder().setToken(token).build())
+            if (Looper.myLooper() != Looper.getMainLooper()) Tasks.await(task, CLEAR_SECONDS, TimeUnit.SECONDS)
         } catch (t: Throwable) {
             RingLog.w("drive", "clearToken failed: $t")
         }

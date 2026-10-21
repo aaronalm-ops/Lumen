@@ -24,6 +24,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -98,7 +99,11 @@ fun BrandedSplash(onDone: () -> Unit) {
     LumenTheme(dark = true) {
         val c = Lumen.colours
         AnimatedVisibility(visible = visible, exit = fadeOut(animationSpec = tween(200))) {
-            Box(Modifier.fillMaxSize().background(c.base), contentAlignment = Alignment.Center) {
+            // Opaque while held: taps must not land on the Home controls underneath it.
+            val swallowTaps = Modifier.pointerInput(Unit) {
+                awaitPointerEventScope { while (true) awaitPointerEvent().changes.forEach { it.consume() } }
+            }
+            Box(Modifier.fillMaxSize().background(c.base).then(swallowTaps), contentAlignment = Alignment.Center) {
                 LumenLockup(height = 40.dp)
             }
         }

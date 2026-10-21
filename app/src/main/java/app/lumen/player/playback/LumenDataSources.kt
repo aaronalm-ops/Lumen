@@ -59,7 +59,7 @@ object DriveCache {
         val c = get(context)
         val key = keyFor(fileId)
         val length = ContentMetadata.getContentLength(c.getContentMetadata(key))
-        if (length == C.LENGTH_UNSET || length <= 0L) return false
+        if (length == C.LENGTH_UNSET.toLong() || length <= 0L) return false
         return c.isCached(key, 0L, length)
     }
 }
@@ -126,6 +126,9 @@ class DriveDataSource(private val context: Context) : DataSource {
     private var delegate: DataSource? = null
     private var openedUri: Uri? = null
 
+    /** The bearer token the open delegate was built with, so a refusal mid-read can drop it. */
+    private var currentToken: String? = null
+
     override fun addTransferListener(transferListener: TransferListener) {
         listeners += transferListener
     }
@@ -185,6 +188,7 @@ class DriveDataSource(private val context: Context) : DataSource {
             .createDataSource()
         listeners.forEach { cached.addTransferListener(it) }
         delegate = cached
+        currentToken = token
         val resolved = dataSpec.buildUpon()
             .setUri(Uri.parse(DriveApi.mediaUrl(fileId)))
             .setKey(DriveCache.keyFor(fileId))
@@ -192,8 +196,21 @@ class DriveDataSource(private val context: Context) : DataSource {
         return cached.open(resolved)
     }
 
-    override fun read(buffer: ByteArray, offset: Int, length: Int): Int =
-        delegate?.read(buffer, offset, length) ?: throw IOException("read before open")
+    override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+        val d = delegate ?: throw IOException("read before open")
+        return try {
+            d.read(buffer, offset, length)
+        } catch (e: HttpDataSource.InvalidResponseCodeException) {
+            // The cache served the first span and Drive refused the next one. The player will
+            // surface the error; drop the token so the retry asks Play Services for a fresh one.
+            if (e.responseCode == 401 || e.responseCode == 403) {
+                RingLog.w("drive", "${e.responseCode} while reading, token dropped")
+                if (e.responseCode == 401) app.drive.auth.invalidate(currentToken)
+                scope.launch { app.drive.onAuthFailure(e.responseCode) }
+            }
+            throw e
+        }
+    }
 
     /** The `drive://` uri the player asked for, so MediaItems.uriOf and the progress key agree. */
     override fun getUri(): Uri? = if (delegate == null) null else openedUri
@@ -208,6 +225,7 @@ class DriveDataSource(private val context: Context) : DataSource {
     private fun closeDelegate() {
         val d = delegate ?: return
         delegate = null
+        currentToken = null
         try {
             d.close()
         } catch (t: IOException) {

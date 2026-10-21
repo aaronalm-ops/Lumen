@@ -13,6 +13,7 @@ import java.io.FileOutputStream
 import java.io.IOException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.sync.Mutex
@@ -129,11 +130,13 @@ class DriveRepository(
         scanLock.withLock {
             _scanning.value = true
             val startedAt = System.currentTimeMillis()
+            var usedToken: String? = null
             try {
                 val token = auth.tokenBlocking() ?: run {
                     settings.setDriveNeedsSignIn(true)
                     return@withLock -1
                 }
+                usedToken = token
                 val folderUri = folderUriFor(folderId)
                 val top = DriveApi.listChildren(token, folderId)
                 val found = ArrayList<Pair<DriveFile, String>>()
@@ -204,7 +207,7 @@ class DriveRepository(
             } catch (t: DriveAuthException) {
                 RingLog.w("drive", "scan refused with ${t.code}; sign in again")
                 settings.setDriveNeedsSignIn(true)
-                if (t.code == 401) auth.invalidate(null)
+                if (t.code == 401) auth.invalidate(usedToken)
                 -1
             } catch (t: Throwable) {
                 RingLog.e("drive", "scan failed", t)
@@ -267,11 +270,13 @@ class DriveRepository(
         val ext = row.relPath.substringAfterLast('.', "").takeIf { it.isNotBlank() && it.length <= 5 } ?: if (row.isVideo) "mp4" else "mp3"
         val target = File(offlineDir, "$id.$ext")
         val part = File(offlineDir, "$id.$ext.part")
+        var usedToken: String? = null
         try {
             val token = auth.tokenBlocking() ?: run {
                 settings.setDriveNeedsSignIn(true)
                 return@withContext false
             }
+            usedToken = token
             val (connection, input) = DriveApi.openMedia(token, id)
             try {
                 val total = connection.contentLengthLong.takeIf { it > 0 } ?: row.sizeBytes
@@ -310,6 +315,7 @@ class DriveRepository(
         } catch (t: DriveAuthException) {
             part.delete()
             settings.setDriveNeedsSignIn(true)
+            if (t.code == 401) auth.invalidate(usedToken)
             RingLog.w("drive", "download refused with ${t.code}")
             false
         } catch (t: Throwable) {
@@ -317,7 +323,8 @@ class DriveRepository(
             RingLog.e("drive", "download failed for ${row.title}", t)
             false
         } finally {
-            downloadLock.withLock { downloading.remove(uri) }
+            // Runs on cancellation too: the lock must still be taken, or the uri stays "in flight".
+            withContext(NonCancellable) { downloadLock.withLock { downloading.remove(uri) } }
             clearProgress(uri)
         }
     }

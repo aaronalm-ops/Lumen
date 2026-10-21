@@ -186,11 +186,13 @@ class BackupManager(
     private suspend fun uploadToDrive(bytes: ByteArray, now: Long): Boolean? = withContext(Dispatchers.IO) {
         val folderId = settings.get(SettingsRepository.KEY_DRIVE_FOLDER_ID).orEmpty()
         if (folderId.isBlank()) return@withContext null
+        var usedToken: String? = null
         try {
             val token = drive.auth.tokenBlocking() ?: run {
                 settings.setDriveNeedsSignIn(true)
                 return@withContext false
             }
+            usedToken = token
             val lumenFolder = DriveApi.findOrCreateFolder(token, DRIVE_FOLDER)
             val name = defaultFileName(now)
             val existing = DriveApi.findInFolder(token, lumenFolder, name)
@@ -200,6 +202,7 @@ class BackupManager(
             true
         } catch (t: DriveAuthException) {
             settings.setDriveNeedsSignIn(true)
+            if (t.code == 401) drive.auth.invalidate(usedToken)
             RingLog.w("backup", "Drive refused the upload with ${t.code}")
             false
         } catch (t: Throwable) {

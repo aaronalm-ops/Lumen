@@ -90,6 +90,8 @@ dependencies {
     implementation(libs.androidx.core)
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.lifecycle.runtime.ktx)
+    // viewModelScope for MainViewModel (an empty compatibility artifact on new Lifecycle, harmless).
+    implementation(libs.androidx.lifecycle.viewmodel.ktx)
 
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.ui)
@@ -101,6 +103,13 @@ dependencies {
     implementation(libs.media3.exoplayer)
     implementation(libs.media3.session)
     implementation(libs.media3.common)
+    // PlayerView for inline video on Now Playing.
+    implementation(libs.media3.ui)
+
+    // Phase 1a: home screen widget, album art tint, folder trees.
+    implementation(libs.glance.appwidget)
+    implementation(libs.palette.ktx)
+    implementation(libs.documentfile)
 
     // room-ktx was merged into room-runtime in 2.7.0 and is an empty artifact since then.
     implementation(libs.room.runtime)

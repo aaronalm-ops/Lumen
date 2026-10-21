@@ -22,11 +22,12 @@ object UpdateChecker {
     private const val KEY_URL = "url"
     private const val INTERVAL_MS = 24L * 60 * 60 * 1000
 
-    suspend fun check(context: Context): UpdateInfo? {
+    /** [force] skips the 24 hour interval (the Settings button). */
+    suspend fun check(context: Context, force: Boolean = false): UpdateInfo? {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val now = System.currentTimeMillis()
         val last = prefs.getLong(KEY_LAST_CHECK, 0L)
-        if (now - last < INTERVAL_MS) {
+        if (!force && now - last < INTERVAL_MS) {
             return cached(prefs.getString(KEY_TAG, null), prefs.getString(KEY_URL, null))
         }
         val fetched = withContext(Dispatchers.IO) { fetchLatest() }

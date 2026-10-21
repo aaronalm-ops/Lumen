@@ -1,12 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Dark only in Phase 0. Compose Material3 supplies the real colour scheme; this platform
-         theme only removes the action bar and keeps the window true black during start-up. -->
-    <style name="Theme.Lumen" parent="android:Theme.Material.NoActionBar">
-        <item name="android:windowBackground">@color/black</item>
-        <item name="android:windowLightStatusBar">false</item>
-        <item name="android:windowLightNavigationBar">false</item>
-        <item name="android:colorPrimary">@color/amber</item>
-        <item name="android:colorAccent">@color/amber</item>
+    <!-- Compose Material3 supplies the real colour scheme. This platform theme only removes the
+         action bar and keeps the window on the light ground during start-up, since Home is light.
+         Now Playing paints true black itself; the status bar icon colour is switched in Compose. -->
+    <style name="Theme.Lumen" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/base_light</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+        <item name="android:colorPrimary">@color/amber_light</item>
+        <item name="android:colorAccent">@color/amber_light</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
     </style>
 </resources>

@@ -16,12 +16,17 @@ lifecycle = "2.11.0"
 media3 = "1.11.1"
 room = "2.8.5"
 coroutines = "1.11.0"
+# Phase 1a additions (verified 2026-10-21 on developer.android.com/jetpack/androidx/releases/<lib>)
+glance = "1.2.0"
+palette = "1.0.0"
+documentfile = "1.1.0"
 
 [libraries]
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
 androidx-core = { group = "androidx.core", name = "core", version.ref = "core" }
 androidx-activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activityCompose" }
 androidx-lifecycle-runtime-ktx = { group = "androidx.lifecycle", name = "lifecycle-runtime-ktx", version.ref = "lifecycle" }
+androidx-lifecycle-viewmodel-ktx = { group = "androidx.lifecycle", name = "lifecycle-viewmodel-ktx", version.ref = "lifecycle" }
 
 compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
 compose-ui = { group = "androidx.compose.ui", name = "ui" }
@@ -34,8 +39,14 @@ media3-exoplayer = { group = "androidx.media3", name = "media3-exoplayer", versi
 media3-session = { group = "androidx.media3", name = "media3-session", version.ref = "media3" }
 media3-common = { group = "androidx.media3", name = "media3-common", version.ref = "media3" }
 
+media3-ui = { group = "androidx.media3", name = "media3-ui", version.ref = "media3" }
+
 room-runtime = { group = "androidx.room", name = "room-runtime", version.ref = "room" }
 room-compiler = { group = "androidx.room", name = "room-compiler", version.ref = "room" }
+
+glance-appwidget = { group = "androidx.glance", name = "glance-appwidget", version.ref = "glance" }
+palette-ktx = { group = "androidx.palette", name = "palette-ktx", version.ref = "palette" }
+documentfile = { group = "androidx.documentfile", name = "documentfile", version.ref = "documentfile" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

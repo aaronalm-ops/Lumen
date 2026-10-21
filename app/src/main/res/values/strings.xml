@@ -1,7 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Lumen</string>
-    <string name="pick_file">Pick a file</string>
     <string name="share_diagnostics">Share diagnostics</string>
     <string name="seek_back">Back 10 seconds</string>
     <string name="seek_forward">Forward 30 seconds</string>
@@ -9,5 +8,11 @@
     <string name="pause">Pause</string>
     <string name="update_available">Update %1$s available</string>
     <string name="update_action">Update</string>
-    <string name="no_file">No file loaded</string>
+    <string name="widget_description">Resume where you stopped: title, time left and the transport buttons.</string>
+    <string name="shortcut_resume_short">Resume</string>
+    <string name="shortcut_resume_long">Resume the last item</string>
+    <string name="shortcut_worship_short">Worship</string>
+    <string name="shortcut_worship_long">Play the Worship label</string>
+    <string name="shortcut_kids_short">Kids</string>
+    <string name="shortcut_kids_long">Play the Kids label</string>
 </resources>

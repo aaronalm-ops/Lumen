@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.Uri
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
+import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
@@ -12,13 +13,24 @@ import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.CommandButton
+import androidx.media3.session.LibraryResult
 import androidx.media3.session.MediaLibraryService
+import androidx.media3.session.MediaLibraryService.LibraryParams
 import androidx.media3.session.MediaLibraryService.MediaLibrarySession
 import androidx.media3.session.MediaSession
 import app.lumen.player.LumenApp
 import app.lumen.player.MainActivity
+import app.lumen.player.data.EqPreset
+import app.lumen.player.data.LabelRepository
+import app.lumen.player.data.MediaEntity
+import app.lumen.player.data.MediaRepository
 import app.lumen.player.data.PositionStore
+import app.lumen.player.data.Settings
+import app.lumen.player.data.SettingsRepository
 import app.lumen.player.diag.RingLog
+import app.lumen.player.widget.WidgetSnapshot
+import app.lumen.player.widget.WidgetState
+import com.google.common.collect.ImmutableList
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.SettableFuture
@@ -28,6 +40,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -35,7 +49,8 @@ import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * The only place a player exists. The UI talks to it through a MediaController; the system
- * talks to it through the MediaSession (notification, lock screen, Bluetooth, resumption).
+ * talks to it through the MediaSession (notification, lock screen, Bluetooth, resumption, Auto).
+ * Settings reach it through the kv table: the UI writes, the service observes and applies.
  */
 @UnstableApi
 class PlaybackService : MediaLibraryService() {
@@ -47,18 +62,62 @@ class PlaybackService : MediaLibraryService() {
 
         private const val HEARTBEAT_MS = 30_000L
         private const val DESTROY_SAVE_TIMEOUT_MS = 1_500L
+        private const val SLEEP_FADE_MS = 20_000L
+        private const val SLEEP_FADE_STEP_MS = 500L
+
+        const val ROOT_ID = "root"
+        const val CONTINUE_ID = "continue"
+        const val LABELS_ID = "labels"
+        const val SERMONS_ID = "sermons"
+        const val RECENT_ID = "recent"
+        const val LABEL_PREFIX = "label:"
     }
 
-    private lateinit var player: ExoPlayer
+    /** ExoPlayer with mutable seek increments, so Settings can change them without a rebuild. */
+    private class SkipPlayer(exo: ExoPlayer) : ForwardingPlayer(exo) {
+        @Volatile
+        var backMs: Long = 10_000L
+
+        @Volatile
+        var forwardMs: Long = 30_000L
+
+        override fun getSeekBackIncrement(): Long = backMs
+
+        override fun getSeekForwardIncrement(): Long = forwardMs
+
+        override fun seekBack() {
+            seekTo(currentMediaItemIndex, (currentPosition - backMs).coerceAtLeast(0L))
+        }
+
+        override fun seekForward() {
+            val d = duration
+            val target = currentPosition + forwardMs
+            seekTo(currentMediaItemIndex, if (d == C.TIME_UNSET) target else target.coerceAtMost(d))
+        }
+    }
+
+    private lateinit var exo: ExoPlayer
+    private lateinit var player: SkipPlayer
     private lateinit var store: PositionStore
+    private lateinit var mediaRepo: MediaRepository
+    private lateinit var labelRepo: LabelRepository
+    private lateinit var settingsRepo: SettingsRepository
     private var session: MediaLibrarySession? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var heartbeat: Job? = null
+    private var sleepJob: Job? = null
+    private var transitionJob: Job? = null
+    private val effects = AudioEffects()
+    private var settings = Settings()
 
     override fun onCreate() {
         super.onCreate()
         isRunning = true
-        store = LumenApp.from(this).store
+        val app = LumenApp.from(this)
+        store = app.store
+        mediaRepo = app.media
+        labelRepo = app.labels
+        settingsRepo = app.settings
         RingLog.i("service", "onCreate")
 
         val audioAttributes = AudioAttributes.Builder()
@@ -66,14 +125,19 @@ class PlaybackService : MediaLibraryService() {
             .setUsage(C.USAGE_MEDIA)
             .build()
 
-        player = ExoPlayer.Builder(this)
+        exo = ExoPlayer.Builder(this)
             .setAudioAttributes(audioAttributes, true)
             .setHandleAudioBecomingNoisy(true)
             .setWakeMode(C.WAKE_MODE_LOCAL)
             .setSeekBackIncrementMs(10_000)
             .setSeekForwardIncrementMs(30_000)
             .build()
+        // A stable, explicit audio session so the effects bind before the first frame.
+        val sessionId = C.generateAudioSessionIdV21(this)
+        exo.setAudioSessionId(sessionId)
+        player = SkipPlayer(exo)
         player.addListener(playerListener)
+        bindEffects(exo.audioSessionId)
 
         val sessionActivity = PendingIntent.getActivity(
             this,
@@ -84,8 +148,10 @@ class PlaybackService : MediaLibraryService() {
 
         session = MediaLibrarySession.Builder(this, player, SessionCallback())
             .setSessionActivity(sessionActivity)
-            .setMediaButtonPreferences(mediaButtonPreferences())
+            .setMediaButtonPreferences(mediaButtonPreferences(10, 30))
             .build()
+
+        observeSettings()
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? = session
@@ -93,30 +159,115 @@ class PlaybackService : MediaLibraryService() {
     override fun onDestroy() {
         RingLog.i("service", "onDestroy")
         heartbeat?.cancel()
+        sleepJob?.cancel()
         saveBlocking("destroy")
+        publishWidget(forcePaused = true)
         scope.cancel()
         session?.let { s ->
             player.removeListener(playerListener)
             s.release()
-            player.release()
+            effects.release()
+            exo.release()
         }
         session = null
         isRunning = false
         super.onDestroy()
     }
 
+    // Settings observed from the kv table.
+
+    private fun observeSettings() {
+        scope.launch {
+            var appliedBack = 10
+            var appliedForward = 30
+            settingsRepo.settings.collect { s ->
+                settings = s
+                player.backMs = s.skipBackSeconds * 1000L
+                player.forwardMs = s.skipForwardSeconds * 1000L
+                if (s.skipBackSeconds != appliedBack || s.skipForwardSeconds != appliedForward) {
+                    appliedBack = s.skipBackSeconds
+                    appliedForward = s.skipForwardSeconds
+                    session?.setMediaButtonPreferences(mediaButtonPreferences(appliedBack, appliedForward))
+                    RingLog.i("service", "skip intervals back=$appliedBack forward=$appliedForward")
+                }
+            }
+        }
+        scope.launch {
+            settingsRepo.settings
+                .map { it.eqPreset to EqPreset.gains(it.eqPreset, it.eqCustom) }
+                .distinctUntilChanged()
+                .collect { (preset, gains) ->
+                    RingLog.i("fx", "preset $preset gains=$gains")
+                    effects.apply(preset, gains)
+                }
+        }
+        scope.launch {
+            settingsRepo.settings.map { it.sleepEndAt }.distinctUntilChanged().collect { endAt -> scheduleSleep(endAt) }
+        }
+    }
+
+    private fun bindEffects(sessionId: Int) {
+        val engine = effects.bind(sessionId)
+        scope.launch {
+            if (engine.isNotEmpty() && settings.eqEngine != engine) settingsRepo.setEqEngine(engine)
+        }
+    }
+
+    /** Fades volume over the last 20 s, pauses, then clears the timer. */
+    private fun scheduleSleep(endAt: Long) {
+        sleepJob?.cancel()
+        sleepJob = null
+        if (endAt <= 0L) {
+            player.volume = 1f
+            return
+        }
+        val now = System.currentTimeMillis()
+        if (endAt <= now) {
+            scope.launch { settingsRepo.clearSleep() }
+            return
+        }
+        RingLog.i("sleep", "timer set, ends in ${(endAt - now) / 1000} s")
+        sleepJob = scope.launch {
+            val fadeStart = endAt - SLEEP_FADE_MS
+            val wait = fadeStart - System.currentTimeMillis()
+            if (wait > 0) delay(wait)
+            val steps = (SLEEP_FADE_MS / SLEEP_FADE_STEP_MS).toInt()
+            for (i in 1..steps) {
+                if (!isActive) return@launch
+                player.volume = (1f - i.toFloat() / steps).coerceIn(0f, 1f)
+                delay(SLEEP_FADE_STEP_MS)
+            }
+            player.pause()
+            player.volume = 1f
+            RingLog.i("sleep", "timer fired, paused")
+            settingsRepo.clearSleep()
+        }
+    }
+
     /**
      * Seek back and seek forward take the two slots the system would otherwise give to previous
-     * and next, on the notification, the lock screen and Bluetooth displays.
+     * and next, on the notification, the lock screen, Bluetooth displays and Android Auto.
      */
-    private fun mediaButtonPreferences(): List<CommandButton> {
-        val back = CommandButton.Builder(CommandButton.ICON_SKIP_BACK_10)
-            .setDisplayName("Back 10 seconds")
+    private fun mediaButtonPreferences(backSeconds: Int, forwardSeconds: Int): List<CommandButton> {
+        val backIcon = when (backSeconds) {
+            5 -> CommandButton.ICON_SKIP_BACK_5
+            15 -> CommandButton.ICON_SKIP_BACK_15
+            30 -> CommandButton.ICON_SKIP_BACK_30
+            else -> CommandButton.ICON_SKIP_BACK_10
+        }
+        val forwardIcon = when (forwardSeconds) {
+            5 -> CommandButton.ICON_SKIP_FORWARD_5
+            10 -> CommandButton.ICON_SKIP_FORWARD_10
+            15 -> CommandButton.ICON_SKIP_FORWARD_15
+            else -> CommandButton.ICON_SKIP_FORWARD_30
+        }
+        val back = CommandButton.Builder(backIcon)
+            .setDisplayName("Back $backSeconds seconds")
             .setPlayerCommand(Player.COMMAND_SEEK_BACK)
             .setSlots(CommandButton.SLOT_BACK)
             .build()
-        val forward = CommandButton.Builder(CommandButton.ICON_SKIP_FORWARD_30)
-            .setDisplayName("Forward 30 seconds")
+        val forward = CommandButton.Builder(forwardIcon)
+            .setDisplayName("Forward $forwardSeconds seconds")
             .setPlayerCommand(Player.COMMAND_SEEK_FORWARD)
             .setSlots(CommandButton.SLOT_FORWARD)
             .build()
@@ -128,7 +279,7 @@ class PlaybackService : MediaLibraryService() {
 
     private fun currentSnapshot(): Snapshot? {
         val item = player.currentMediaItem ?: return null
-        val uri = item.localConfiguration?.uri?.toString() ?: item.mediaId
+        val uri = MediaItems.uriOf(item)
         if (uri.isBlank()) return null
         val duration = player.duration.let { if (it == C.TIME_UNSET) 0L else it }
         val title = player.mediaMetadata.title?.toString()
@@ -159,8 +310,83 @@ class PlaybackService : MediaLibraryService() {
         heartbeat = scope.launch {
             while (isActive) {
                 delay(HEARTBEAT_MS)
-                if (player.isPlaying) save("heartbeat")
+                if (player.isPlaying) {
+                    save("heartbeat")
+                    publishWidget()
+                }
             }
+        }
+    }
+
+    private fun publishWidget(forcePaused: Boolean = false) {
+        val item = player.currentMediaItem
+        val duration = player.duration.let { if (it == C.TIME_UNSET) 0L else it }
+        WidgetState.publish(
+            this,
+            WidgetSnapshot(
+                hasItem = item != null,
+                title = player.mediaMetadata.title?.toString() ?: item?.mediaMetadata?.title?.toString() ?: "",
+                positionMs = player.currentPosition.coerceAtLeast(0L),
+                durationMs = duration,
+                speed = player.playbackParameters.speed,
+                isPlaying = if (forcePaused) false else player.isPlaying,
+            ),
+        )
+    }
+
+    // Per-item behaviour on transitions: resume speech, start music at zero, pick speed and preset.
+
+    private suspend fun resolveMedia(item: MediaItem): Pair<MediaEntity?, List<String>> {
+        val uri = MediaItems.uriOf(item)
+        val media = mediaRepo.byUri(uri)
+        val ids = MediaItems.labelIds(item).ifEmpty { labelRepo.labelIdsFor(uri) }
+        val names = ids.mapNotNull { labelRepo.byId(it)?.name }
+        return media to names
+    }
+
+    private fun isSpeech(item: MediaItem, media: MediaEntity?, labelNames: List<String>): Boolean {
+        MediaItems.speechOrNull(item)?.let { return it }
+        val uri = MediaItems.uriOf(item)
+        val override = settings.layoutOverrides[uri]
+        if (media != null) return MediaRepository.isSpeech(media, labelNames, override)
+        val duration = item.mediaMetadata.durationMs ?: player.duration.let { if (it == C.TIME_UNSET) 0L else it }
+        return when (override) {
+            "speech" -> true
+            "music" -> false
+            else -> labelNames.any { it.equals(LabelRepository.SERMONS, ignoreCase = true) } || duration > MediaRepository.SPEECH_THRESHOLD_MS
+        }
+    }
+
+    private fun presetFor(speech: Boolean, labelNames: List<String>): String = when {
+        labelNames.any { it.equals(LabelRepository.KIDS, ignoreCase = true) } -> EqPreset.KIDS
+        labelNames.any { it.equals(LabelRepository.WORSHIP, ignoreCase = true) } -> EqPreset.WORSHIP
+        speech || labelNames.any { it.equals(LabelRepository.SERMONS, ignoreCase = true) } -> EqPreset.SPEECH
+        else -> settings.eqPresetUser
+    }
+
+    private fun onNewItem(item: MediaItem, lookUpPosition: Boolean) {
+        transitionJob?.cancel()
+        transitionJob = scope.launch {
+            val (media, labelNames) = resolveMedia(item)
+            if (player.currentMediaItem?.mediaId != item.mediaId) return@launch
+            val speech = isSpeech(item, media, labelNames)
+            player.setPlaybackSpeed(if (speech) settings.speed else 1.0f)
+            val preset = presetFor(speech, labelNames)
+            if (preset != settings.eqPreset) settingsRepo.setActivePreset(preset)
+            if (lookUpPosition) {
+                if (speech) {
+                    val saved = store.latestFor(MediaItems.uriOf(item), MediaItems.fingerprint(item) ?: media?.fingerprint)
+                    if (saved != null && player.currentMediaItem?.mediaId == item.mediaId) {
+                        val target = PositionStore.resumePosition(saved.positionMs)
+                        RingLog.i("session", "transition resume ${item.mediaId} at $target")
+                        player.seekTo(player.currentMediaItemIndex, target)
+                    }
+                } else {
+                    // Music always starts at the top; nothing to do, the player is at 0.
+                    save("transition")
+                }
+            }
+            publishWidget()
         }
     }
 
@@ -174,6 +400,7 @@ class PlaybackService : MediaLibraryService() {
                 // Covers pause, audio focus loss, becoming noisy and the end of the item.
                 save("isPlaying=false")
             }
+            publishWidget()
         }
 
         override fun onPositionDiscontinuity(
@@ -181,18 +408,48 @@ class PlaybackService : MediaLibraryService() {
             newPosition: Player.PositionInfo,
             reason: Int,
         ) {
-            if (reason == Player.DISCONTINUITY_REASON_SEEK) save("seek")
+            if (oldPosition.mediaItemIndex != newPosition.mediaItemIndex) {
+                // Queue moved on (auto or next/previous): keep the old item's last position.
+                val old = oldPosition.mediaItem ?: return
+                val uri = MediaItems.uriOf(old)
+                val title = old.mediaMetadata.title?.toString() ?: uri
+                val duration = old.mediaMetadata.durationMs ?: 0L
+                store.save(uri, title, oldPosition.positionMs.coerceAtLeast(0L), duration, "left item")
+                return
+            }
+            if (reason == Player.DISCONTINUITY_REASON_SEEK) {
+                save("seek")
+                publishWidget()
+            }
         }
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
             RingLog.i("player", "item transition reason=$reason id=${mediaItem?.mediaId}")
-            if (mediaItem != null) save("transition")
+            if (mediaItem == null) return
+            when (reason) {
+                Player.MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED -> {
+                    // Start position already applied by onSetMediaItems or onPlaybackResumption.
+                    save("transition")
+                    onNewItem(mediaItem, lookUpPosition = false)
+                }
+                Player.MEDIA_ITEM_TRANSITION_REASON_AUTO,
+                Player.MEDIA_ITEM_TRANSITION_REASON_SEEK -> onNewItem(mediaItem, lookUpPosition = true)
+                else -> onNewItem(mediaItem, lookUpPosition = false)
+            }
         }
 
         override fun onPlaybackStateChanged(playbackState: Int) {
             RingLog.i("player", "state=$playbackState")
-            if (playbackState == Player.STATE_READY) save("ready")
+            if (playbackState == Player.STATE_READY) {
+                save("ready")
+                publishWidget()
+            }
             if (playbackState == Player.STATE_ENDED) save("ended")
+        }
+
+        override fun onAudioSessionIdChanged(audioSessionId: Int) {
+            RingLog.i("player", "audio session id=$audioSessionId")
+            bindEffects(audioSessionId)
         }
 
         override fun onPlayerError(error: PlaybackException) {
@@ -226,10 +483,11 @@ class PlaybackService : MediaLibraryService() {
                 future.set(MediaSession.MediaItemsWithStartPosition(resolved, startIndex, startPositionMs))
                 return future
             }
-            val index = if (startIndex == C.INDEX_UNSET) 0 else startIndex
-            val uri = uriOf(resolved[index])
+            val index = if (startIndex == C.INDEX_UNSET) 0 else startIndex.coerceIn(0, resolved.size - 1)
+            val first = resolved[index]
+            val uri = MediaItems.uriOf(first)
             scope.launch {
-                val saved = store.latestForUri(uri)
+                val saved = store.latestFor(uri, MediaItems.fingerprint(first))
                 val position = if (saved == null) C.TIME_UNSET else PositionStore.resumePosition(saved.positionMs)
                 RingLog.i("session", "setMediaItems uri=$uri resumeAt=$position")
                 future.set(MediaSession.MediaItemsWithStartPosition(resolved, index, position))
@@ -238,8 +496,8 @@ class PlaybackService : MediaLibraryService() {
         }
 
         /**
-         * Called by the system (notification after process death, Bluetooth play, boot) when
-         * there is no current item. Rebuilds the last item from the store and seeks 3 s back.
+         * Called by the system (notification after process death, Bluetooth play, boot, Auto)
+         * when there is no current item. Rebuilds the last item from the store and seeks 3 s back.
          */
         override fun onPlaybackResumption(
             mediaSession: MediaSession,
@@ -254,20 +512,27 @@ class PlaybackService : MediaLibraryService() {
                     future.setException(UnsupportedOperationException("Nothing to resume"))
                     return@launch
                 }
-                val uri = Uri.parse(last.uri)
-                val item = MediaItem.Builder()
-                    .setMediaId(last.uri)
-                    .setUri(uri)
-                    .setRequestMetadata(MediaItem.RequestMetadata.Builder().setMediaUri(uri).build())
-                    .setMediaMetadata(
-                        MediaMetadata.Builder()
-                            .setTitle(last.title)
-                            .setIsPlayable(true)
-                            .setIsBrowsable(false)
-                            .setMediaType(MediaMetadata.MEDIA_TYPE_AUDIO_BOOK_CHAPTER)
-                            .build(),
-                    )
-                    .build()
+                val media = mediaRepo.byUri(last.uri)
+                val item = if (media != null) {
+                    val ids = labelRepo.labelIdsFor(media.uri)
+                    val names = ids.mapNotNull { labelRepo.byId(it)?.name }
+                    MediaItems.forMedia(media, ids, MediaRepository.isSpeech(media, names, settings.layoutOverrides[media.uri]))
+                } else {
+                    val uri = Uri.parse(last.uri)
+                    MediaItem.Builder()
+                        .setMediaId(last.uri)
+                        .setUri(uri)
+                        .setRequestMetadata(MediaItem.RequestMetadata.Builder().setMediaUri(uri).build())
+                        .setMediaMetadata(
+                            MediaMetadata.Builder()
+                                .setTitle(last.title)
+                                .setIsPlayable(true)
+                                .setIsBrowsable(false)
+                                .setMediaType(MediaMetadata.MEDIA_TYPE_AUDIO_BOOK_CHAPTER)
+                                .build(),
+                        )
+                        .build()
+                }
                 val position = PositionStore.resumePosition(last.positionMs)
                 RingLog.i("session", "resumption forPlayback=$isForPlayback uri=${last.uri} at=$position")
                 future.set(MediaSession.MediaItemsWithStartPosition(listOf(item), 0, position))
@@ -275,10 +540,100 @@ class PlaybackService : MediaLibraryService() {
             return future
         }
 
-        private fun uriOf(item: MediaItem): String =
-            item.localConfiguration?.uri?.toString()
-                ?: item.requestMetadata.mediaUri?.toString()
-                ?: item.mediaId
+        // Android Auto browse tree, served from Room.
+
+        override fun onGetLibraryRoot(
+            session: MediaLibrarySession,
+            browser: MediaSession.ControllerInfo,
+            params: LibraryParams?,
+        ): ListenableFuture<LibraryResult<MediaItem>> =
+            Futures.immediateFuture(LibraryResult.ofItem(MediaItems.folder(ROOT_ID, "Lumen"), params))
+
+        override fun onGetChildren(
+            session: MediaLibrarySession,
+            browser: MediaSession.ControllerInfo,
+            parentId: String,
+            page: Int,
+            pageSize: Int,
+            params: LibraryParams?,
+        ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> {
+            val future = SettableFuture.create<LibraryResult<ImmutableList<MediaItem>>>()
+            scope.launch {
+                try {
+                    val children = childrenOf(parentId)
+                    future.set(LibraryResult.ofItemList(ImmutableList.copyOf(children), params))
+                } catch (t: Throwable) {
+                    RingLog.e("library", "children of $parentId failed", t)
+                    future.set(LibraryResult.ofError(LibraryResult.RESULT_ERROR_UNKNOWN))
+                }
+            }
+            return future
+        }
+
+        override fun onGetItem(
+            session: MediaLibrarySession,
+            browser: MediaSession.ControllerInfo,
+            mediaId: String,
+        ): ListenableFuture<LibraryResult<MediaItem>> {
+            val future = SettableFuture.create<LibraryResult<MediaItem>>()
+            scope.launch {
+                val item = when {
+                    mediaId == ROOT_ID -> MediaItems.folder(ROOT_ID, "Lumen")
+                    mediaId == CONTINUE_ID -> MediaItems.folder(CONTINUE_ID, "Continue")
+                    mediaId == LABELS_ID -> MediaItems.folder(LABELS_ID, "Labels")
+                    mediaId == SERMONS_ID -> MediaItems.folder(SERMONS_ID, "Sermons")
+                    mediaId == RECENT_ID -> MediaItems.folder(RECENT_ID, "Recent")
+                    mediaId.startsWith(LABEL_PREFIX) -> mediaId.removePrefix(LABEL_PREFIX).toLongOrNull()
+                        ?.let { labelRepo.byId(it) }?.let { MediaItems.folder(mediaId, it.name) }
+                    else -> mediaRepo.byUri(mediaId)?.let { itemFor(it) }
+                }
+                if (item == null) future.set(LibraryResult.ofError(LibraryResult.RESULT_ERROR_BAD_VALUE))
+                else future.set(LibraryResult.ofItem(item, null))
+            }
+            return future
+        }
+
+        private suspend fun itemFor(media: MediaEntity): MediaItem {
+            val ids = labelRepo.labelIdsFor(media.uri)
+            val names = ids.mapNotNull { labelRepo.byId(it)?.name }
+            return MediaItems.forMedia(media, ids, MediaRepository.isSpeech(media, names, settings.layoutOverrides[media.uri]))
+        }
+
+        private suspend fun childrenOf(parentId: String): List<MediaItem> = when {
+            parentId == ROOT_ID -> listOf(
+                MediaItems.folder(CONTINUE_ID, "Continue"),
+                MediaItems.folder(LABELS_ID, "Labels"),
+                MediaItems.folder(SERMONS_ID, "Sermons"),
+                MediaItems.folder(RECENT_ID, "Recent"),
+            )
+            parentId == CONTINUE_ID -> {
+                val last = store.lastItem()
+                val media = last?.let { mediaRepo.byUri(it.uri) }
+                if (media != null) listOf(itemFor(media)) else emptyList()
+            }
+            parentId == LABELS_ID -> labelRepo.all().map { MediaItems.folder(LABEL_PREFIX + it.id, it.name) }
+            parentId == SERMONS_ID -> {
+                val all = mediaRepo.all()
+                val sermons = labelRepo.byName(LabelRepository.SERMONS)?.let { labelRepo.mediaUrisFor(it.id) }?.toSet() ?: emptySet()
+                all.filter { it.durationMs > MediaRepository.SPEECH_THRESHOLD_MS || it.uri in sermons }
+                    .sortedByDescending { it.dateAdded }
+                    .distinctBy { it.fingerprint }
+                    .map { itemFor(it) }
+            }
+            parentId == RECENT_ID -> {
+                val rows = store.recent(8)
+                rows.mapNotNull { mediaRepo.byUri(it.uri) }.distinctBy { it.fingerprint }.map { itemFor(it) }
+            }
+            parentId.startsWith(LABEL_PREFIX) -> {
+                val id = parentId.removePrefix(LABEL_PREFIX).toLongOrNull()
+                if (id == null) emptyList()
+                else labelRepo.mediaUrisFor(id).mapNotNull { mediaRepo.byUri(it) }
+                    .sortedByDescending { it.dateAdded }
+                    .distinctBy { it.fingerprint }
+                    .map { itemFor(it) }
+            }
+            else -> emptyList()
+        }
 
         private fun resolve(item: MediaItem): MediaItem {
             if (item.localConfiguration != null) return item

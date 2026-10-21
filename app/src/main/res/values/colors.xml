@@ -2,5 +2,7 @@
 <resources>
     <color name="black">#000000</color>
     <color name="amber">#E8862B</color>
+    <color name="amber_light">#C2410C</color>
+    <color name="base_light">#F3F4F6</color>
     <color name="ic_launcher_background">#000000</color>
 </resources>

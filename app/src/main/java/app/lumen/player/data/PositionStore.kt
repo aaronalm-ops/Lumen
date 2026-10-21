@@ -9,6 +9,7 @@ import java.util.Locale
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -49,12 +50,31 @@ class PositionStore(context: Context, private val dao: ProgressDao) {
     /** Blocking-capable write used from Service.onDestroy. */
     suspend fun saveNow(uri: String, title: String, positionMs: Long, durationMs: Long, reason: String) {
         val now = System.currentTimeMillis()
+        var effectiveDuration = durationMs
+        if (durationMs <= 0) {
+            // An unknown duration would create a second "|unknown" row beside the real one. When
+            // this uri already has a row, write into that row (keeping its duration) instead of
+            // creating a duplicate; a brand new uri keeps the "|unknown" key until READY.
+            val existing = try {
+                dao.latestForUri(uri)
+            } catch (t: Throwable) {
+                null
+            }
+            if (existing != null) {
+                if (existing.durationMs <= 0 && reason != "ready") {
+                    // Same unknown row; nothing better to write yet.
+                    RingLog.i("store", "skipped unknown-duration save for $uri reason=$reason")
+                    return
+                }
+                effectiveDuration = existing.durationMs
+            }
+        }
         val entity = ProgressEntity(
-            key = keyFor(uri, durationMs),
+            key = keyFor(uri, effectiveDuration),
             uri = uri,
             title = title,
             positionMs = positionMs,
-            durationMs = durationMs,
+            durationMs = effectiveDuration,
             updatedAt = now,
         )
         try {
@@ -75,6 +95,22 @@ class PositionStore(context: Context, private val dao: ProgressDao) {
     }
 
     suspend fun latestForUri(uri: String): ProgressEntity? = dao.latestForUri(uri)
+
+    /** Position by uri, falling back to any other copy of the same file (same fingerprint). */
+    suspend fun latestFor(uri: String, fingerprint: String?): ProgressEntity? {
+        dao.latestForUri(uri)?.let { return it }
+        if (fingerprint.isNullOrBlank()) return null
+        return try {
+            dao.latestForFingerprint(fingerprint)
+        } catch (t: Throwable) {
+            null
+        }
+    }
+
+    val allFlow: Flow<List<ProgressEntity>> get() = dao.allFlow()
+
+    /** The last [n] distinct items, most recent first. */
+    suspend fun recent(n: Int): List<ProgressEntity> = dao.all().distinctBy { it.uri }.take(n)
 
     suspend fun dumpTable(): String {
         val rows = dao.all()

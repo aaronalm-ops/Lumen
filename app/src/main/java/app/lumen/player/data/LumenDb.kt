@@ -4,12 +4,22 @@ import android.content.Context
 import androidx.room.ColumnInfo
 import androidx.room.Dao
 import androidx.room.Database
+import androidx.room.Delete
 import androidx.room.Entity
+import androidx.room.Index
+import androidx.room.Insert
+import androidx.room.OnConflictStrategy
 import androidx.room.PrimaryKey
 import androidx.room.Query
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.Update
 import androidx.room.Upsert
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
+import kotlinx.coroutines.flow.Flow
+
+// Phase 0 tables. Unchanged so positions survive the Phase 1a upgrade.
 
 @Entity(tableName = "progress")
 data class ProgressEntity(
@@ -27,6 +37,70 @@ data class KvEntity(
     val v: String,
 )
 
+// Phase 1a tables.
+
+/** One chosen folder tree (ACTION_OPEN_DOCUMENT_TREE) with its display name. */
+@Entity(tableName = "folders")
+data class FolderEntity(
+    @PrimaryKey val uri: String,
+    val name: String,
+    @ColumnInfo(name = "added_at") val addedAt: Long,
+)
+
+/** One scanned file. The uri is the document uri inside its folder tree. */
+@Entity(
+    tableName = "media",
+    indices = [Index(value = ["folder_uri"]), Index(value = ["fingerprint"])],
+)
+data class MediaEntity(
+    @PrimaryKey val uri: String,
+    @ColumnInfo(name = "folder_uri") val folderUri: String,
+    val title: String,
+    val artist: String,
+    @ColumnInfo(name = "duration_ms") val durationMs: Long,
+    @ColumnInfo(name = "size_bytes") val sizeBytes: Long,
+    @ColumnInfo(name = "date_added") val dateAdded: Long,
+    val mime: String,
+    @ColumnInfo(name = "is_video") val isVideo: Boolean,
+    val fingerprint: String,
+    /** Relative path inside the folder tree, used for the "Suno" rule and the folder name. */
+    @ColumnInfo(name = "rel_path") val relPath: String,
+    @ColumnInfo(name = "art_path") val artPath: String?,
+    /** Desaturated dominant colour of the art as ARGB, null when there is no art. */
+    val tint: Int?,
+    /** Last-modified stamp from the provider, used to skip unchanged files on rescan. */
+    @ColumnInfo(name = "modified_at") val modifiedAt: Long,
+)
+
+@Entity(tableName = "labels")
+data class LabelEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val name: String,
+    /** Index into the six hue dots (0 Sermons blue-slate, 1 violet, 2 coral, 3 amber, 4 teal, 5 neutral). */
+    val hue: Int,
+    @ColumnInfo(name = "lock_kids") val lockKids: Boolean,
+    @ColumnInfo(name = "no_interruptions") val noInterruptions: Boolean,
+    @ColumnInfo(name = "shuffle_on_open") val shuffleOnOpen: Boolean,
+)
+
+@Entity(
+    tableName = "media_labels",
+    primaryKeys = ["media_uri", "label_id"],
+    indices = [Index(value = ["label_id"])],
+)
+data class MediaLabelEntity(
+    @ColumnInfo(name = "media_uri") val mediaUri: String,
+    @ColumnInfo(name = "label_id") val labelId: Long,
+)
+
+@Entity(tableName = "bookmarks", indices = [Index(value = ["media_uri"])])
+data class BookmarkEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    @ColumnInfo(name = "media_uri") val mediaUri: String,
+    @ColumnInfo(name = "position_ms") val positionMs: Long,
+    @ColumnInfo(name = "created_at") val createdAt: Long,
+)
+
 @Dao
 interface ProgressDao {
     @Upsert
@@ -38,22 +112,193 @@ interface ProgressDao {
     @Query("SELECT * FROM progress WHERE uri = :uri ORDER BY updated_at DESC LIMIT 1")
     suspend fun latestForUri(uri: String): ProgressEntity?
 
+    @Query("SELECT COUNT(*) FROM progress WHERE uri = :uri")
+    suspend fun countForUri(uri: String): Int
+
+    @Query(
+        "SELECT p.* FROM progress p JOIN media m ON m.uri = p.uri " +
+            "WHERE m.fingerprint = :fingerprint ORDER BY p.updated_at DESC LIMIT 1",
+    )
+    suspend fun latestForFingerprint(fingerprint: String): ProgressEntity?
+
     @Query("SELECT * FROM progress ORDER BY updated_at DESC")
     suspend fun all(): List<ProgressEntity>
+
+    @Query("SELECT * FROM progress ORDER BY updated_at DESC")
+    fun allFlow(): Flow<List<ProgressEntity>>
 
     @Upsert
     suspend fun putKv(entry: KvEntity)
 
     @Query("SELECT v FROM kv WHERE k = :key LIMIT 1")
     suspend fun kv(key: String): String?
+
+    @Query("SELECT v FROM kv WHERE k = :key LIMIT 1")
+    fun kvFlow(key: String): Flow<String?>
+
+    @Query("SELECT * FROM kv")
+    fun allKvFlow(): Flow<List<KvEntity>>
 }
 
-@Database(entities = [ProgressEntity::class, KvEntity::class], version = 1, exportSchema = false)
+@Dao
+interface MediaDao {
+    @Query("SELECT * FROM folders ORDER BY added_at ASC")
+    fun foldersFlow(): Flow<List<FolderEntity>>
+
+    @Query("SELECT * FROM folders ORDER BY added_at ASC")
+    suspend fun folders(): List<FolderEntity>
+
+    @Upsert
+    suspend fun upsertFolder(folder: FolderEntity)
+
+    @Query("DELETE FROM folders WHERE uri = :uri")
+    suspend fun deleteFolder(uri: String)
+
+    @Query("SELECT * FROM media ORDER BY date_added DESC")
+    fun mediaFlow(): Flow<List<MediaEntity>>
+
+    @Query("SELECT * FROM media ORDER BY date_added DESC")
+    suspend fun media(): List<MediaEntity>
+
+    @Query("SELECT * FROM media WHERE uri = :uri LIMIT 1")
+    suspend fun mediaByUri(uri: String): MediaEntity?
+
+    @Query("SELECT * FROM media WHERE folder_uri = :folderUri")
+    suspend fun mediaInFolder(folderUri: String): List<MediaEntity>
+
+    @Query("SELECT COUNT(*) FROM media")
+    suspend fun mediaCount(): Int
+
+    @Upsert
+    suspend fun upsertMedia(media: MediaEntity)
+
+    @Query("DELETE FROM media WHERE folder_uri = :folderUri")
+    suspend fun deleteMediaInFolder(folderUri: String)
+
+    @Query("DELETE FROM media WHERE uri IN (:uris)")
+    suspend fun deleteMedia(uris: List<String>)
+
+    @Query("SELECT * FROM bookmarks WHERE media_uri = :uri ORDER BY position_ms ASC")
+    fun bookmarksFlow(uri: String): Flow<List<BookmarkEntity>>
+
+    @Insert
+    suspend fun insertBookmark(bookmark: BookmarkEntity): Long
+
+    @Delete
+    suspend fun deleteBookmark(bookmark: BookmarkEntity)
+}
+
+@Dao
+interface LabelDao {
+    @Query("SELECT * FROM labels ORDER BY id ASC")
+    fun labelsFlow(): Flow<List<LabelEntity>>
+
+    @Query("SELECT * FROM labels ORDER BY id ASC")
+    suspend fun labels(): List<LabelEntity>
+
+    @Query("SELECT * FROM labels WHERE name = :name COLLATE NOCASE LIMIT 1")
+    suspend fun byName(name: String): LabelEntity?
+
+    @Query("SELECT * FROM labels WHERE id = :id LIMIT 1")
+    suspend fun byId(id: Long): LabelEntity?
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insert(label: LabelEntity): Long
+
+    @Update
+    suspend fun update(label: LabelEntity)
+
+    @Query("DELETE FROM labels WHERE id = :id")
+    suspend fun delete(id: Long)
+
+    @Query("SELECT * FROM media_labels")
+    fun mediaLabelsFlow(): Flow<List<MediaLabelEntity>>
+
+    @Query("SELECT label_id FROM media_labels WHERE media_uri = :uri")
+    suspend fun labelIdsFor(uri: String): List<Long>
+
+    @Query("SELECT media_uri FROM media_labels WHERE label_id = :labelId")
+    suspend fun mediaUrisFor(labelId: Long): List<String>
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun attach(link: MediaLabelEntity)
+
+    @Query("DELETE FROM media_labels WHERE media_uri = :uri AND label_id = :labelId")
+    suspend fun detach(uri: String, labelId: Long)
+
+    @Query("DELETE FROM media_labels WHERE label_id = :labelId")
+    suspend fun detachAll(labelId: Long)
+}
+
+@Database(
+    entities = [
+        ProgressEntity::class,
+        KvEntity::class,
+        FolderEntity::class,
+        MediaEntity::class,
+        LabelEntity::class,
+        MediaLabelEntity::class,
+        BookmarkEntity::class,
+    ],
+    version = 2,
+    exportSchema = false,
+)
 abstract class LumenDb : RoomDatabase() {
     abstract fun progressDao(): ProgressDao
+    abstract fun mediaDao(): MediaDao
+    abstract fun labelDao(): LabelDao
 
     companion object {
+        /**
+         * Phase 0 to Phase 1a. Only creates the new tables; `progress` and `kv` are untouched so
+         * every saved position survives the upgrade. Column types follow Room's expectations for
+         * the entities above (TEXT or INTEGER, NOT NULL for non-null Kotlin types).
+         */
+        val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `folders` (" +
+                        "`uri` TEXT NOT NULL, `name` TEXT NOT NULL, `added_at` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`uri`))",
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `media` (" +
+                        "`uri` TEXT NOT NULL, `folder_uri` TEXT NOT NULL, `title` TEXT NOT NULL, " +
+                        "`artist` TEXT NOT NULL, `duration_ms` INTEGER NOT NULL, `size_bytes` INTEGER NOT NULL, " +
+                        "`date_added` INTEGER NOT NULL, `mime` TEXT NOT NULL, `is_video` INTEGER NOT NULL, " +
+                        "`fingerprint` TEXT NOT NULL, `rel_path` TEXT NOT NULL, `art_path` TEXT, `tint` INTEGER, " +
+                        "`modified_at` INTEGER NOT NULL, PRIMARY KEY(`uri`))",
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_media_folder_uri` ON `media` (`folder_uri`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_media_fingerprint` ON `media` (`fingerprint`)")
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `labels` (" +
+                        "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `name` TEXT NOT NULL, `hue` INTEGER NOT NULL, " +
+                        "`lock_kids` INTEGER NOT NULL, `no_interruptions` INTEGER NOT NULL, " +
+                        "`shuffle_on_open` INTEGER NOT NULL)",
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `media_labels` (" +
+                        "`media_uri` TEXT NOT NULL, `label_id` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`media_uri`, `label_id`))",
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_media_labels_label_id` ON `media_labels` (`label_id`)")
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `bookmarks` (" +
+                        "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `media_uri` TEXT NOT NULL, " +
+                        "`position_ms` INTEGER NOT NULL, `created_at` INTEGER NOT NULL)",
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_bookmarks_media_uri` ON `bookmarks` (`media_uri`)")
+            }
+        }
+
         fun build(context: Context): LumenDb =
-            Room.databaseBuilder(context.applicationContext, LumenDb::class.java, "lumen.db").build()
+            Room.databaseBuilder(context.applicationContext, LumenDb::class.java, "lumen.db")
+                .addMigrations(MIGRATION_1_2)
+                // Phase 1 only: if a later Phase 1 build changes the new tables, start those over
+                // rather than crash. The 1 to 2 migration above still runs first, so progress
+                // written in Phase 0 is never dropped by it.
+                .fallbackToDestructiveMigration(true)
+                .build()
     }
 }

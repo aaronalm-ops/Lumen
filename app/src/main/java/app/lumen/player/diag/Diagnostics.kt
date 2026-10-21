@@ -46,16 +46,32 @@ object Diagnostics {
     }
 
     private suspend fun buildZip(context: Context): File {
-        val store = LumenApp.from(context).store
+        val app = LumenApp.from(context)
+        val store = app.store
         val progressDump = store.dumpTable()
         val backupTail = store.backupTail(50)
+        val mediaCount = try {
+            app.media.count()
+        } catch (t: Throwable) {
+            -1
+        }
+        val folders = try {
+            app.media.folderList()
+        } catch (t: Throwable) {
+            emptyList()
+        }
+        val libraryReport = buildString {
+            append("media rows: $mediaCount\n")
+            append("folders: ${folders.size}\n")
+            folders.forEach { append("  ${it.name} | ${it.uri}\n") }
+        }
         return withContext(Dispatchers.IO) {
             val dir = File(context.cacheDir, "diagnostics").apply { mkdirs() }
             dir.listFiles()?.forEach { it.delete() }
             val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.UK).format(Date())
             val zip = File(dir, "lumen-diagnostics-$stamp.zip")
             ZipOutputStream(FileOutputStream(zip)).use { out ->
-                out.entry("device.txt", deviceReport(context))
+                out.entry("device.txt", deviceReport(context) + libraryReport)
                 out.entry("log.txt", RingLog.snapshot().joinToString("\n", postfix = "\n"))
                 out.entry("progress-table.txt", progressDump)
                 out.entry("positions-tail.jsonl", backupTail)

@@ -32,7 +32,9 @@ fun HomeScreen(
     player: PlayerState,
     labels: List<LabelEntity>,
     recent: List<LibraryItem>,
+    hasLibrary: Boolean,
     scanning: Boolean,
+    mediaAccessDenied: Boolean,
     update: UpdateInfo?,
     onSettings: () -> Unit,
     onResume: () -> Unit,
@@ -41,7 +43,10 @@ fun HomeScreen(
     onItem: (LibraryItem) -> Unit,
     onItemLongPress: (LibraryItem) -> Unit,
     onUpdate: () -> Unit,
-    onOpenSettingsFolders: () -> Unit,
+    onScanPhone: () -> Unit,
+    onAddFolder: () -> Unit,
+    onOpenAppSettings: () -> Unit,
+    onOpenLibrary: () -> Unit,
 ) {
     val c = Lumen.colours
     Column(Modifier.fillMaxSize().background(c.base).statusBarsPadding()) {
@@ -63,12 +68,25 @@ fun HomeScreen(
             item {
                 SectionLabel("Continue", modifier = Modifier.padding(top = 4.dp, bottom = 10.dp))
                 if (continueItem == null && !player.hasItem) {
-                    EmptyState(
-                        title = "Add a folder to begin",
-                        body = "Lumen plays the sermons and music in the folders you choose. Nothing is uploaded.",
-                        action = "Choose folders",
-                        onAction = onOpenSettingsFolders,
-                    )
+                    if (hasLibrary) {
+                        EmptyState(
+                            title = "Nothing played yet",
+                            body = "Pick a sermon or a song in the Library and it will be waiting here next time.",
+                            action = "Open Library",
+                            onAction = onOpenLibrary,
+                        )
+                    } else {
+                        EmptyState(
+                            title = if (scanning) "Scanning your phone" else "Scan your phone to begin",
+                            body = "Lumen finds the sermons, music and video already on this phone. Nothing is uploaded.",
+                            action = if (scanning) "Scanning" else "Scan my phone",
+                            onAction = onScanPhone,
+                            actionEnabled = !scanning,
+                            secondaryAction = "Add a folder",
+                            onSecondaryAction = onAddFolder,
+                            notice = if (mediaAccessDenied) ({ PermissionNotice(onOpenSettings = onOpenAppSettings) }) else null,
+                        )
+                    }
                 } else {
                     ContinueCard(continueItem, player, labels, onResume)
                 }

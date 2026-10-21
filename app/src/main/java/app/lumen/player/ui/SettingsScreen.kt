@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -39,10 +40,13 @@ import app.lumen.player.BuildConfig
 import app.lumen.player.data.EqPreset
 import app.lumen.player.data.FolderEntity
 import app.lumen.player.data.Settings
+import app.lumen.player.data.isMediaStore
 import app.lumen.player.update.UpdateInfo
 
 class SettingsActions(
     val back: () -> Unit,
+    val scanPhone: () -> Unit,
+    val openAppSettings: () -> Unit,
     val addFolder: () -> Unit,
     val removeFolder: (FolderEntity) -> Unit,
     val rescan: () -> Unit,
@@ -62,11 +66,15 @@ fun SettingsScreen(
     folders: List<FolderEntity>,
     folderCounts: Map<String, Int>,
     scanning: Boolean,
+    scanProgress: Int,
+    mediaAccess: Boolean,
+    mediaAccessDenied: Boolean,
     update: UpdateInfo?,
     lastSaved: String,
     actions: SettingsActions,
 ) {
     val c = Lumen.colours
+    val picked = folders.filter { !it.isMediaStore }
     Column(Modifier.fillMaxSize().background(c.base).statusBarsPadding().navigationBarsPadding()) {
         Row(
             modifier = Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 8.dp),
@@ -82,25 +90,76 @@ fun SettingsScreen(
             contentPadding = PaddingValues(start = Gutter, end = Gutter, top = 4.dp, bottom = 32.dp),
         ) {
             item {
-                SectionLabel("Folders", count = folders.size.toString(), modifier = Modifier.padding(top = 8.dp, bottom = 10.dp))
+                SectionLabel("Folders", modifier = Modifier.padding(top = 8.dp, bottom = 10.dp))
                 ListCard {
-                    folders.forEachIndexed { index, folder ->
+                    // Whole phone first: the primary way in since 0.2.1.
+                    Row(
+                        Modifier.fillMaxWidth().heightIn(min = RowHeight).padding(start = 14.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Scan whole phone", style = Lumen.type.bodyStrong, color = c.text)
+                            Text(
+                                when {
+                                    scanning && scanProgress > 0 -> "Scanning, ${formatCount(scanProgress)} files so far"
+                                    scanning -> "Scanning"
+                                    settings.mediaStoreScanAt > 0L ->
+                                        "${formatCount(settings.mediaStoreScanCount)} files · scanned ${relativeTime(settings.mediaStoreScanAt)}"
+                                    mediaAccess -> "Audio and video Android already knows about"
+                                    else -> "Audio and video Android already knows about. Asks for access once"
+                                },
+                                style = Lumen.type.bodyS,
+                                color = c.text2,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        TextAction(
+                            when {
+                                scanning -> "Scanning"
+                                settings.mediaStoreScanAt > 0L && mediaAccess -> "Rescan"
+                                else -> "Scan"
+                            },
+                            enabled = !scanning,
+                            onClick = actions.scanPhone,
+                        )
+                    }
+                    if (mediaAccessDenied && !mediaAccess) {
+                        PermissionNotice(onOpenSettings = actions.openAppSettings, modifier = Modifier.padding(start = 14.dp, end = 4.dp, bottom = 6.dp))
+                    }
+                    HorizontalDivider(color = c.line, thickness = 1.dp, modifier = Modifier.padding(horizontal = 14.dp))
+
+                    picked.forEach { folder ->
                         Row(
                             Modifier.fillMaxWidth().height(RowHeight).padding(start = 14.dp, end = 4.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Column(Modifier.weight(1f)) {
                                 Text(folder.name, style = Lumen.type.bodyStrong, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                Text("${folderCounts[folder.uri] ?: 0} files", style = Lumen.type.bodyS, color = c.text2)
+                                Text("${formatCount(folderCounts[folder.uri] ?: 0)} files", style = Lumen.type.bodyS, color = c.text2)
                             }
                             IconTap(LumenIcons.Trash, "Remove ${folder.name}", c.danger, size = 20.dp) { actions.removeFolder(folder) }
                         }
                         HorizontalDivider(color = c.line, thickness = 1.dp, modifier = Modifier.padding(horizontal = 14.dp))
                     }
-                    Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                        TextAction("Add folder", onClick = actions.addFolder)
-                        Spacer(Modifier.weight(1f))
-                        TextAction(if (scanning) "Scanning" else "Rescan", enabled = !scanning, onClick = actions.rescan)
+                    Row(
+                        Modifier.fillMaxWidth().heightIn(min = RowHeight).padding(start = 14.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Add a folder", style = Lumen.type.bodyStrong, color = c.text)
+                            Text(
+                                "For folders Android keeps out of the phone scan, such as app-private audio",
+                                style = Lumen.type.bodyS,
+                                color = c.text2,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        TextAction("Add", onClick = actions.addFolder)
+                        if (picked.isNotEmpty()) {
+                            TextAction(if (scanning) "Scanning" else "Rescan", enabled = !scanning, onClick = actions.rescan)
+                        }
                     }
                 }
             }

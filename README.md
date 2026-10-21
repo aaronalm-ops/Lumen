@@ -7,27 +7,54 @@ the first real product on that service: a library of chosen folders, labels, the
 layouts, an equaliser, a widget, an Android Auto tree and app shortcuts. Google Drive and YouTube
 Music are later phases.
 
-Package `app.lumen.player`. minSdk 29, targetSdk 36, compileSdk 37 (Compose 1.12 and later
+Application id `com.aaronalmeida.lumen` (Kotlin package `app.lumen.player`; the id changed in 0.2.1 because `app.lumen.player` was already taken in the Android Developer Console). minSdk 29, targetSdk 36, compileSdk 37 (Compose 1.12 and later
 require compileSdk 37). Light Home, Library and Settings; true black Now Playing. Design system:
 `lumen-design/DESIGN.md`, Variant A (one amber accent).
 
 ## What Phase 1a does
 
-1. **Library of chosen folders.** Settings, Folders: add a folder (ACTION_OPEN_DOCUMENT_TREE with
-   a persistable permission), remove it, rescan. The scanner walks each tree with
-   DocumentsContract (one query per directory), keeps audio and video, reads title, artist and
-   duration with MediaMetadataRetriever off the main thread, and stores a Room `media` row per
-   file with a fingerprint `size|duration|title`. Only new or changed files are read again. Files
-   with the same fingerprint collapse to one row in the UI with an "x2" badge. Music files keep
-   their embedded art in `filesDir/art` with a desaturated dominant colour (Palette) for the music
-   layout's base tint. Scanning runs on app start and on Rescan; it shows as a 1 dp line, never a
-   spinner.
+1. **Library: the whole phone, plus picked folders (0.2.1).** Two ways in, both in Settings,
+   Folders, and both feeding the same Room `media` table.
+
+   *Scan whole phone* (the first row, and the Home empty state's "Scan my phone") reads the
+   index Android already keeps: one cursor pass over `MediaStore.Audio.Media` and
+   `MediaStore.Video.Media` (volume `external`) with the columns `_ID`, `DISPLAY_NAME`, `TITLE`,
+   `DURATION`, `SIZE`, `DATE_ADDED`, `DATE_MODIFIED`, `MIME_TYPE`, `RELATIVE_PATH`,
+   `BUCKET_DISPLAY_NAME` and, for audio, `ARTIST`. Each row's uri is
+   `ContentUris.withAppendedId`, its folder is `mediastore:<RELATIVE_PATH>` (so every MediaStore
+   folder appears in the Library under its bucket display name with a phone icon), `rel_path` is
+   `RELATIVE_PATH + DISPLAY_NAME` and the fingerprint is `size|duration|title` as before. Rows
+   under `Android/`, `Ringtones/`, `Notifications/` and `Alarms/` and anything under 3 seconds are
+   left out. Rows are written in batches of 100; rows whose MediaStore ids are gone are removed by
+   id, never by wiping, and picked-folder rows are never touched by a phone scan (nor the other
+   way round). Embedded art is the slow part, so the scan reads it only for the newest 200 music
+   files; every other row gets it the first time it is loaded in the player (`art_path` null
+   means not looked yet, "" means none). It needs `READ_MEDIA_AUDIO` and `READ_MEDIA_VIDEO` (API
+   33 and later) or `READ_EXTERNAL_STORAGE` (29 to 32), asked only when the user taps Scan. If
+   Android refuses, one quiet line appears with an "Open settings" button and the app never asks
+   again on its own. The index stays fresh cheaply: on app start a scan older than 6 hours is
+   rerun in the background (only when the permission is already held), and while the app is in
+   the foreground a ContentObserver on the two collections triggers a rescan 2 seconds after the
+   last change, so a new download shows up without a tap.
+
+   *Add a folder* (ACTION_OPEN_DOCUMENT_TREE with a persistable permission) stays for folders
+   Android keeps out of the phone scan, such as app-private audio. The scanner walks each tree
+   with DocumentsContract (one query per directory), keeps audio and video, reads title, artist,
+   duration and art with MediaMetadataRetriever off the main thread. Only new or changed files are
+   read again. Remove and Rescan apply to picked folders.
+
+   Either way, files with the same fingerprint collapse to one row in the UI with an "x2" badge
+   (so a file reached both ways is listed once). Music files keep their embedded art in
+   `filesDir/art` with a desaturated dominant colour (Palette) for the music layout's base tint.
+   Scanning shows as a 1 dp line, never a spinner; the Scan row counts files as they are seen.
 2. **Home.** Wordmark and gear; CONTINUE card for the last played item (title, speaker, 2 dp
    progress line, mono times, amber Resume pill); a row of label chips (tap plays the label as a
-   queue, long press edits the label); RECENT, the last eight played. Empty state: "Add a folder
-   to begin".
+   queue, long press edits the label); RECENT, the last eight played. Empty state: "Scan my phone"
+   (amber) and "Add a folder" (outlined); once the library has files but nothing has been played,
+   "Open Library".
 3. **Library.** DATE or NAME sort, a search field that filters title, artist, folder and labels as
-   you type, FOLDERS with counts (tap filters), ALL FILES, a mini bar above the bottom bar with
+   you type, FOLDERS with counts (phone icon for MediaStore buckets, folder icon for picked
+   folders; tap filters), ALL FILES as one lazy row per file, a mini bar above the bottom bar with
    play or pause that opens Now Playing. Long press a row for the label sheet.
 4. **Now Playing, two layouts.** Speech when the item is over 20 minutes or carries the Sermons
    label; long press the title to override per item (persisted). Speech: eyebrow, 32 sp title,
@@ -41,7 +68,7 @@ require compileSdk 37). Light Home, Library and Settings; true black Now Playing
 5. **Labels.** Many-to-many with media (`labels`, `media_labels`). Name, one of six muted hue
    dots, three toggles: lock for kids, no interruptions (screen stays on, dimmed, sleep chip
    hidden), shuffle on open. Sermons, Worship, Kids and Upbeat are seeded on first run. Any file
-   whose path contains "Suno" gets a "Suno" label automatically.
+   whose path contains "Suno", or whose artist is Suno, gets a "Suno" label automatically.
 6. **Kids lock.** While a locked label plays, Now Playing shows three thumb pads and a lock glyph,
    back is swallowed, and the only exit is a two second press on the top-right corner.
 7. **Equaliser in the service.** `DynamicsProcessing` bound to an explicit audio session id
@@ -66,24 +93,29 @@ require compileSdk 37). Light Home, Library and Settings; true black Now Playing
     and Recent, served from Room. `automotive_app_desc` and the manifest meta-data are declared.
 11. **App shortcuts.** Resume, Play Worship, Play Kids (static `xml/shortcuts.xml`, release
     application id).
-12. **Settings.** Folders, Equaliser (preset chips plus five band sliders, editable for Custom),
+12. **Settings.** Folders (Scan whole phone with its last scan time and count, then Add a
+    folder), Equaliser (preset chips plus five band sliders, editable for Custom),
     Skip intervals (back 5 to 30 s, forward 10 to 60 s; the notification icons follow), Night
     (black Home and Library), Diagnostics, About (version, update check, GitHub).
 13. **Kept from Phase 0.** The service is the only player; the UI drives it through a
     MediaController. Positions are written on pause, seek, transition, focus loss, destroy and
     every 30 s, to Room and `positions.jsonl`. Resumption through the system (media button, card,
     boot) and through play on an empty player. Restore-last-item-paused on launch. Diagnostics
-    zip, now with the media row count and folder list in `device.txt`. Daily GitHub update check.
+    zip, now with the media permission state, the last MediaStore scan time and count, the media
+    row count and the folder list in `device.txt`. Daily GitHub update check.
     No analytics, no crash reporter, no notification permission request.
 
-Settings (speed, presets, custom bands, sleep timer, night, skip intervals, layout overrides)
-live in the Phase 0 `kv` table; the UI writes and the service observes, so there is one path.
+Settings (speed, presets, custom bands, sleep timer, night, skip intervals, layout overrides,
+last MediaStore scan time and count) live in the Phase 0 `kv` table; the UI writes and the
+service observes, so there is one path.
 
 ## Data
 
-Room database `lumen.db`, version 2. The Phase 0 `progress` and `kv` tables are unchanged and
-`MIGRATION_1_2` only creates `folders`, `media`, `labels`, `media_labels` and `bookmarks`, so
-every saved position survives the upgrade. `fallbackToDestructiveMigration(true)` is set for the
+Room database `lumen.db`, version 2 (0.2.1 adds queries only, no schema change). The Phase 0
+`progress` and `kv` tables are unchanged and `MIGRATION_1_2` only creates `folders`, `media`,
+`labels`, `media_labels` and `bookmarks`, so every saved position survives the upgrade. MediaStore
+buckets are `folders` rows whose uri starts with `mediastore:`; picked folders keep their tree
+uri. `fallbackToDestructiveMigration(true)` is set for the
 rest of Phase 1 only. A save with an unknown duration never creates a second `|unknown` row: when
 the uri already has a row it updates that row instead.
 
@@ -111,15 +143,18 @@ Locally: `./gradlew assembleRelease` (needs network for the first run).
 
 ## Phase 1 sheet
 
-Run on the S23 Ultra with a folder holding at least one two-hour sermon, a few short music files
-(one with embedded art, one named with "Suno") and one video. Record pass or fail per line and
-attach a diagnostics zip at the end.
+Run on the S23 Ultra with the phone holding at least one two-hour sermon, a few short music files
+(one with embedded art, one named with "Suno") and one video, somewhere MediaStore sees them
+(Music, Download, Movies). Record pass or fail per line and attach a diagnostics zip at the end.
 
 | Step | What to do | Pass when |
 |---|---|---|
-| 1 | Install over Phase 0 (v0.1.3) | App opens on Home; the Phase 0 item appears on the Continue card |
-| 2 | Open Settings, Share diagnostics before anything else | `progress-table.txt` lists every Phase 0 row; `device.txt` shows `media rows` and the folder list |
-| 3 | Add the test folder in Settings | A 1 dp line while scanning, then Library lists the files with durations; duplicates show x2 |
+| 1 | Install over the previous build | App opens on Home; the last item appears on the Continue card, or the empty state offers "Scan my phone" and "Add a folder" |
+| 2 | Open Settings, Share diagnostics before anything else | `progress-table.txt` lists every earlier row; `device.txt` shows `media permission`, `mediastore last scan: never` and the folder list |
+| 3 | Tap Scan whole phone, allow audio and video | A 1 dp line and a rising count while scanning, then Library lists every file with durations under phone-icon folders named after their MediaStore buckets; nothing from Ringtones, Notifications, Alarms or Android; duplicates show x2 |
+| 3a | Deny the permission on a fresh install instead | One line "Lumen needs access to audio and video files to scan the phone" with Open settings; grant it there, return, and the scan runs on its own; the app never asked again by itself |
+| 3b | Download an audio file while the app is open | It appears in the Library within a few seconds without tapping anything |
+| 3c | Add a folder as well | The picker still works; the folder appears with a folder icon; Remove and Rescan act on it only |
 | 4 | Tap Resume on the Continue card | Audio within 300 ms at the saved position minus 3 s |
 | 5 | Minimise and reopen 20 times while playing | Audio never stops; the timecode is correct every time |
 | 6 | Swipe the app away from Recents while playing | Audio keeps playing; the notification stays; the widget still shows the title |
@@ -130,7 +165,7 @@ attach a diagnostics zip at the end.
 | 11 | Reboot the phone, then play from the lock screen controls or the widget | Resumption within 3 s |
 | 12 | Play the video, switch "Audio only when you leave" on, leave Now Playing | Sound continues; coming back shows the picture again |
 | 13 | Backup export | Not in this build; Phase 1b. Note "n/a" |
-| 14 | Share diagnostics | Zip arrives with log, device info, media count, folder list, table dump and backup tail |
+| 14 | Share diagnostics | Zip arrives with log, device info, media permission state, last MediaStore scan time and count, media count, folder list, table dump and backup tail |
 | 15 | Pick Speech, Bass, then Custom and drag a band; play, pause, swipe away, reopen | No click on preset change; the chosen preset and custom bands are still shown and audible |
 
 Resume rule under test everywhere: within 3 s of the request, at the saved position minus 3 s.

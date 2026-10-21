@@ -10,6 +10,9 @@ import androidx.core.content.FileProvider
 import androidx.media3.common.util.UnstableApi
 import app.lumen.player.BuildConfig
 import app.lumen.player.LumenApp
+import app.lumen.player.data.MediaPermissions
+import app.lumen.player.data.SettingsRepository
+import app.lumen.player.data.isMediaStore
 import app.lumen.player.playback.PlaybackService
 import java.io.File
 import java.io.FileOutputStream
@@ -60,10 +63,33 @@ object Diagnostics {
         } catch (t: Throwable) {
             emptyList()
         }
+        val mediaStoreCount = try {
+            app.media.mediaStoreCount()
+        } catch (t: Throwable) {
+            -1
+        }
+        val lastScanAt = try {
+            app.settings.get(SettingsRepository.KEY_MS_SCAN_AT)?.toLongOrNull() ?: 0L
+        } catch (t: Throwable) {
+            0L
+        }
+        val lastScanCount = try {
+            app.settings.get(SettingsRepository.KEY_MS_SCAN_COUNT)?.toIntOrNull() ?: 0
+        } catch (t: Throwable) {
+            0
+        }
         val libraryReport = buildString {
-            append("media rows: $mediaCount\n")
-            append("folders: ${folders.size}\n")
-            folders.forEach { append("  ${it.name} | ${it.uri}\n") }
+            append("media permission: ${MediaPermissions.describe(context)}\n")
+            append("mediastore last scan: ")
+            if (lastScanAt > 0L) {
+                append(SimpleDateFormat("yyyy-MM-dd HH:mm:ss Z", Locale.UK).format(Date(lastScanAt)))
+                append(", $lastScanCount files\n")
+            } else {
+                append("never\n")
+            }
+            append("media rows: $mediaCount (mediastore $mediaStoreCount)\n")
+            append("folders: ${folders.size} (${folders.count { it.isMediaStore }} phone buckets, ${folders.count { !it.isMediaStore }} picked)\n")
+            folders.forEach { append("  ${if (it.isMediaStore) "phone " else "picked"} | ${it.name} | ${it.uri}\n") }
         }
         return withContext(Dispatchers.IO) {
             val dir = File(context.cacheDir, "diagnostics").apply { mkdirs() }

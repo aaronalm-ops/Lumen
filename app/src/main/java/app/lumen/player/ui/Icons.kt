@@ -93,6 +93,18 @@ object LumenIcons {
         }
     }
 
+    /** A MediaStore bucket in the Library: the phone itself. */
+    val Phone: ImageVector by lazy {
+        icon("phone") {
+            stroke {
+                moveTo(7.5f, 3.5f); lineTo(16.5f, 3.5f); arcTo(1.5f, 1.5f, 0f, false, true, 18f, 5f)
+                lineTo(18f, 19f); arcTo(1.5f, 1.5f, 0f, false, true, 16.5f, 20.5f); lineTo(7.5f, 20.5f)
+                arcTo(1.5f, 1.5f, 0f, false, true, 6f, 19f); lineTo(6f, 5f); arcTo(1.5f, 1.5f, 0f, false, true, 7.5f, 3.5f); close()
+            }
+            stroke { moveTo(10.5f, 17.5f); lineTo(13.5f, 17.5f) }
+        }
+    }
+
     /** Speech: a microphone. */
     val Speech: ImageVector by lazy {
         icon("speech") {

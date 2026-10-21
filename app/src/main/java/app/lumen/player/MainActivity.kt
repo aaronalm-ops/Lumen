@@ -3,6 +3,7 @@ package app.lumen.player
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -10,6 +11,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.OptIn
 import androidx.lifecycle.ViewModelProvider
 import androidx.media3.common.util.UnstableApi
+import app.lumen.player.data.MediaPermissions
 import app.lumen.player.diag.RingLog
 import app.lumen.player.ui.LumenRoot
 import app.lumen.player.ui.MainViewModel
@@ -32,6 +34,16 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * The media permissions behind "Scan whole phone". Asked only from that tap (or the Home
+     * empty state); the result is read back from checkSelfPermission so a partial video grant
+     * on Android 14 and later is judged the same way everywhere.
+     */
+    private val requestMedia = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result: Map<String, Boolean> ->
+        RingLog.i("ui", "media permission result ${result.entries.joinToString { "${it.key.substringAfterLast('.')}=${it.value}" }}")
+        vm.onMediaPermissionResult()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
@@ -40,6 +52,18 @@ class MainActivity : ComponentActivity() {
 
         val actions = RootActions(
             addFolder = { openTree.launch(null) },
+            scanPhone = {
+                if (MediaPermissions.granted(this)) vm.scanMediaStore()
+                else requestMedia.launch(MediaPermissions.required)
+            },
+            openAppSettings = {
+                val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", packageName, null))
+                try {
+                    startActivity(intent)
+                } catch (t: Throwable) {
+                    RingLog.w("ui", "app settings page failed: $t")
+                }
+            },
             openUpdate = { vm.update.value?.url?.let { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(it))) } },
             openGitHub = { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/${BuildConfig.GITHUB_OWNER}/lumen"))) },
         )

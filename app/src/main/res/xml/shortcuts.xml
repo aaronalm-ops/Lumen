@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Static launcher shortcuts. targetPackage must be the literal application id, so these apply
-     to the release build (app.lumen.player); the debug build's ".debug" suffix does not see them. -->
+     to the release build (com.aaronalmeida.lumen); the debug build's ".debug" suffix does not see them. -->
 <shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
     <shortcut
         android:shortcutId="resume"
@@ -10,7 +10,7 @@
         android:shortcutLongLabel="@string/shortcut_resume_long">
         <intent
             android:action="android.intent.action.VIEW"
-            android:targetPackage="app.lumen.player"
+            android:targetPackage="com.aaronalmeida.lumen"
             android:targetClass="app.lumen.player.MainActivity">
             <extra android:name="app.lumen.player.shortcut" android:value="resume" />
         </intent>
@@ -23,7 +23,7 @@
         android:shortcutLongLabel="@string/shortcut_worship_long">
         <intent
             android:action="android.intent.action.VIEW"
-            android:targetPackage="app.lumen.player"
+            android:targetPackage="com.aaronalmeida.lumen"
             android:targetClass="app.lumen.player.MainActivity">
             <extra android:name="app.lumen.player.shortcut" android:value="worship" />
         </intent>
@@ -36,7 +36,7 @@
         android:shortcutLongLabel="@string/shortcut_kids_long">
         <intent
             android:action="android.intent.action.VIEW"
-            android:targetPackage="app.lumen.player"
+            android:targetPackage="com.aaronalmeida.lumen"
             android:targetClass="app.lumen.player.MainActivity">
             <extra android:name="app.lumen.player.shortcut" android:value="kids" />
         </intent>

@@ -154,6 +154,13 @@ interface MediaDao {
     @Query("DELETE FROM folders WHERE uri = :uri")
     suspend fun deleteFolder(uri: String)
 
+    /** The folder rows whose uri starts with [prefix]; used for the MediaStore buckets. */
+    @Query("SELECT * FROM folders WHERE uri LIKE :prefix || '%'")
+    suspend fun foldersWithPrefix(prefix: String): List<FolderEntity>
+
+    @Query("DELETE FROM folders WHERE uri IN (:uris)")
+    suspend fun deleteFolders(uris: List<String>)
+
     @Query("SELECT * FROM media ORDER BY date_added DESC")
     fun mediaFlow(): Flow<List<MediaEntity>>
 
@@ -169,8 +176,19 @@ interface MediaDao {
     @Query("SELECT COUNT(*) FROM media")
     suspend fun mediaCount(): Int
 
+    /** The media rows whose folder uri starts with [prefix]; used for the MediaStore rows. */
+    @Query("SELECT * FROM media WHERE folder_uri LIKE :prefix || '%'")
+    suspend fun mediaWithFolderPrefix(prefix: String): List<MediaEntity>
+
+    @Query("SELECT COUNT(*) FROM media WHERE folder_uri LIKE :prefix || '%'")
+    suspend fun mediaCountWithFolderPrefix(prefix: String): Int
+
     @Upsert
     suspend fun upsertMedia(media: MediaEntity)
+
+    /** One transaction per batch so a whole-phone scan does not emit the media flow per file. */
+    @Upsert
+    suspend fun upsertMediaAll(media: List<MediaEntity>)
 
     @Query("DELETE FROM media WHERE folder_uri = :folderUri")
     suspend fun deleteMediaInFolder(folderUri: String)

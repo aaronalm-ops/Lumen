@@ -6,7 +6,7 @@ plugins {
 
 // Values that CI injects through the environment. Every one of them has a safe default so a
 // local build, or a CI build with no secrets configured, still succeeds.
-val githubOwner: String = (project.findProperty("githubOwner") as String?)?.takeIf { it.isNotBlank() } ?: "aaronalmeida"
+val githubOwner: String = (project.findProperty("githubOwner") as String?)?.takeIf { it.isNotBlank() } ?: "aaronalm-ops"
 val envVersionName: String = System.getenv("VERSION_NAME")?.takeIf { it.isNotBlank() } ?: "0.1.0"
 val envVersionCode: Int = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
 
@@ -29,7 +29,7 @@ android {
     compileSdk = 37
 
     defaultConfig {
-        applicationId = "app.lumen.player"
+        applicationId = "com.aaronalmeida.lumen"
         minSdk = 29
         targetSdk = 36
         versionCode = envVersionCode

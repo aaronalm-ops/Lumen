@@ -19,6 +19,22 @@ fun speedLabel(speed: Float): String {
     return text + "x"
 }
 
+/** "just now", "12 min ago", "3 h ago", "2 days ago" for the scan row; "never" for 0. */
+fun relativeTime(atMs: Long, nowMs: Long = System.currentTimeMillis()): String {
+    if (atMs <= 0L) return "never"
+    val minutes = ((nowMs - atMs).coerceAtLeast(0L)) / 60_000L
+    return when {
+        minutes < 1 -> "just now"
+        minutes < 60 -> "$minutes min ago"
+        minutes < 60 * 24 -> "${minutes / 60} h ago"
+        minutes < 60 * 48 -> "1 day ago"
+        else -> "${minutes / (60 * 24)} days ago"
+    }
+}
+
+/** "1,240" with a thin separator for file counts. */
+fun formatCount(n: Int): String = String.format(Locale.UK, "%,d", n)
+
 /** "22 min left" for the Continue eyebrow. */
 fun minutesLeft(positionMs: Long, durationMs: Long): String {
     if (durationMs <= 0) return ""

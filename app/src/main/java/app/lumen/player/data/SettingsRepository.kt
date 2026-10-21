@@ -19,6 +19,10 @@ data class Settings(
     val skipForwardSeconds: Int = 30,
     /** uri to "speech" or "music". */
     val layoutOverrides: Map<String, String> = emptyMap(),
+    /** When the whole-phone (MediaStore) scan last finished, 0 when it never has. */
+    val mediaStoreScanAt: Long = 0L,
+    /** How many MediaStore rows that scan left in the library. */
+    val mediaStoreScanCount: Int = 0,
 ) {
     val sleepActive: Boolean get() = sleepEndAt > System.currentTimeMillis()
 }
@@ -66,6 +70,8 @@ class SettingsRepository(private val dao: ProgressDao) {
         const val KEY_SKIP_BACK = "skip_back_s"
         const val KEY_SKIP_FORWARD = "skip_fwd_s"
         const val KEY_SEEDED = "labels_seeded"
+        const val KEY_MS_SCAN_AT = "ms_scan_at"
+        const val KEY_MS_SCAN_COUNT = "ms_scan_count"
         const val LAYOUT_PREFIX = "layout:"
 
         val speeds = listOf(1.0f, 1.25f, 1.5f, 1.75f, 2.0f)
@@ -87,6 +93,8 @@ class SettingsRepository(private val dao: ProgressDao) {
                 skipForwardSeconds = map[KEY_SKIP_FORWARD]?.toIntOrNull()?.coerceIn(5, 120) ?: 30,
                 layoutOverrides = map.filterKeys { it.startsWith(LAYOUT_PREFIX) }
                     .mapKeys { it.key.removePrefix(LAYOUT_PREFIX) },
+                mediaStoreScanAt = map[KEY_MS_SCAN_AT]?.toLongOrNull() ?: 0L,
+                mediaStoreScanCount = map[KEY_MS_SCAN_COUNT]?.toIntOrNull() ?: 0,
             )
         }
     }
@@ -132,4 +140,10 @@ class SettingsRepository(private val dao: ProgressDao) {
     }
 
     suspend fun setLayoutOverride(uri: String, layout: String) = put(LAYOUT_PREFIX + uri, layout)
+
+    /** Written by the repository when a whole-phone scan finishes. */
+    suspend fun setMediaStoreScan(at: Long, count: Int) {
+        put(KEY_MS_SCAN_COUNT, count.toString())
+        put(KEY_MS_SCAN_AT, at.toString())
+    }
 }

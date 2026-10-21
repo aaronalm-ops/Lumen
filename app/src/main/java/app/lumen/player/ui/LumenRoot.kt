@@ -22,6 +22,10 @@ import androidx.media3.common.util.UnstableApi
 
 class RootActions(
     val addFolder: () -> Unit,
+    /** Runs the whole-phone scan, asking for the media permission first when it is not held. */
+    val scanPhone: () -> Unit,
+    /** The app's page in system settings, for a permission that was refused. */
+    val openAppSettings: () -> Unit,
     val openUpdate: () -> Unit,
     val openGitHub: () -> Unit,
 )
@@ -44,6 +48,9 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions) {
     val recent by vm.recent.collectAsState()
     val folders by vm.folders.collectAsState()
     val scanning by vm.scanning.collectAsState()
+    val scanProgress by vm.scanProgress.collectAsState()
+    val mediaAccess by vm.mediaAccess.collectAsState()
+    val mediaAccessDenied by vm.mediaAccessDenied.collectAsState()
     val continueItem by vm.continueItem.collectAsState()
     val currentItem by vm.currentItem.collectAsState()
     val currentLabels by vm.currentLabels.collectAsState()
@@ -115,7 +122,9 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions) {
                                     player = player,
                                     labels = labels,
                                     recent = recent,
+                                    hasLibrary = items.isNotEmpty(),
                                     scanning = scanning,
+                                    mediaAccessDenied = mediaAccessDenied,
                                     update = update,
                                     onSettings = { vm.screen.value = Screen.Settings },
                                     onResume = vm::resume,
@@ -124,7 +133,10 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions) {
                                     onItem = { item -> vm.play(item, recent) },
                                     onItemLongPress = { vm.openLabelSheet(LabelSheetTarget.ForItem(it)) },
                                     onUpdate = actions.openUpdate,
-                                    onOpenSettingsFolders = { vm.screen.value = Screen.Settings },
+                                    onScanPhone = actions.scanPhone,
+                                    onAddFolder = actions.addFolder,
+                                    onOpenAppSettings = actions.openAppSettings,
+                                    onOpenLibrary = { vm.screen.value = Screen.Library },
                                 )
                                 Screen.Library -> LibraryScreen(
                                     items = items,
@@ -132,6 +144,7 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions) {
                                     labels = labels,
                                     player = player,
                                     scanning = scanning,
+                                    mediaAccessDenied = mediaAccessDenied,
                                     search = search,
                                     sortByName = sortByName,
                                     folderFilter = folderFilter,
@@ -140,17 +153,24 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions) {
                                     onFolder = { vm.libraryFolder.value = it },
                                     onItem = { item, queue -> vm.play(item, queue) },
                                     onItemLongPress = { vm.openLabelSheet(LabelSheetTarget.ForItem(it)) },
+                                    onScanPhone = actions.scanPhone,
                                     onAddFolder = actions.addFolder,
+                                    onOpenAppSettings = actions.openAppSettings,
                                 )
                                 Screen.Settings -> SettingsScreen(
                                     settings = settings,
                                     folders = folders,
                                     folderCounts = items.groupingBy { it.media.folderUri }.eachCount(),
                                     scanning = scanning,
+                                    scanProgress = scanProgress,
+                                    mediaAccess = mediaAccess,
+                                    mediaAccessDenied = mediaAccessDenied,
                                     update = update,
                                     lastSaved = lastSaved,
                                     actions = SettingsActions(
                                         back = { vm.screen.value = Screen.Home },
+                                        scanPhone = actions.scanPhone,
+                                        openAppSettings = actions.openAppSettings,
                                         addFolder = actions.addFolder,
                                         removeFolder = vm::removeFolder,
                                         rescan = vm::rescan,

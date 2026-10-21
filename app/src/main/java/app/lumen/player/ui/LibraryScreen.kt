@@ -16,7 +16,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -26,13 +26,19 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.lumen.player.data.FolderEntity
 import app.lumen.player.data.LabelEntity
 import app.lumen.player.data.MediaRepository
+import app.lumen.player.data.isMediaStore
 
-/** Library, light: title, DATE or NAME sort, search, folders with counts, all files. */
+/**
+ * Library, light: title, DATE or NAME sort, search, folders with counts, all files. Folders mix
+ * the phone's MediaStore buckets (phone icon) with picked folders (folder icon). The file list is
+ * one lazy item per row so a whole phone of files composes as it scrolls, not all at once.
+ */
 @Composable
 fun LibraryScreen(
     items: List<LibraryItem>,
@@ -40,6 +46,7 @@ fun LibraryScreen(
     labels: List<LabelEntity>,
     player: PlayerState,
     scanning: Boolean,
+    mediaAccessDenied: Boolean,
     search: String,
     sortByName: Boolean,
     folderFilter: String?,
@@ -48,7 +55,9 @@ fun LibraryScreen(
     onFolder: (String?) -> Unit,
     onItem: (LibraryItem, List<LibraryItem>) -> Unit,
     onItemLongPress: (LibraryItem) -> Unit,
+    onScanPhone: () -> Unit,
     onAddFolder: () -> Unit,
+    onOpenAppSettings: () -> Unit,
 ) {
     val c = Lumen.colours
     val visible = remember(items, search, sortByName, folderFilter, labels) {
@@ -78,10 +87,14 @@ fun LibraryScreen(
                 item {
                     Spacer(Modifier.height(16.dp))
                     EmptyState(
-                        title = "No folders yet",
-                        body = "Choose a folder on this phone. Lumen scans it for audio and video and keeps your place in every file.",
-                        action = "Add phone folder",
-                        onAction = onAddFolder,
+                        title = if (scanning) "Scanning your phone" else "Nothing here yet",
+                        body = "Lumen finds the audio and video already on this phone and keeps your place in every file.",
+                        action = if (scanning) "Scanning" else "Scan my phone",
+                        onAction = onScanPhone,
+                        actionEnabled = !scanning,
+                        secondaryAction = "Add a folder",
+                        onSecondaryAction = onAddFolder,
+                        notice = if (mediaAccessDenied) ({ PermissionNotice(onOpenSettings = onOpenAppSettings) }) else null,
                     )
                 }
             } else {
@@ -91,6 +104,7 @@ fun LibraryScreen(
                         folders.forEachIndexed { index, folder ->
                             FolderRow(
                                 name = folder.name,
+                                icon = if (folder.isMediaStore) LumenIcons.Phone else LumenIcons.Folder,
                                 count = counts[folder.uri] ?: 0,
                                 selected = folderFilter == folder.uri,
                                 divider = index < folders.lastIndex,
@@ -131,30 +145,28 @@ fun LibraryScreen(
                         }
                     }
                 } else {
-                    item {
-                        ListCard {
-                            visible.forEachIndexed { index, item ->
-                                val playing = player.hasItem && player.mediaId == item.uri
-                                val speech = item.media.durationMs > MediaRepository.SPEECH_THRESHOLD_MS ||
-                                    labels.any { it.id in item.labelIds && it.name == "Sermons" }
-                                val time = if (playing) player.positionMs else item.positionMs
-                                MediaRow(
-                                    title = item.media.title,
-                                    meta = rowMeta(item, labels),
-                                    time = formatTime(if (time > 0) time else item.media.durationMs),
-                                    icon = when {
-                                        item.media.isVideo -> LumenIcons.Video
-                                        speech -> LumenIcons.Speech
-                                        else -> LumenIcons.Music
-                                    },
-                                    playing = playing,
-                                    copies = item.copies,
-                                    hues = labels.filter { it.id in item.labelIds }.map { it.hue },
-                                    divider = index < visible.lastIndex,
-                                    onClick = { onItem(item, visible) },
-                                    onLongClick = { onItemLongPress(item) },
-                                )
-                            }
+                    itemsIndexed(visible, key = { _, item -> item.uri }) { index, item ->
+                        val playing = player.hasItem && player.mediaId == item.uri
+                        val speech = item.media.durationMs > MediaRepository.SPEECH_THRESHOLD_MS ||
+                            labels.any { it.id in item.labelIds && it.name == "Sermons" }
+                        val time = if (playing) player.positionMs else item.positionMs
+                        Box(Modifier.fillMaxWidth().cardSegment(first = index == 0, last = index == visible.lastIndex)) {
+                            MediaRow(
+                                title = item.media.title,
+                                meta = rowMeta(item, labels),
+                                time = formatTime(if (time > 0) time else item.media.durationMs),
+                                icon = when {
+                                    item.media.isVideo -> LumenIcons.Video
+                                    speech -> LumenIcons.Speech
+                                    else -> LumenIcons.Music
+                                },
+                                playing = playing,
+                                copies = item.copies,
+                                hues = labels.filter { it.id in item.labelIds }.map { it.hue },
+                                divider = index < visible.lastIndex,
+                                onClick = { onItem(item, visible) },
+                                onLongClick = { onItemLongPress(item) },
+                            )
                         }
                     }
                 }
@@ -180,7 +192,7 @@ fun filterItems(items: List<LibraryItem>, labels: List<LabelEntity>, search: Str
 }
 
 @Composable
-private fun FolderRow(name: String, count: Int, selected: Boolean, divider: Boolean, onClick: () -> Unit) {
+private fun FolderRow(name: String, icon: ImageVector, count: Int, selected: Boolean, divider: Boolean, onClick: () -> Unit) {
     val c = Lumen.colours
     Column {
         Row(
@@ -196,7 +208,7 @@ private fun FolderRow(name: String, count: Int, selected: Boolean, divider: Bool
                 modifier = Modifier.size(36.dp).clip(RoundedCornerShape(6.dp)).background(if (c.isDark) c.elevated else c.base),
                 contentAlignment = Alignment.Center,
             ) {
-                Icon(LumenIcons.Folder, contentDescription = null, tint = if (selected) c.accent else c.text2, modifier = Modifier.size(20.dp))
+                Icon(icon, contentDescription = null, tint = if (selected) c.accent else c.text2, modifier = Modifier.size(20.dp))
             }
             Text(
                 name,
@@ -206,7 +218,7 @@ private fun FolderRow(name: String, count: Int, selected: Boolean, divider: Bool
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
-            Text(count.toString(), style = Lumen.type.timeS, color = c.text2)
+            Text(formatCount(count), style = Lumen.type.timeS, color = c.text2)
             Spacer(Modifier.width(2.dp))
             Icon(LumenIcons.ChevronRight, contentDescription = null, tint = c.text3, modifier = Modifier.size(20.dp))
         }

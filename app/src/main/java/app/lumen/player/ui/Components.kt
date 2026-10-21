@@ -41,8 +41,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -242,6 +248,68 @@ fun PrimaryPill(text: String, icon: ImageVector? = null, modifier: Modifier = Mo
         }
         Text(text, style = Lumen.type.bodyStrong, color = c.onAccent)
     }
+}
+
+/** 52 dp outlined pill beside a PrimaryPill: text colour, 1 dp line, no fill. */
+@Composable
+fun SecondaryPill(text: String, icon: ImageVector? = null, modifier: Modifier = Modifier, enabled: Boolean = true, onClick: () -> Unit) {
+    val c = Lumen.colours
+    val shape = RoundedCornerShape(50)
+    val tint = if (enabled) c.text else c.text3
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(52.dp)
+            .clip(shape)
+            .border(1.dp, c.line, shape)
+            .clickable(enabled = enabled, onClick = onClick),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (icon != null) {
+            Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.width(10.dp))
+        }
+        Text(text, style = Lumen.type.bodyStrong, color = tint)
+    }
+}
+
+/**
+ * Lets a long list live as separate lazy items while still reading as one ListCard: each row
+ * paints the surface, the first and last rows round their outer corners, and the 1 dp card line
+ * is drawn per row (sides for every row, top or bottom edge only where the card starts or ends).
+ */
+@Composable
+fun Modifier.cardSegment(first: Boolean, last: Boolean): Modifier {
+    val c = Lumen.colours
+    val radius = CardRadius
+    val shape = when {
+        first && last -> RoundedCornerShape(radius)
+        first -> RoundedCornerShape(topStart = radius, topEnd = radius)
+        last -> RoundedCornerShape(bottomStart = radius, bottomEnd = radius)
+        else -> RectangleShape
+    }
+    val lineColour = if (c.isDark) c.surface else c.line
+    return this
+        .clip(shape)
+        .background(c.surface)
+        .drawBehind {
+            val strokeWidth = 1.dp.toPx()
+            val r = radius.toPx()
+            val inset = strokeWidth / 2f
+            // A rounded rectangle taller than the row, placed so only the wanted edges fall
+            // inside the clip: the top one for the first row, the bottom one for the last,
+            // neither for a row in the middle (its sides still show).
+            val top = if (first) inset else -size.height
+            val bottom = if (last) size.height - inset else size.height * 2f
+            drawRoundRect(
+                color = lineColour,
+                topLeft = Offset(inset, top),
+                size = Size(size.width - strokeWidth, bottom - top),
+                cornerRadius = CornerRadius(r, r),
+                style = Stroke(width = strokeWidth),
+            )
+        }
 }
 
 /** 2 dp progress line used on the Continue card. */
@@ -467,9 +535,18 @@ fun MiniBar(title: String, meta: String, isPlaying: Boolean, onOpen: () -> Unit,
     }
 }
 
-/** Empty state: what happened and what to do next. */
+/** Empty state: what happened and what to do next. One amber action, an optional outlined second. */
 @Composable
-fun EmptyState(title: String, body: String, action: String, onAction: () -> Unit) {
+fun EmptyState(
+    title: String,
+    body: String,
+    action: String,
+    onAction: () -> Unit,
+    actionEnabled: Boolean = true,
+    secondaryAction: String? = null,
+    onSecondaryAction: (() -> Unit)? = null,
+    notice: (@Composable () -> Unit)? = null,
+) {
     val c = Lumen.colours
     ListCard(radius = HeroRadius) {
         Column(Modifier.padding(Gutter)) {
@@ -477,8 +554,32 @@ fun EmptyState(title: String, body: String, action: String, onAction: () -> Unit
             Spacer(Modifier.height(6.dp))
             Text(body, style = Lumen.type.bodyS, color = c.text2)
             Spacer(Modifier.height(16.dp))
-            PrimaryPill(action, onClick = onAction)
+            PrimaryPill(action, enabled = actionEnabled, onClick = onAction)
+            if (secondaryAction != null && onSecondaryAction != null) {
+                Spacer(Modifier.height(10.dp))
+                SecondaryPill(secondaryAction, onClick = onSecondaryAction)
+            }
+            if (notice != null) {
+                Spacer(Modifier.height(12.dp))
+                notice()
+            }
         }
+    }
+}
+
+/** The one quiet line shown after Android refused the media permission, with the way to fix it. */
+@Composable
+fun PermissionNotice(onOpenSettings: () -> Unit, modifier: Modifier = Modifier) {
+    val c = Lumen.colours
+    Row(modifier = modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            "Lumen needs access to audio and video files to scan the phone",
+            style = Lumen.type.bodyS,
+            color = c.text2,
+            modifier = Modifier.weight(1f),
+        )
+        Spacer(Modifier.width(8.dp))
+        TextAction("Open settings", onClick = onOpenSettings)
     }
 }
 

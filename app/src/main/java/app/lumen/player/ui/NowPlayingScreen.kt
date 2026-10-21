@@ -355,7 +355,8 @@ private fun MusicLayout(
 @Composable
 private fun ArtBlock(item: LibraryItem?, title: String) {
     val c = Lumen.colours
-    val path = item?.media?.artPath
+    // Null means the art has not been read yet (the ViewModel is fetching it), "" means none.
+    val path = item?.media?.artPath?.takeIf { it.isNotBlank() }
     val bitmap by produceState<android.graphics.Bitmap?>(initialValue = null, key1 = path) {
         value = if (path == null) null else withContext(Dispatchers.IO) {
             try {

@@ -3,7 +3,11 @@ package app.lumen.player.ui
 import android.app.Application
 import android.content.ComponentName
 import android.content.Context
+import android.database.ContentObserver
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
+import android.provider.MediaStore
 import androidx.annotation.OptIn
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -21,10 +25,12 @@ import app.lumen.player.data.LabelEntity
 import app.lumen.player.data.LabelRepository
 import app.lumen.player.data.MediaEntity
 import app.lumen.player.data.MediaLabelEntity
+import app.lumen.player.data.MediaPermissions
 import app.lumen.player.data.MediaRepository
 import app.lumen.player.data.ProgressEntity
 import app.lumen.player.data.Settings
 import app.lumen.player.data.SettingsRepository
+import app.lumen.player.data.isMediaStore
 import app.lumen.player.diag.Diagnostics
 import app.lumen.player.diag.RingLog
 import app.lumen.player.playback.MediaItems
@@ -33,6 +39,7 @@ import app.lumen.player.update.UpdateChecker
 import app.lumen.player.update.UpdateInfo
 import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.MoreExecutors
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -41,8 +48,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
@@ -102,15 +111,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val settings: StateFlow<Settings> = settingsRepo.settings.state(Settings())
     val labels: StateFlow<List<LabelEntity>> = labelRepo.labels.state(emptyList())
     private val links: StateFlow<List<MediaLabelEntity>> = labelRepo.links.state(emptyList())
-    val folders: StateFlow<List<FolderEntity>> = mediaRepo.folders.state(emptyList())
+    /** Picked folders first in the order added, then the phone's MediaStore buckets by name. */
+    val folders: StateFlow<List<FolderEntity>> = mediaRepo.folders.map { sortFolders(it) }.state(emptyList())
     private val mediaRows: StateFlow<List<MediaEntity>> = mediaRepo.media.state(emptyList())
     private val progress: StateFlow<List<ProgressEntity>> = store.allFlow.state(emptyList())
     val scanning: StateFlow<Boolean> = mediaRepo.scanning
+    val scanProgress: StateFlow<Int> = mediaRepo.scanProgress
 
-    /** All files, duplicates collapsed to the newest copy, newest first. */
+    /** Whether the whole-phone scan may run; refreshed on every start of the activity. */
+    val mediaAccess = MutableStateFlow(MediaPermissions.granted(application))
+
+    /** Set after the user asked for a scan and Android said no; cleared once access is granted. */
+    val mediaAccessDenied = MutableStateFlow(false)
+    private var scanPending = false
+
+    /** All files, duplicates collapsed to the newest copy, newest first. Built off the main thread. */
     val items: StateFlow<List<LibraryItem>> = combine(mediaRows, links, progress, folders) { media, links, progress, folders ->
         buildItems(media, links, progress, folders)
-    }.state(emptyList())
+    }.flowOn(Dispatchers.Default).state(emptyList())
 
     /** The last eight played, from the progress table, resolved against the library. */
     val recent: StateFlow<List<LibraryItem>> = combine(items, progress, mediaRows) { items, progress, rows ->
@@ -192,6 +210,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             update.value = UpdateChecker.check(application)
         }
+        // Art is read lazily for whole-phone rows: fetch it for whatever is loaded in the player.
+        viewModelScope.launch {
+            currentItem.map { it?.uri }.distinctUntilChanged().collect { uri ->
+                if (uri != null) mediaRepo.ensureArt(uri)
+            }
+        }
+    }
+
+    private fun sortFolders(folders: List<FolderEntity>): List<FolderEntity> {
+        val picked = folders.filter { !it.isMediaStore }.sortedBy { it.addedAt }
+        val buckets = folders.filter { it.isMediaStore }.sortedBy { it.name.lowercase() }
+        return picked + buckets
     }
 
     private fun buildItems(
@@ -224,6 +254,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // Controller lifecycle, driven by MainActivity.onStart and onStop.
 
     fun connect(context: Context) {
+        refreshMediaAccess()
+        startObservingMediaStore()
         if (controllerFuture != null) return
         val token = SessionToken(context, ComponentName(context, PlaybackService::class.java))
         val future = MediaController.Builder(context, token).buildAsync()
@@ -250,6 +282,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun disconnect() {
+        stopObservingMediaStore()
         ticker?.cancel()
         ticker = null
         _controller.value?.let { c ->
@@ -515,6 +548,77 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, !enabled)
                 .build()
         }
+    }
+
+    // Whole-phone scan and its permission.
+
+    /** Runs the MediaStore scan in the application scope so leaving the screen does not cancel it. */
+    fun scanMediaStore() {
+        if (!MediaPermissions.granted(app)) return
+        scanPending = false
+        app.appScope.launch { mediaRepo.scanMediaStore() }
+    }
+
+    /** Result of the system dialog. A refusal shows the inline line once; the app never asks again on its own. */
+    fun onMediaPermissionResult() {
+        val granted = MediaPermissions.granted(app)
+        mediaAccess.value = granted
+        mediaAccessDenied.value = !granted
+        RingLog.i("ui", "media permission ${if (granted) "granted" else "denied"}")
+        if (granted) scanMediaStore() else scanPending = true
+    }
+
+    /** Called on every onStart: picks up a grant made in the system settings page. */
+    private fun refreshMediaAccess() {
+        val granted = MediaPermissions.granted(app)
+        mediaAccess.value = granted
+        if (granted) {
+            mediaAccessDenied.value = false
+            if (scanPending) scanMediaStore()
+        }
+    }
+
+    private var mediaObserver: ContentObserver? = null
+    private var observerRescan: Job? = null
+
+    /** While the app is in the foreground, new downloads reach the library within a couple of seconds. */
+    private fun startObservingMediaStore() {
+        if (mediaObserver != null) return
+        val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
+            override fun onChange(selfChange: Boolean, uri: Uri?) {
+                observerRescan?.cancel()
+                observerRescan = viewModelScope.launch {
+                    delay(2_000)
+                    // A scan already running holds the lock; this one queues behind it and is a
+                    // cheap no-change pass (one cursor, no file reads) when nothing is new.
+                    if (MediaPermissions.granted(app)) {
+                        RingLog.i("ui", "mediastore changed, rescanning")
+                        app.appScope.launch { mediaRepo.scanMediaStore() }
+                    }
+                }
+            }
+        }
+        try {
+            val resolver = app.contentResolver
+            resolver.registerContentObserver(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, true, observer)
+            resolver.registerContentObserver(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, true, observer)
+            mediaObserver = observer
+        } catch (t: Throwable) {
+            RingLog.w("ui", "mediastore observer failed: $t")
+        }
+    }
+
+    private fun stopObservingMediaStore() {
+        observerRescan?.cancel()
+        observerRescan = null
+        mediaObserver?.let {
+            try {
+                app.contentResolver.unregisterContentObserver(it)
+            } catch (t: Throwable) {
+                RingLog.w("ui", "mediastore observer unregister failed: $t")
+            }
+        }
+        mediaObserver = null
     }
 
     // Library and settings actions.

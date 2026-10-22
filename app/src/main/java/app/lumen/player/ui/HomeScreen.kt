@@ -218,6 +218,6 @@ private fun UpdateRow(tag: String, onUpdate: () -> Unit) {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text("Update $tag available", style = Lumen.type.bodyS, color = c.text, modifier = Modifier.weight(1f))
-        Text("Update", style = Lumen.type.bodyStrong, color = c.accent)
+        Text("Update", style = Lumen.type.bodyStrong, color = c.accentInk)
     }
 }

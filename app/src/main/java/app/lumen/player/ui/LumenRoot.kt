@@ -1,6 +1,7 @@
 package app.lumen.player.ui
 
 import android.app.Activity
+import android.graphics.drawable.ColorDrawable
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.tween
@@ -18,6 +19,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
@@ -95,8 +98,8 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
 
     val showingBlack = nowPlayingOpen || settings.night
     LumenTheme(dark = showingBlack) {
-        SystemBars(light = !showingBlack)
         val c = Lumen.colours
+        SystemBars(light = !showingBlack, background = c.base)
         Box(Modifier.fillMaxSize().background(c.base)) {
             if (nowPlayingOpen) {
                 NowPlayingScreen(
@@ -224,7 +227,8 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
                         val remaining = if (player.durationMs > 0) "-" + formatTime((player.durationMs - player.positionMs).coerceAtLeast(0L)) else "--:--"
                         MiniBar(
                             title = player.title,
-                            meta = "${formatTime(player.positionMs)} · $remaining · ${speedLabel(player.speed)}",
+                            time = formatTime(player.positionMs),
+                            meta = "$remaining · ${speedLabel(player.speed)}",
                             isPlaying = player.isPlaying,
                             onOpen = { vm.nowPlayingOpen.value = true },
                             onPlayPause = vm::playPause,
@@ -261,9 +265,13 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
     }
 }
 
-/** Dark status bar icons on light screens, light icons on black. */
+/**
+ * Dark status bar icons on light screens, light icons on black. The window background follows
+ * the screen's base (#C9CED4 on light, black on black) so nothing of the old ground shows behind
+ * the content during resizes or the Now Playing switch.
+ */
 @Composable
-private fun SystemBars(light: Boolean) {
+private fun SystemBars(light: Boolean, background: Color) {
     val view = LocalView.current
     if (!view.isInEditMode) {
         SideEffect {
@@ -271,6 +279,10 @@ private fun SystemBars(light: Boolean) {
             val controller = WindowCompat.getInsetsController(window, view)
             controller.isAppearanceLightStatusBars = light
             controller.isAppearanceLightNavigationBars = light
+        }
+        val argb = background.toArgb()
+        LaunchedEffect(argb) {
+            (view.context as? Activity)?.window?.setBackgroundDrawable(ColorDrawable(argb))
         }
     }
 }

@@ -575,11 +575,11 @@ private fun KidsPad(size: androidx.compose.ui.unit.Dp, icon: androidx.compose.ui
         Modifier
             .size(size)
             .clip(CircleShape)
-            .background(if (filled) c.accent else Color.Transparent)
-            .border(1.dp, if (filled) c.accent else c.line, CircleShape)
+            .background(if (filled) c.accentFill else Color.Transparent)
+            .border(1.dp, if (filled) c.accentFill else c.line, CircleShape)
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Icon(icon, contentDescription = description, tint = if (filled) c.onAccent else c.text, modifier = Modifier.size(32.dp))
+        Icon(icon, contentDescription = description, tint = if (filled) c.onAccentFill else c.text, modifier = Modifier.size(32.dp))
     }
 }

@@ -36,9 +36,11 @@ import app.lumen.player.R
 import kotlinx.coroutines.delay
 
 /**
- * The LUMEN lockup: the vector light trail (res/drawable/lumen_lockup.xml) and the wordmark in
- * Manrope 500 with 0.18 em tracking. The mark carries its own colours (it is the brand), the
- * wordmark takes the surface's text colour. [height] sets the mark; the type follows.
+ * The LUMEN lockup: the vector light trail and the wordmark in Manrope 500 with 0.18 em
+ * tracking. The mark carries its own colours (it is the brand): on black the amber-core trail
+ * (res/drawable/lumen_lockup.xml), on the light screens the graphite trail into a cyan core
+ * (res/drawable/lumen_lockup_light.xml). The wordmark takes the surface's text colour, so
+ * charcoal on light. [height] sets the mark; the type follows.
  */
 @Composable
 fun LumenLockup(modifier: Modifier = Modifier, height: Dp = 32.dp) {
@@ -51,7 +53,7 @@ fun LumenLockup(modifier: Modifier = Modifier, height: Dp = 32.dp) {
     )
     Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically) {
         Image(
-            painter = painterResource(R.drawable.lumen_lockup),
+            painter = painterResource(if (c.isDark) R.drawable.lumen_lockup else R.drawable.lumen_lockup_light),
             contentDescription = null,
             modifier = Modifier.size(width = height * 40f / 32f, height = height),
         )
@@ -62,8 +64,9 @@ fun LumenLockup(modifier: Modifier = Modifier, height: Dp = 32.dp) {
 
 /**
  * The maker credit for the bottom of Settings and nowhere else: the Aaron Instinct mark at
- * 20 dp (charcoal body with the Lumen amber accent on light surfaces, off-white body on black)
- * and "by Aaron Almeida" in Inter 13 sp secondary, centred, 24 dp padding.
+ * 20 dp and "by Aaron Almeida" in Inter 13 sp secondary, centred, 24 dp padding. On light
+ * surfaces it is Aaron's original mark (charcoal body, cyan wedge: res/drawable/aaron_instinct.xml);
+ * on black the off-white body with the Lumen amber wedge (aaron_instinct_lumen_reverse.xml).
  */
 @Composable
 fun MakerCredit(modifier: Modifier = Modifier) {
@@ -74,7 +77,7 @@ fun MakerCredit(modifier: Modifier = Modifier) {
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Image(
-            painter = painterResource(if (c.isDark) R.drawable.aaron_instinct_lumen_reverse else R.drawable.aaron_instinct_lumen),
+            painter = painterResource(if (c.isDark) R.drawable.aaron_instinct_lumen_reverse else R.drawable.aaron_instinct),
             contentDescription = "Aaron Instinct",
             modifier = Modifier.size(20.dp),
         )

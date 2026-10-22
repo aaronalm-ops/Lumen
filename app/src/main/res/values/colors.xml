@@ -2,7 +2,9 @@
 <resources>
     <color name="black">#000000</color>
     <color name="amber">#E8862B</color>
-    <color name="amber_light">#C2410C</color>
-    <color name="base_light">#F3F4F6</color>
+    <!-- Light screens, Option C "Graphite and light" (DESIGN.md section 2, round 4). -->
+    <color name="base_light">#C9CED4</color>
+    <color name="charcoal">#18191B</color>
+    <color name="ink_light">#05616A</color>
     <color name="ic_launcher_background">#000000</color>
 </resources>

@@ -2,6 +2,7 @@ package app.lumen.player.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,6 +22,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Slider
@@ -145,7 +147,7 @@ fun SettingsScreen(
                     if (mediaAccessDenied && !mediaAccess) {
                         PermissionNotice(onOpenSettings = actions.openAppSettings, modifier = Modifier.padding(start = 14.dp, end = 4.dp, bottom = 6.dp))
                     }
-                    HorizontalDivider(color = c.line, thickness = 1.dp, modifier = Modifier.padding(horizontal = 14.dp))
+                    HorizontalDivider(color = c.divider, thickness = 1.dp, modifier = Modifier.padding(horizontal = 14.dp))
 
                     picked.forEach { folder ->
                         Row(
@@ -158,7 +160,7 @@ fun SettingsScreen(
                             }
                             IconTap(LumenIcons.Trash, "Remove ${folder.name}", c.danger, size = 20.dp) { actions.removeFolder(folder) }
                         }
-                        HorizontalDivider(color = c.line, thickness = 1.dp, modifier = Modifier.padding(horizontal = 14.dp))
+                        HorizontalDivider(color = c.divider, thickness = 1.dp, modifier = Modifier.padding(horizontal = 14.dp))
                     }
                     Row(
                         Modifier.fillMaxWidth().heightIn(min = RowHeight).padding(start = 14.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
@@ -220,7 +222,7 @@ fun SettingsScreen(
                         }
                         TextAction("Back up", enabled = !backupBusy, onClick = actions.backupNow)
                     }
-                    HorizontalDivider(color = c.line, thickness = 1.dp, modifier = Modifier.padding(horizontal = 14.dp))
+                    HorizontalDivider(color = c.divider, thickness = 1.dp, modifier = Modifier.padding(horizontal = 14.dp))
                     Row(
                         Modifier.fillMaxWidth().heightIn(min = RowHeight).padding(start = 14.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
                         verticalAlignment = Alignment.CenterVertically,
@@ -265,7 +267,7 @@ fun SettingsScreen(
                 SectionLabel("Skip intervals", modifier = Modifier.padding(top = 20.dp, bottom = 10.dp))
                 ListCard {
                     StepperRow("Back", settings.skipBackSeconds, listOf(5, 10, 15, 30)) { actions.setSkips(it, settings.skipForwardSeconds) }
-                    HorizontalDivider(color = c.line, thickness = 1.dp, modifier = Modifier.padding(horizontal = 14.dp))
+                    HorizontalDivider(color = c.divider, thickness = 1.dp, modifier = Modifier.padding(horizontal = 14.dp))
                     StepperRow("Forward", settings.skipForwardSeconds, listOf(10, 15, 30, 45, 60)) { actions.setSkips(settings.skipBackSeconds, it) }
                 }
             }
@@ -383,14 +385,14 @@ private fun DriveBody(
         }
     }
     if (connected) {
-        HorizontalDivider(color = c.line, thickness = 1.dp, modifier = Modifier.padding(horizontal = 14.dp))
+        HorizontalDivider(color = c.divider, thickness = 1.dp, modifier = Modifier.padding(horizontal = 14.dp))
         ToggleRow(
             "Allow downloads on mobile data",
             "Keep offline otherwise waits for Wi-Fi",
             settings.driveMobileDownloads,
             onChange = actions.setMobileDownloads,
         )
-        HorizontalDivider(color = c.line, thickness = 1.dp, modifier = Modifier.padding(horizontal = 14.dp))
+        HorizontalDivider(color = c.divider, thickness = 1.dp, modifier = Modifier.padding(horizontal = 14.dp))
         Row(
             Modifier.fillMaxWidth().heightIn(min = RowHeight).padding(start = 14.dp, end = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -408,6 +410,7 @@ private fun DriveBody(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun EqualiserBody(settings: Settings, actions: SettingsActions) {
     val c = Lumen.colours
@@ -424,21 +427,31 @@ private fun EqualiserBody(settings: Settings, actions: SettingsActions) {
         EqPreset.bandHz.forEachIndexed { index, hz ->
             Row(Modifier.fillMaxWidth().height(40.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(bandLabel(hz), style = Lumen.type.timeS, color = c.text2, modifier = Modifier.width(52.dp))
+                val interaction = remember { MutableInteractionSource() }
+                val colours = SliderDefaults.colors(
+                    thumbColor = c.text,
+                    activeTrackColor = c.accentFill,
+                    inactiveTrackColor = c.divider,
+                    disabledThumbColor = c.text3,
+                    disabledActiveTrackColor = c.silver,
+                    disabledInactiveTrackColor = c.divider,
+                )
                 Slider(
                     value = draft.getOrElse(index) { 0f },
                     onValueChange = { v -> draft = draft.toMutableList().also { it[index] = kotlin.math.round(v * 2f) / 2f } },
-                    onValueChangeFinished = { if (custom) actions.setCustomBands(draft) },
-                    valueRange = -12f..12f,
-                    enabled = custom,
-                    colors = SliderDefaults.colors(
-                        thumbColor = c.text,
-                        activeTrackColor = c.accent,
-                        inactiveTrackColor = c.line,
-                        disabledThumbColor = c.text3,
-                        disabledActiveTrackColor = c.silver,
-                        disabledInactiveTrackColor = c.line,
-                    ),
                     modifier = Modifier.weight(1f),
+                    enabled = custom,
+                    onValueChangeFinished = { if (custom) actions.setCustomBands(draft) },
+                    colors = colours,
+                    interactionSource = interaction,
+                    thumb = {
+                        if (c.isDark) {
+                            SliderDefaults.Thumb(interactionSource = interaction, colors = colours, enabled = custom)
+                        } else {
+                            LightBandThumb(enabled = custom)
+                        }
+                    },
+                    valueRange = -12f..12f,
                 )
                 Text(
                     String.format(java.util.Locale.UK, "%+.1f dB", draft.getOrElse(index) { 0f }),
@@ -491,5 +504,20 @@ private fun StepButton(description: String, enabled: Boolean, minus: Boolean, on
         } else {
             Icon(LumenIcons.Plus, contentDescription = description, tint = if (enabled) c.text else c.text3, modifier = Modifier.size(18.dp))
         }
+    }
+}
+
+/**
+ * The equaliser thumb on light screens (Option C): an 18 dp charcoal disc with a 6 dp cyan
+ * centre, the status-LED look of the other controls. Disabled, it is a plain text3 disc.
+ */
+@Composable
+private fun LightBandThumb(enabled: Boolean) {
+    val c = Lumen.colours
+    Box(
+        Modifier.size(18.dp).background(if (enabled) c.accentFill else c.text3, CircleShape),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (enabled) Box(Modifier.size(6.dp).background(c.onAccentFill, CircleShape))
     }
 }

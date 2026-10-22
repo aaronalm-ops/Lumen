@@ -34,6 +34,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.style.TextOverflow
@@ -145,11 +146,12 @@ private fun ItemLabelsBody(
                 Modifier
                     .size(24.dp)
                     .clip(RoundedCornerShape(6.dp))
-                    .background(if (on) c.accent else c.surface)
-                    .border(1.dp, if (on) c.accent else c.line, RoundedCornerShape(6.dp)),
+                    .background(if (on) c.accentFill else c.surface)
+                    // Off is outlined like a toggle off (text3 on light, 3:1 on the sheet).
+                    .border(1.dp, if (on) c.accentFill else c.switchOffEdge, RoundedCornerShape(6.dp)),
                 contentAlignment = Alignment.Center,
             ) {
-                if (on) Icon(LumenIcons.Check, contentDescription = null, tint = c.onAccent, modifier = Modifier.size(16.dp))
+                if (on) Icon(LumenIcons.Check, contentDescription = null, tint = c.onAccentFill, modifier = Modifier.size(16.dp))
             }
             Spacer(Modifier.width(14.dp))
             HueDot(label.hue)
@@ -157,14 +159,14 @@ private fun ItemLabelsBody(
             Text(label.name, style = Lumen.type.body, color = c.text, modifier = Modifier.weight(1f))
             TextAction("Edit") { onEdit(label) }
         }
-        if (index < labels.lastIndex) HorizontalDivider(color = c.line, thickness = 1.dp)
+        if (index < labels.lastIndex) HorizontalDivider(color = c.divider, thickness = 1.dp)
     }
     Spacer(Modifier.height(8.dp))
     TextAction("New label", onClick = onNew)
     if (item.media.isDrive) {
         // Phase 1b: the long-press route to "Keep offline" for a Drive row.
         Spacer(Modifier.height(8.dp))
-        HorizontalDivider(color = c.line, thickness = 1.dp)
+        HorizontalDivider(color = c.divider, thickness = 1.dp)
         val kept = item.media.offlinePath != null
         Row(
             Modifier
@@ -222,6 +224,7 @@ private fun EditLabelBody(
     var noInterruptions by remember(label.id) { mutableStateOf(label.noInterruptions) }
     var shuffleOnOpen by remember(label.id) { mutableStateOf(label.shuffleOnOpen) }
     var error by remember { mutableStateOf<String?>(null) }
+    var nameFocused by remember { mutableStateOf(false) }
 
     Spacer(Modifier.height(12.dp))
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -238,7 +241,14 @@ private fun EditLabelBody(
             .height(TouchTarget)
             .clip(RoundedCornerShape(CardRadius))
             .background(c.surface)
-            .border(1.dp, if (error != null) c.danger else c.line, RoundedCornerShape(CardRadius))
+            .then(
+                // Focus on light: a 1.5 dp ink border, as the search field. Black keeps 0.3.0.
+                when {
+                    error != null -> Modifier.border(1.dp, c.danger, RoundedCornerShape(CardRadius))
+                    nameFocused && !c.isDark -> Modifier.border(1.5.dp, c.accentInk, RoundedCornerShape(CardRadius))
+                    else -> Modifier.border(1.dp, c.line, RoundedCornerShape(CardRadius))
+                },
+            )
             .padding(horizontal = 14.dp),
         contentAlignment = Alignment.CenterStart,
     ) {
@@ -248,8 +258,8 @@ private fun EditLabelBody(
             onValueChange = { name = it; error = null },
             singleLine = true,
             textStyle = Lumen.type.body.copy(color = c.text),
-            cursorBrush = SolidColor(c.accent),
-            modifier = Modifier.fillMaxWidth(),
+            cursorBrush = SolidColor(c.accentInk),
+            modifier = Modifier.fillMaxWidth().onFocusChanged { nameFocused = it.isFocused },
         )
     }
     if (error != null) {

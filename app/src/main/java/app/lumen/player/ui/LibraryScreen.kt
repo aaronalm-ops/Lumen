@@ -77,7 +77,9 @@ fun LibraryScreen(
         ) {
             Text("Library", style = Lumen.type.displayM, color = c.text)
             Spacer(Modifier.weight(1f))
-            StatusChip(text = if (sortByName) "Name" else "Date", active = true, onClick = onToggleSort)
+            // The sort chip shows a setting, not a selection: a rest chip on light (as in the C2
+            // mock; a charcoal fill would read as a chosen filter), silver on black as in 0.3.0.
+            StatusChip(text = if (sortByName) "Name" else "Date", active = c.isDark, onClick = onToggleSort)
         }
         if (scanning) ProgressLine(fraction = 1f, thickness = 1.dp)
 
@@ -133,7 +135,7 @@ fun LibraryScreen(
                                 Text(
                                     "ALL",
                                     style = Lumen.type.label,
-                                    color = c.accent,
+                                    color = c.accentInk,
                                     modifier = Modifier.clickable { onFolder(null) }.padding(8.dp),
                                 )
                             } else {
@@ -224,10 +226,10 @@ private fun FolderRow(name: String, icon: ImageVector, count: Int, selected: Boo
             horizontalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             Box(
-                modifier = Modifier.size(36.dp).clip(RoundedCornerShape(6.dp)).background(if (c.isDark) c.elevated else c.base),
+                modifier = Modifier.size(36.dp).clip(RoundedCornerShape(6.dp)).background(c.thumb),
                 contentAlignment = Alignment.Center,
             ) {
-                Icon(icon, contentDescription = null, tint = if (selected) c.accent else c.text2, modifier = Modifier.size(20.dp))
+                Icon(icon, contentDescription = null, tint = if (selected) c.accentInk else c.text2, modifier = Modifier.size(20.dp))
             }
             Text(
                 name,
@@ -241,6 +243,6 @@ private fun FolderRow(name: String, icon: ImageVector, count: Int, selected: Boo
             Spacer(Modifier.width(2.dp))
             Icon(LumenIcons.ChevronRight, contentDescription = null, tint = c.text3, modifier = Modifier.size(20.dp))
         }
-        if (divider) HorizontalDivider(color = c.line, thickness = 1.dp, modifier = Modifier.padding(horizontal = 14.dp))
+        if (divider) HorizontalDivider(color = c.divider, thickness = 1.dp, modifier = Modifier.padding(horizontal = 14.dp))
     }
 }

@@ -42,6 +42,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -52,6 +53,9 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -95,11 +99,14 @@ fun ListCard(modifier: Modifier = Modifier, radius: Dp = CardRadius, content: @C
 }
 
 @Composable
-fun HueDot(hue: Int, size: Dp = 6.dp) {
-    Box(Modifier.size(size).background(hueColour(hue), CircleShape))
+fun HueDot(hue: Int, size: Dp = 6.dp, colour: Color = hueColour(hue)) {
+    Box(Modifier.size(size).background(colour, CircleShape))
 }
 
-/** A label as a text chip with its 6 dp hue dot. */
+/**
+ * A label as a text chip with its 6 dp hue dot. Selected: a charcoal chip with cyan text on
+ * light (the dot takes its light tint so it reads on charcoal); silver border and text on black.
+ */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun LabelChip(name: String, hue: Int, selected: Boolean = false, onClick: () -> Unit, onLongClick: (() -> Unit)? = null) {
@@ -116,19 +123,22 @@ fun LabelChip(name: String, hue: Int, selected: Boolean = false, onClick: () -> 
             modifier = Modifier
                 .height(32.dp)
                 .clip(shape)
-                .background(if (c.isDark) Color.Transparent else c.surface)
-                .border(1.dp, if (selected) c.silver else c.line, shape)
+                .background(if (selected) c.chipSelected else if (c.isDark) Color.Transparent else c.surface)
+                .border(1.dp, if (selected) c.chipSelectedEdge else c.line, shape)
                 .padding(horizontal = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            HueDot(hue)
-            Text(name.uppercase(), style = Lumen.type.label, color = if (selected) c.silver else c.text, maxLines = 1)
+            HueDot(hue, colour = hueColour(hue, onDarkGround = c.isDark || selected))
+            Text(name.uppercase(), style = Lumen.type.label, color = if (selected) c.onChipSelected else c.text, maxLines = 1)
         }
     }
 }
 
-/** Speed, preset, sleep, bookmark: rest, active (silver), disabled with a reason. */
+/**
+ * Speed, preset, sleep, bookmark: rest, active, disabled with a reason. Active is the selected
+ * chip: charcoal with cyan on light, silver border and text on black.
+ */
 @Composable
 fun StatusChip(
     text: String,
@@ -141,9 +151,12 @@ fun StatusChip(
     val shape = RoundedCornerShape(50)
     val tint = when {
         !enabled -> c.text3
-        active -> c.silver
+        active -> c.onChipSelected
         else -> c.text
     }
+    // A disabled chip on light drops to the rest look (text3 on charcoal would not read); on
+    // black an active chip keeps its silver border even when disabled, as in 0.3.0.
+    val selectedLook = active && (enabled || c.isDark)
     Box(
         modifier = Modifier
             .height(TouchTarget)
@@ -155,8 +168,8 @@ fun StatusChip(
             modifier = Modifier
                 .height(32.dp)
                 .clip(shape)
-                .background(if (c.isDark) Color.Transparent else c.surface)
-                .border(1.dp, if (active) c.silver else c.line, shape)
+                .background(if (selectedLook) c.chipSelected else if (c.isDark) Color.Transparent else c.surface)
+                .border(1.dp, if (selectedLook) c.chipSelectedEdge else c.line, shape)
                 .padding(horizontal = if (icon != null) 10.dp else 12.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -202,7 +215,7 @@ fun MediaRow(
             horizontalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             Box(
-                modifier = Modifier.size(48.dp).background(if (c.isDark) c.elevated else c.base, RoundedCornerShape(6.dp)),
+                modifier = Modifier.size(48.dp).background(c.thumb, RoundedCornerShape(6.dp)),
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(icon, contentDescription = null, tint = metaColour, modifier = Modifier.size(20.dp))
@@ -210,7 +223,7 @@ fun MediaRow(
             Column(Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     if (playing) {
-                        Box(Modifier.size(6.dp).background(c.accent, CircleShape))
+                        Box(Modifier.size(6.dp).background(c.accentInk, CircleShape))
                         Spacer(Modifier.width(6.dp))
                     }
                     Text(title, style = Lumen.type.bodyStrong, color = titleColour, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -230,34 +243,39 @@ fun MediaRow(
                     }
                 }
             }
-            Text(time, style = Lumen.type.timeS, color = if (playing) c.accent else metaColour)
+            Text(time, style = Lumen.type.timeS, color = if (playing) c.accentInk else metaColour)
         }
         if (progress != null) {
             ProgressLine(fraction = progress, thickness = 1.dp, modifier = Modifier.padding(horizontal = 14.dp))
         }
-        if (divider) HorizontalDivider(color = c.line, thickness = 1.dp, modifier = Modifier.padding(horizontal = 14.dp))
+        if (divider) HorizontalDivider(color = c.divider, thickness = 1.dp, modifier = Modifier.padding(horizontal = 14.dp))
     }
 }
 
-/** 52 dp pill: amber with white text on light screens, amber with black glyph on black. */
+/**
+ * 52 dp pill: charcoal with a cyan glyph and label on light screens, amber with a #111111 glyph
+ * on black. Disabled on light, the label drops to text2 so a grey pill never carries the cyan
+ * light (which reads as live); on black it is drawn as in 0.3.0.
+ */
 @Composable
 fun PrimaryPill(text: String, icon: ImageVector? = null, modifier: Modifier = Modifier, enabled: Boolean = true, onClick: () -> Unit) {
     val c = Lumen.colours
+    val fg = if (!enabled && !c.isDark) c.text2 else c.onAccentFill
     Row(
         modifier = modifier
             .fillMaxWidth()
             .height(52.dp)
             .clip(RoundedCornerShape(50))
-            .background(if (enabled) c.accent else c.line)
+            .background(if (enabled) c.accentFill else c.line)
             .clickable(enabled = enabled, onClick = onClick),
         horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (icon != null) {
-            Icon(icon, contentDescription = null, tint = c.onAccent, modifier = Modifier.size(20.dp))
+            Icon(icon, contentDescription = null, tint = fg, modifier = Modifier.size(20.dp))
             Spacer(Modifier.width(10.dp))
         }
-        Text(text, style = Lumen.type.bodyStrong, color = c.onAccent)
+        Text(text, style = Lumen.type.bodyStrong, color = fg)
     }
 }
 
@@ -323,22 +341,22 @@ fun Modifier.cardSegment(first: Boolean, last: Boolean): Modifier {
         }
 }
 
-/** 2 dp progress line used on the Continue card. */
+/** 2 dp progress line used on the Continue card: ink fill on the divider track. */
 @Composable
 fun ProgressLine(fraction: Float, modifier: Modifier = Modifier, thickness: Dp = 2.dp) {
     val c = Lumen.colours
-    Box(modifier.fillMaxWidth().height(thickness).background(c.line, RoundedCornerShape(1.dp))) {
+    Box(modifier.fillMaxWidth().height(thickness).background(c.divider, RoundedCornerShape(1.dp))) {
         Box(
             Modifier
                 .fillMaxWidth(fraction.coerceIn(0f, 1f))
                 .height(thickness)
-                .background(c.accent, RoundedCornerShape(1.dp)),
+                .background(c.accentInk, RoundedCornerShape(1.dp)),
         )
     }
 }
 
 /**
- * The scrubber: a Material Slider with a thin track (6 dp speech, 3 dp music), amber fill and a
+ * The scrubber: a Material Slider with a thin track (6 dp speech, 3 dp music), ink fill and a
  * white handle that grows from 14 to 22 dp on touch. The seek fires on release, never during.
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -393,7 +411,7 @@ fun Scrubber(
                         Modifier
                             .fillMaxWidth(fraction)
                             .height(trackHeight)
-                            .background(if (enabled) c.accent else c.line, RoundedCornerShape(3.dp)),
+                            .background(if (enabled) c.accentInk else c.line, RoundedCornerShape(3.dp)),
                     )
                 }
             },
@@ -413,7 +431,7 @@ fun Scrubber(
     }
 }
 
-/** Amber filled circle with a black play or pause glyph. */
+/** Filled circle in the accent fill with the play or pause glyph on it (amber and #111111 on black). */
 @Composable
 fun PlayButton(isPlaying: Boolean, enabled: Boolean, size: Dp = 72.dp, onClick: () -> Unit) {
     val c = Lumen.colours
@@ -421,12 +439,12 @@ fun PlayButton(isPlaying: Boolean, enabled: Boolean, size: Dp = 72.dp, onClick: 
     Box(
         modifier = Modifier
             .size(size)
-            .background(if (enabled) c.accent else c.line, CircleShape)
+            .background(if (enabled) c.accentFill else c.line, CircleShape)
             .clickable(enabled = enabled, onClick = onClick)
             .semantics { contentDescription = description },
         contentAlignment = Alignment.Center,
     ) {
-        Icon(if (isPlaying) LumenIcons.Pause else LumenIcons.Play, contentDescription = null, tint = c.onAccent, modifier = Modifier.size(32.dp))
+        Icon(if (isPlaying) LumenIcons.Pause else LumenIcons.Play, contentDescription = null, tint = c.onAccentFill, modifier = Modifier.size(32.dp))
     }
 }
 
@@ -487,10 +505,16 @@ fun BottomBar(current: Screen, onSelect: (Screen) -> Unit) {
     }
 }
 
+/**
+ * One tab. On light the icon sits in a 56 by 30 dp capsule, charcoal with a cyan icon when
+ * selected (both tabs carry the capsule box so the icons line up); on black there is no capsule
+ * and the selected tab is simply drawn in text, as in 0.3.0.
+ */
 @Composable
 private fun BarItem(text: String, icon: ImageVector, selected: Boolean, onClick: () -> Unit) {
     val c = Lumen.colours
-    val tint = if (selected) c.text else c.text3
+    val iconTint = if (selected) c.onNavSelected else c.text3
+    val labelTint = if (selected) c.navSelectedLabel else c.text3
     Column(
         modifier = Modifier
             .size(width = 96.dp, height = 56.dp)
@@ -499,15 +523,30 @@ private fun BarItem(text: String, icon: ImageVector, selected: Boolean, onClick:
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        Icon(icon, contentDescription = text, tint = tint)
+        if (c.isDark) {
+            Icon(icon, contentDescription = text, tint = iconTint)
+        } else {
+            Box(
+                modifier = Modifier
+                    .size(width = 56.dp, height = 30.dp)
+                    .background(if (selected) c.navSelected else Color.Transparent, RoundedCornerShape(15.dp)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(icon, contentDescription = text, tint = iconTint)
+            }
+        }
         Spacer(Modifier.height(4.dp))
-        Text(text.uppercase(), style = Lumen.type.labelS, color = tint)
+        Text(text.uppercase(), style = Lumen.type.labelS, color = labelTint)
     }
 }
 
-/** Mini bar above the bottom bar: current item, mono time line, play or pause. */
+/**
+ * Mini bar above the bottom bar: current item, mono time line, play or pause. On light it is a
+ * charcoal strip with an off-white title, the position [time] in cyan and a cyan play disc; on
+ * black it is the elevated surface with a white disc, as in 0.3.0. [meta] follows the time.
+ */
 @Composable
-fun MiniBar(title: String, meta: String, isPlaying: Boolean, onOpen: () -> Unit, onPlayPause: () -> Unit) {
+fun MiniBar(title: String, time: String, meta: String, isPlaying: Boolean, onOpen: () -> Unit, onPlayPause: () -> Unit) {
     val c = Lumen.colours
     val shape = RoundedCornerShape(CardRadius)
     Row(
@@ -516,15 +555,24 @@ fun MiniBar(title: String, meta: String, isPlaying: Boolean, onOpen: () -> Unit,
             .padding(horizontal = 12.dp, vertical = 8.dp)
             .height(RowHeight)
             .clip(shape)
-            .background(c.elevated)
-            .border(1.dp, if (c.isDark) c.elevated else c.line, shape)
+            .background(c.miniBar)
+            .border(1.dp, c.miniBarEdge, shape)
             .clickable(onClick = onOpen)
             .padding(start = 14.dp, end = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f)) {
-            Text(title, style = Lumen.type.bodyStrong, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(meta, style = Lumen.type.timeS, color = c.text2, maxLines = 1)
+            Text(title, style = Lumen.type.bodyStrong, color = c.onMiniBar, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(
+                buildAnnotatedString {
+                    withStyle(SpanStyle(color = c.miniBarTime)) { append(time) }
+                    append(" · ")
+                    append(meta)
+                },
+                style = Lumen.type.timeS,
+                color = c.onMiniBar2,
+                maxLines = 1,
+            )
         }
         Spacer(Modifier.width(12.dp))
         Box(
@@ -534,11 +582,11 @@ fun MiniBar(title: String, meta: String, isPlaying: Boolean, onOpen: () -> Unit,
                 .clickable(onClick = onPlayPause),
             contentAlignment = Alignment.Center,
         ) {
-            Box(Modifier.size(40.dp).background(c.inverseBg, CircleShape), contentAlignment = Alignment.Center) {
+            Box(Modifier.size(40.dp).background(c.miniPlay, CircleShape), contentAlignment = Alignment.Center) {
                 Icon(
                     if (isPlaying) LumenIcons.Pause else LumenIcons.Play,
                     contentDescription = if (isPlaying) "Pause" else "Play",
-                    tint = c.inverseFg,
+                    tint = c.onMiniPlay,
                     modifier = Modifier.size(20.dp),
                 )
             }
@@ -546,7 +594,7 @@ fun MiniBar(title: String, meta: String, isPlaying: Boolean, onOpen: () -> Unit,
     }
 }
 
-/** Empty state: what happened and what to do next. One amber action, an optional outlined second. */
+/** Empty state: what happened and what to do next. One primary action, an optional outlined second. */
 @Composable
 fun EmptyState(
     title: String,
@@ -616,29 +664,39 @@ fun ToggleRow(title: String, explanation: String?, checked: Boolean, enabled: Bo
             onCheckedChange = onChange,
             enabled = enabled,
             colors = SwitchDefaults.colors(
-                checkedThumbColor = c.onAccent,
-                checkedTrackColor = c.accent,
-                checkedBorderColor = c.accent,
-                uncheckedThumbColor = c.text2,
+                checkedThumbColor = c.onAccentFill,
+                checkedTrackColor = c.accentFill,
+                checkedBorderColor = c.accentFill,
+                uncheckedThumbColor = c.switchOffThumb,
                 uncheckedTrackColor = c.surface,
-                uncheckedBorderColor = c.line,
+                uncheckedBorderColor = c.switchOffEdge,
             ),
         )
     }
 }
 
-/** 48 dp search field with the search glyph; filters as you type. */
+/**
+ * 48 dp search field with the search glyph; filters as you type. On light, focus draws a 1.5 dp
+ * ink border; on black the field keeps its 0.3.0 look (no border).
+ */
 @Composable
 fun SearchField(value: String, placeholder: String, onChange: (String) -> Unit) {
     val c = Lumen.colours
     val shape = RoundedCornerShape(CardRadius)
+    var focused by remember { mutableStateOf(false) }
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .height(TouchTarget)
             .clip(shape)
             .background(c.surface)
-            .border(1.dp, if (c.isDark) c.surface else c.line, shape)
+            .then(
+                when {
+                    c.isDark -> Modifier.border(1.dp, c.surface, shape)
+                    focused -> Modifier.border(1.5.dp, c.accentInk, shape)
+                    else -> Modifier.border(1.dp, c.line, shape)
+                },
+            )
             .padding(horizontal = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -651,8 +709,8 @@ fun SearchField(value: String, placeholder: String, onChange: (String) -> Unit) 
                 onValueChange = onChange,
                 singleLine = true,
                 textStyle = Lumen.type.body.copy(color = c.text),
-                cursorBrush = SolidColor(c.accent),
-                modifier = Modifier.fillMaxWidth(),
+                cursorBrush = SolidColor(c.accentInk),
+                modifier = Modifier.fillMaxWidth().onFocusChanged { focused = it.isFocused },
             )
         }
         if (value.isNotEmpty()) {
@@ -673,6 +731,6 @@ fun TextAction(text: String, modifier: Modifier = Modifier, danger: Boolean = fa
             .padding(horizontal = 12.dp),
         contentAlignment = Alignment.Center,
     ) {
-        Text(text, style = Lumen.type.bodyStrong, color = if (!enabled) c.text3 else if (danger) c.danger else c.accent)
+        Text(text, style = Lumen.type.bodyStrong, color = if (!enabled) c.text3 else if (danger) c.danger else c.accentInk)
     }
 }

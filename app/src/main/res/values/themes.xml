@@ -1,14 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!-- Compose Material3 supplies the real colour scheme. This platform theme only removes the
-         action bar and keeps the window on the light ground during start-up, since Home is light.
-         Now Playing paints true black itself; the status bar icon colour is switched in Compose. -->
+         action bar and keeps the window on the light ground (#C9CED4, Option C) during start-up,
+         since Home is light. Now Playing paints true black itself; the status bar icon colour
+         and the window background are switched in Compose. Primary is the charcoal control
+         colour; the platform accent (cursor, handles in any platform view) is the deep cyan ink. -->
     <style name="Theme.Lumen" parent="android:Theme.Material.Light.NoActionBar">
         <item name="android:windowBackground">@color/base_light</item>
         <item name="android:windowLightStatusBar">true</item>
         <item name="android:windowLightNavigationBar">true</item>
-        <item name="android:colorPrimary">@color/amber_light</item>
-        <item name="android:colorAccent">@color/amber_light</item>
+        <item name="android:colorPrimary">@color/charcoal</item>
+        <item name="android:colorAccent">@color/ink_light</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
     </style>

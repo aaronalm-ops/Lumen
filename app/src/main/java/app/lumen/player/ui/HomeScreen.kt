@@ -29,6 +29,8 @@ import app.lumen.player.update.UpdateInfo
 @Composable
 fun HomeScreen(
     continueItem: LibraryItem?,
+    /** Whether the Continue card's item takes the speech layout (override, Sermons label, 20 minutes). */
+    continueIsSpeech: Boolean,
     player: PlayerState,
     labels: List<LabelEntity>,
     recent: List<LibraryItem>,
@@ -88,7 +90,7 @@ fun HomeScreen(
                         )
                     }
                 } else {
-                    ContinueCard(continueItem, player, labels, onResume)
+                    ContinueCard(continueItem, continueIsSpeech, player, labels, onResume)
                 }
             }
             if (labels.isNotEmpty()) {
@@ -165,7 +167,7 @@ fun rowMeta(item: LibraryItem, labels: List<LabelEntity>): String {
 }
 
 @Composable
-private fun ContinueCard(item: LibraryItem?, player: PlayerState, labels: List<LabelEntity>, onResume: () -> Unit) {
+private fun ContinueCard(item: LibraryItem?, speech: Boolean, player: PlayerState, labels: List<LabelEntity>, onResume: () -> Unit) {
     val c = Lumen.colours
     // The ViewModel hands over the player's own item (or null when it is not in the library)
     // whenever the player holds one, so a loaded player always means live figures here. The
@@ -189,7 +191,10 @@ private fun ContinueCard(item: LibraryItem?, player: PlayerState, labels: List<L
                 Text(who, style = Lumen.type.bodyS, color = c.text2, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             Spacer(Modifier.height(18.dp))
-            ProgressLine(fraction = if (duration > 0) position.toFloat() / duration else 0f)
+            // Night Home only: while a speech item is held (not playing), the line ends in the
+            // amber stop point. Light screens never show amber.
+            val holding = c.isDark && speech && !(live && player.isPlaying) && position > 0 && duration > 0
+            ProgressLine(fraction = if (duration > 0) position.toFloat() / duration else 0f, emberStop = holding)
             Spacer(Modifier.height(8.dp))
             Row(Modifier.fillMaxWidth()) {
                 Text(formatTime(position), style = Lumen.type.timeS, color = c.text2)

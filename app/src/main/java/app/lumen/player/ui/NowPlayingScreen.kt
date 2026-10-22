@@ -212,7 +212,15 @@ private fun SpeechLayout(
     Spacer(Modifier.height(12.dp))
     ChipRow(player, item, settings, noInterruptions, bookmarks.isNotEmpty(), downloadProgress, actions)
     Spacer(Modifier.height(16.dp))
-    Scrubber(positionMs = player.positionMs, durationMs = player.durationMs, enabled = player.hasItem, thin = false, onSeek = actions.seekTo)
+    // Paused on a speech item, Lumen is holding the place: the head turns to the ember.
+    Scrubber(
+        positionMs = player.positionMs,
+        durationMs = player.durationMs,
+        enabled = player.hasItem,
+        thin = false,
+        holdingPlace = player.hasItem && !player.isPlaying,
+        onSeek = actions.seekTo,
+    )
     Spacer(Modifier.height(24.dp))
     Row(
         Modifier.fillMaxWidth(),
@@ -371,7 +379,7 @@ private fun MusicLayout(
         horizontalArrangement = Arrangement.spacedBy(18.dp, Alignment.CenterHorizontally),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        IconTap(LumenIcons.Shuffle, "Shuffle", if (player.shuffle) c.silver else c.text3, size = 20.dp, onClick = actions.toggleShuffle)
+        IconTap(LumenIcons.Shuffle, "Shuffle", if (player.shuffle) c.ice else c.text3, size = 20.dp, onClick = actions.toggleShuffle)
         IconTap(LumenIcons.SkipPrevious, "Previous", c.text, size = 28.dp, enabled = player.hasItem, onClick = actions.previous)
         PlayButton(isPlaying = player.isPlaying, enabled = player.hasItem || player.connected, size = 72.dp, onClick = actions.playPause)
         IconTap(LumenIcons.SkipNext, "Next", if (player.nextTitle != null) c.text else c.text3, size = 28.dp, enabled = player.nextTitle != null, onClick = actions.next)
@@ -382,7 +390,7 @@ private fun MusicLayout(
                 Player.REPEAT_MODE_ALL -> "Repeat all"
                 else -> "Repeat off"
             },
-            if (player.repeat != Player.REPEAT_MODE_OFF) c.silver else c.text3,
+            if (player.repeat != Player.REPEAT_MODE_OFF) c.ice else c.text3,
             size = 20.dp,
             onClick = actions.cycleRepeat,
         )
@@ -498,7 +506,8 @@ private fun KeepScreenOn(enabled: Boolean) {
 
 /**
  * Kids lock: three thumb pads and a lock glyph. Back is swallowed by the caller; the only exit
- * is a two second press on the top-right corner.
+ * is a two second press on the top-right corner. The play pad is the cyan fill with a black
+ * glyph; there is no scrubber here, so the ember never shows in Kids lock.
  */
 @Composable
 private fun KidsLock(player: PlayerState, actions: NowPlayingActions) {

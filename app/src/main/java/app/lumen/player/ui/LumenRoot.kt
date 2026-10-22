@@ -26,6 +26,7 @@ import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
 import androidx.media3.common.util.UnstableApi
 import app.lumen.player.BuildConfig
+import app.lumen.player.data.MediaRepository
 
 class RootActions(
     val addFolder: () -> Unit,
@@ -143,6 +144,17 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
                             when (s) {
                                 Screen.Home -> HomeScreen(
                                     continueItem = continueItem,
+                                    continueIsSpeech = if (player.hasItem) {
+                                        speech
+                                    } else {
+                                        continueItem?.let { item ->
+                                            MediaRepository.isSpeech(
+                                                item.media,
+                                                labels.filter { it.id in item.labelIds }.map { it.name },
+                                                settings.layoutOverrides[item.uri],
+                                            )
+                                        } ?: false
+                                    },
                                     player = player,
                                     labels = labels,
                                     recent = recent,

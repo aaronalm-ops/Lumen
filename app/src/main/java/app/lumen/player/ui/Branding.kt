@@ -38,7 +38,8 @@ import kotlinx.coroutines.delay
 /**
  * The LUMEN lockup: the vector light trail and the wordmark in Manrope 500 with 0.18 em
  * tracking. The mark carries its own colours (it is the brand): on black the amber-core trail
- * (res/drawable/lumen_lockup.xml), on the light screens the graphite trail into a cyan core
+ * (res/drawable/lumen_lockup.xml; one of the few places amber survives on black, pending the
+ * logo decision), on the light screens the graphite trail into a cyan core
  * (res/drawable/lumen_lockup_light.xml). The wordmark takes the surface's text colour, so
  * charcoal on light. [height] sets the mark; the type follows.
  */
@@ -66,7 +67,8 @@ fun LumenLockup(modifier: Modifier = Modifier, height: Dp = 32.dp) {
  * The maker credit for the bottom of Settings and nowhere else: the Aaron Instinct mark at
  * 20 dp and "by Aaron Almeida" in Inter 13 sp secondary, centred, 24 dp padding. On light
  * surfaces it is Aaron's original mark (charcoal body, cyan wedge: res/drawable/aaron_instinct.xml);
- * on black the off-white body with the Lumen amber wedge (aaron_instinct_lumen_reverse.xml).
+ * on black the off-white body with the cyan wedge (aaron_instinct_reverse.xml), since dark
+ * Option C keeps amber off everything but the LUMEN mark and the held place.
  */
 @Composable
 fun MakerCredit(modifier: Modifier = Modifier) {
@@ -77,7 +79,7 @@ fun MakerCredit(modifier: Modifier = Modifier) {
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Image(
-            painter = painterResource(if (c.isDark) R.drawable.aaron_instinct_lumen_reverse else R.drawable.aaron_instinct),
+            painter = painterResource(if (c.isDark) R.drawable.aaron_instinct_reverse else R.drawable.aaron_instinct),
             contentDescription = "Aaron Instinct",
             modifier = Modifier.size(20.dp),
         )

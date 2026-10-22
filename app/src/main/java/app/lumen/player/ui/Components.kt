@@ -1,5 +1,6 @@
 package app.lumen.player.ui
 
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -19,6 +20,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
@@ -42,6 +44,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -105,7 +108,9 @@ fun HueDot(hue: Int, size: Dp = 6.dp, colour: Color = hueColour(hue)) {
 
 /**
  * A label as a text chip with its 6 dp hue dot. Selected: a charcoal chip with cyan text on
- * light (the dot takes its light tint so it reads on charcoal); silver border and text on black.
+ * light (the dot takes its light tint so it reads on charcoal); a cyan chip with black text on
+ * black (the dot takes its deep hue, the better of the two on cyan: 2.93:1 for amber to 4.10:1
+ * for blue-slate, against 1.09 to 1.30:1 for the light tints).
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -129,15 +134,16 @@ fun LabelChip(name: String, hue: Int, selected: Boolean = false, onClick: () -> 
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            HueDot(hue, colour = hueColour(hue, onDarkGround = c.isDark || selected))
+            // The selected fill inverts the ground: charcoal on light, cyan on black.
+            HueDot(hue, colour = hueColour(hue, onDarkGround = if (selected) !c.isDark else c.isDark))
             Text(name.uppercase(), style = Lumen.type.label, color = if (selected) c.onChipSelected else c.text, maxLines = 1)
         }
     }
 }
 
 /**
- * Speed, preset, sleep, bookmark: rest, active, disabled with a reason. Active is the selected
- * chip: charcoal with cyan on light, silver border and text on black.
+ * Speed, preset, sleep, bookmark: rest, active, disabled with a reason. Active is secondary
+ * state: charcoal with cyan on light, an ice border and ice text on black.
  */
 @Composable
 fun StatusChip(
@@ -151,12 +157,12 @@ fun StatusChip(
     val shape = RoundedCornerShape(50)
     val tint = when {
         !enabled -> c.text3
-        active -> c.onChipSelected
+        active -> c.onChipActive
         else -> c.text
     }
     // A disabled chip on light drops to the rest look (text3 on charcoal would not read); on
-    // black an active chip keeps its silver border even when disabled, as in 0.3.0.
-    val selectedLook = active && (enabled || c.isDark)
+    // black an active chip keeps its ice border even when disabled.
+    val activeLook = active && (enabled || c.isDark)
     Box(
         modifier = Modifier
             .height(TouchTarget)
@@ -168,8 +174,8 @@ fun StatusChip(
             modifier = Modifier
                 .height(32.dp)
                 .clip(shape)
-                .background(if (selectedLook) c.chipSelected else if (c.isDark) Color.Transparent else c.surface)
-                .border(1.dp, if (selectedLook) c.chipSelectedEdge else c.line, shape)
+                .background(if (activeLook) c.chipActive else if (c.isDark) Color.Transparent else c.surface)
+                .border(1.dp, if (activeLook) c.chipActiveEdge else c.line, shape)
                 .padding(horizontal = if (icon != null) 10.dp else 12.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -253,14 +259,14 @@ fun MediaRow(
 }
 
 /**
- * 52 dp pill: charcoal with a cyan glyph and label on light screens, amber with a #111111 glyph
- * on black. Disabled on light, the label drops to text2 so a grey pill never carries the cyan
- * light (which reads as live); on black it is drawn as in 0.3.0.
+ * 52 dp pill: charcoal with a cyan glyph and label on light screens, cyan with a black glyph and
+ * label on black. Disabled on light, the label drops to text2 so a grey pill never carries the
+ * cyan light (which reads as live); on black the same text2 label sits on the line-grey fill.
  */
 @Composable
 fun PrimaryPill(text: String, icon: ImageVector? = null, modifier: Modifier = Modifier, enabled: Boolean = true, onClick: () -> Unit) {
     val c = Lumen.colours
-    val fg = if (!enabled && !c.isDark) c.text2 else c.onAccentFill
+    val fg = if (!enabled) c.text2 else c.onAccentFill
     Row(
         modifier = modifier
             .fillMaxWidth()
@@ -341,23 +347,51 @@ fun Modifier.cardSegment(first: Boolean, last: Boolean): Modifier {
         }
 }
 
-/** 2 dp progress line used on the Continue card: ink fill on the divider track. */
+/** Stop point on the Night Home Continue line: an amber dot inside a black ring (DARK-OPTIONS C3). */
+private val StopDot = 10.dp
+private val StopRing = 3.dp
+
+/**
+ * 2 dp progress line used on the Continue card: ink fill on the divider track. [emberStop] ends
+ * the fill with the amber stop point, set apart from the cyan by a ring of the base colour; the
+ * caller shows it only on black and only while Lumen is holding a speech item's place. The dot
+ * is drawn over the line and overhangs it, so it takes no layout space.
+ */
 @Composable
-fun ProgressLine(fraction: Float, modifier: Modifier = Modifier, thickness: Dp = 2.dp) {
+fun ProgressLine(fraction: Float, modifier: Modifier = Modifier, thickness: Dp = 2.dp, emberStop: Boolean = false) {
     val c = Lumen.colours
-    Box(modifier.fillMaxWidth().height(thickness).background(c.divider, RoundedCornerShape(1.dp))) {
+    val f = fraction.coerceIn(0f, 1f)
+    val stopModifier = if (emberStop) {
+        Modifier.drawWithContent {
+            drawContent()
+            val centre = Offset(size.width * f, size.height / 2f)
+            drawCircle(color = c.base, radius = (StopDot / 2 + StopRing).toPx(), center = centre)
+            drawCircle(color = c.ember, radius = (StopDot / 2).toPx(), center = centre)
+        }
+    } else {
+        Modifier
+    }
+    Box(modifier.fillMaxWidth().height(thickness).then(stopModifier).background(c.divider, RoundedCornerShape(1.dp))) {
         Box(
             Modifier
-                .fillMaxWidth(fraction.coerceIn(0f, 1f))
+                .fillMaxWidth(f)
                 .height(thickness)
                 .background(c.accentInk, RoundedCornerShape(1.dp)),
         )
     }
 }
 
+/** The held head on a paused speech item: a 16 dp amber dot in a 3 dp black ring (DESIGN.md round 5, C). */
+private val HeadRest = 14.dp
+private val HeadHeld = 16.dp
+private val HeadDragged = 22.dp
+private val HeadRing = 3.dp
+
 /**
  * The scrubber: a Material Slider with a thin track (6 dp speech, 3 dp music), ink fill and a
  * white handle that grows from 14 to 22 dp on touch. The seek fires on release, never during.
+ * [holdingPlace] (a paused speech item) turns the head into the ember: 16 dp amber inside a 3 dp
+ * ring of the base colour, back to white within 120 ms of play.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -367,6 +401,7 @@ fun Scrubber(
     enabled: Boolean,
     thin: Boolean,
     modifier: Modifier = Modifier,
+    holdingPlace: Boolean = false,
     onSeek: (Long) -> Unit,
 ) {
     val c = Lumen.colours
@@ -377,7 +412,10 @@ fun Scrubber(
     val range = 0f..(if (duration > 0) duration.toFloat() else 1f)
     val interaction = remember { MutableInteractionSource() }
     val isDragged by interaction.collectIsDraggedAsState()
-    val thumbSize by animateDpAsState(targetValue = if (isDragged) 22.dp else 14.dp, animationSpec = tween(120), label = "thumb")
+    val ember = holdingPlace && enabled
+    val thumbSize by animateDpAsState(targetValue = if (isDragged) HeadDragged else if (ember) HeadHeld else HeadRest, animationSpec = tween(120), label = "thumb")
+    val headColour by animateColorAsState(targetValue = if (!enabled) c.line else if (ember) c.ember else c.text, animationSpec = tween(120), label = "head")
+    val ring by animateDpAsState(targetValue = if (ember) HeadRing else 0.dp, animationSpec = tween(120), label = "ring")
     val trackHeight = if (thin) 3.dp else 6.dp
 
     Column(modifier.fillMaxWidth()) {
@@ -397,10 +435,19 @@ fun Scrubber(
             thumb = {
                 Box(
                     Modifier
-                        .size(22.dp),
+                        .size(HeadDragged),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Box(Modifier.size(thumbSize).background(if (enabled) c.text else c.line, CircleShape))
+                    // The ring may overhang the 22 dp slot while dragging, so it ignores the
+                    // slot's constraints rather than squeezing the dot.
+                    Box(
+                        Modifier
+                            .requiredSize(thumbSize + ring * 2)
+                            .then(if (ring > 0.dp) Modifier.background(c.base, CircleShape) else Modifier),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Box(Modifier.size(thumbSize).background(headColour, CircleShape))
+                    }
                 }
             },
             track = { state: SliderState ->
@@ -431,7 +478,7 @@ fun Scrubber(
     }
 }
 
-/** Filled circle in the accent fill with the play or pause glyph on it (amber and #111111 on black). */
+/** Filled circle in the accent fill with the play or pause glyph on it (cyan and black on black). */
 @Composable
 fun PlayButton(isPlaying: Boolean, enabled: Boolean, size: Dp = 72.dp, onClick: () -> Unit) {
     val c = Lumen.colours
@@ -506,9 +553,8 @@ fun BottomBar(current: Screen, onSelect: (Screen) -> Unit) {
 }
 
 /**
- * One tab. On light the icon sits in a 56 by 30 dp capsule, charcoal with a cyan icon when
- * selected (both tabs carry the capsule box so the icons line up); on black there is no capsule
- * and the selected tab is simply drawn in text, as in 0.3.0.
+ * One tab. The icon sits in a 56 by 30 dp capsule when selected (both tabs carry the capsule box
+ * so the icons line up): charcoal with a cyan icon on light, cyan with a black icon on black.
  */
 @Composable
 private fun BarItem(text: String, icon: ImageVector, selected: Boolean, onClick: () -> Unit) {
@@ -523,17 +569,13 @@ private fun BarItem(text: String, icon: ImageVector, selected: Boolean, onClick:
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        if (c.isDark) {
+        Box(
+            modifier = Modifier
+                .size(width = 56.dp, height = 30.dp)
+                .background(if (selected) c.navSelected else Color.Transparent, RoundedCornerShape(15.dp)),
+            contentAlignment = Alignment.Center,
+        ) {
             Icon(icon, contentDescription = text, tint = iconTint)
-        } else {
-            Box(
-                modifier = Modifier
-                    .size(width = 56.dp, height = 30.dp)
-                    .background(if (selected) c.navSelected else Color.Transparent, RoundedCornerShape(15.dp)),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(icon, contentDescription = text, tint = iconTint)
-            }
         }
         Spacer(Modifier.height(4.dp))
         Text(text.uppercase(), style = Lumen.type.labelS, color = labelTint)
@@ -543,7 +585,8 @@ private fun BarItem(text: String, icon: ImageVector, selected: Boolean, onClick:
 /**
  * Mini bar above the bottom bar: current item, mono time line, play or pause. On light it is a
  * charcoal strip with an off-white title, the position [time] in cyan and a cyan play disc; on
- * black it is the elevated surface with a white disc, as in 0.3.0. [meta] follows the time.
+ * black it is the elevated surface with the time in cyan and a cyan disc with a black glyph.
+ * [meta] follows the time.
  */
 @Composable
 fun MiniBar(title: String, time: String, meta: String, isPlaying: Boolean, onOpen: () -> Unit, onPlayPause: () -> Unit) {

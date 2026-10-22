@@ -353,6 +353,15 @@ class PlaybackService : MediaLibraryService() {
     private fun publishWidget(forcePaused: Boolean = false) {
         val item = player.currentMediaItem
         val duration = player.duration.let { if (it == C.TIME_UNSET) 0L else it }
+        // Queued items carry the speech flag; the fallback mirrors isSpeech without the label lookup.
+        val speech = when {
+            item == null -> false
+            else -> MediaItems.speechOrNull(item) ?: when (settings.layoutOverrides[MediaItems.uriOf(item)]) {
+                "speech" -> true
+                "music" -> false
+                else -> duration > MediaRepository.SPEECH_THRESHOLD_MS
+            }
+        }
         WidgetState.publish(
             this,
             WidgetSnapshot(
@@ -362,6 +371,7 @@ class PlaybackService : MediaLibraryService() {
                 durationMs = duration,
                 speed = player.playbackParameters.speed,
                 isPlaying = if (forcePaused) false else player.isPlaying,
+                isSpeech = speech,
             ),
         )
     }

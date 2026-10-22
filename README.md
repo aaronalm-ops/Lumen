@@ -10,7 +10,9 @@ later phase.
 
 Application id `com.aaronalmeida.lumen` (Kotlin package `app.lumen.player`; the id changed in 0.2.1 because `app.lumen.player` was already taken in the Android Developer Console). minSdk 29, targetSdk 36, compileSdk 37 (Compose 1.12 and later
 require compileSdk 37). Light Home, Library and Settings; true black Now Playing. Design system:
-`lumen-design/DESIGN.md`, Variant A (one amber accent).
+`lumen-design/DESIGN.md`: light screens on round 4 Option C (graphite and cyan), black screens
+on round 5 Option C (ice and ember: cyan controls with black glyphs, ice for secondary state,
+amber only for a held place in a paused sermon and the LUMEN mark's core).
 
 ## What Phase 1a does
 
@@ -204,10 +206,10 @@ connected and the last Drive copy is older than 7 days. (`data/backup/BackupMana
   tracking, in `LumenLockup()` (`ui/Branding.kt`). Used on the branded cold-start screen (black,
   600 ms, a 200 ms fade, shown once per process after the Android 12 system splash from
   `androidx.core:core-splashscreen:1.2.0`, `Theme.Lumen.Splash`) and at the top of Settings.
-- Maker credit: `aaron_instinct_lumen.xml` (charcoal body, amber `#C2410C` accent, light
-  surfaces) and `aaron_instinct_lumen_reverse.xml` (off-white body, amber `#E8862B`, black
-  surfaces) are the owner's mark with only the `#28D9E8` accent fill replaced; silhouette and
-  proportions untouched. Shown at 20 dp above "by Aaron Almeida" (Inter 13 sp, secondary,
+- Maker credit: the owner's own Instinct mark, `aaron_instinct.xml` (charcoal body, cyan
+  `#28D9E8` wedge) on light surfaces and `aaron_instinct_reverse.xml` (off-white body, cyan
+  wedge) on black. The amber variants (`aaron_instinct_lumen.xml`,
+  `aaron_instinct_lumen_reverse.xml`) remain in res but are no longer drawn. Shown at 20 dp above "by Aaron Almeida" (Inter 13 sp, secondary,
   centred, 24 dp padding) at the bottom of Settings and nowhere else.
 - Launcher icon: still the Resume arc. `mipmap-anydpi-v26/ic_launcher.xml` now points its
   foreground at `drawable/ic_launcher_fg.xml`, a layer-list holding the arc vector. **To ship

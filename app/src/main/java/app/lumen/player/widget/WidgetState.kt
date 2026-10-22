@@ -20,6 +20,8 @@ data class WidgetSnapshot(
     val durationMs: Long = 0L,
     val speed: Float = 1.0f,
     val isPlaying: Boolean = false,
+    /** The item takes the speech layout; paused on one, the widget shows the amber head. */
+    val isSpeech: Boolean = false,
 )
 
 object WidgetState {
@@ -35,6 +37,7 @@ object WidgetState {
             durationMs = p.getLong("duration", 0L),
             speed = p.getFloat("speed", 1.0f),
             isPlaying = p.getBoolean("playing", false),
+            isSpeech = p.getBoolean("speech", false),
         )
     }
 
@@ -48,6 +51,7 @@ object WidgetState {
             .putLong("duration", snapshot.durationMs)
             .putFloat("speed", snapshot.speed)
             .putBoolean("playing", snapshot.isPlaying)
+            .putBoolean("speech", snapshot.isSpeech)
             .apply()
         scope.launch {
             try {

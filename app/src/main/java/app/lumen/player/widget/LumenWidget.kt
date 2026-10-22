@@ -14,11 +14,13 @@ import androidx.glance.GlanceModifier
 import androidx.glance.Image
 import androidx.glance.ImageProvider
 import androidx.glance.LocalContext
+import androidx.glance.LocalSize
 import androidx.glance.action.Action
 import androidx.glance.action.clickable
 import androidx.glance.appwidget.GlanceAppWidget
 import androidx.glance.appwidget.GlanceAppWidgetReceiver
 import androidx.glance.appwidget.LinearProgressIndicator
+import androidx.glance.appwidget.SizeMode
 import androidx.glance.appwidget.action.actionSendBroadcast
 import androidx.glance.appwidget.action.actionStartActivity
 import androidx.glance.appwidget.cornerRadius
@@ -53,8 +55,13 @@ import com.google.common.util.concurrent.MoreExecutors
 /**
  * 4x2 home screen widget mirroring the lock screen: title, "47:12 · -22:20 · 1.25x" mono line,
  * back, play or pause, forward. Redrawn by the service on state changes and heartbeats only.
+ * Dark Option C: cyan progress and a cyan play disc with a black glyph; paused on a speech item,
+ * the progress ends in the amber head inside a black ring (DARK-OPTIONS.html, C widget).
  */
 class LumenWidget : GlanceAppWidget() {
+
+    // Exact, so LocalSize is the real placed size and the head lands on the progress end.
+    override val sizeMode: SizeMode = SizeMode.Exact
 
     override suspend fun provideGlance(context: Context, id: GlanceId) {
         val snapshot = WidgetState.read(context)
@@ -65,13 +72,15 @@ class LumenWidget : GlanceAppWidget() {
     private fun Content(s: WidgetSnapshot) {
         val context = LocalContext.current
         // Black surface, as on the lock screen. Colours are duplicated here because Glance cannot
-        // read the Compose theme object; they are the DESIGN.md black-screen tokens.
+        // read the Compose theme object; they are the DESIGN.md black-screen tokens (Option C).
         val surface = ColorProvider(Color(0xFF111111))
         val text = ColorProvider(Color(0xFFF5F5F5))
         val secondary = ColorProvider(Color(0xFF8C8C8C))
         val line = ColorProvider(Color(0xFF262626))
-        val amber = ColorProvider(Color(0xFFE8862B))
-        val glyphOnAmber = ColorProvider(Color(0xFF111111))
+        val cyan = ColorProvider(Color(0xFF28D9E8))
+        val glyphOnCyan = ColorProvider(Color(0xFF000000))
+        val ember = ColorProvider(Color(0xFFE8862B))
+        val emberRing = ColorProvider(Color(0xFF000000))
 
         val openApp = actionStartActivity(Intent(context, MainActivity::class.java))
         Column(
@@ -79,7 +88,7 @@ class LumenWidget : GlanceAppWidget() {
                 .fillMaxSize()
                 .background(surface)
                 .cornerRadius(22.dp)
-                .padding(14.dp)
+                .padding(PADDING)
                 .clickable(openApp),
         ) {
             Text(
@@ -93,15 +102,43 @@ class LumenWidget : GlanceAppWidget() {
                 style = TextStyle(color = secondary, fontSize = 12.sp, fontFamily = FontFamily.Monospace),
                 maxLines = 1,
             )
-            Spacer(GlanceModifier.height(10.dp))
+            // 3 + 18 + 2 dp keeps the 10 + 3 + 10 dp of the plain bar, so the layout does not move.
+            Spacer(GlanceModifier.height(3.dp))
             val fraction = if (s.durationMs > 0) (s.positionMs.toFloat() / s.durationMs).coerceIn(0f, 1f) else 0f
-            LinearProgressIndicator(
-                progress = fraction,
-                modifier = GlanceModifier.fillMaxWidth().height(3.dp),
-                color = amber,
-                backgroundColor = line,
-            )
-            Spacer(GlanceModifier.height(10.dp))
+            val holding = s.hasItem && s.isSpeech && !s.isPlaying && s.durationMs > 0
+            Box(
+                modifier = GlanceModifier.fillMaxWidth().height(HEAD_OUTER),
+                contentAlignment = Alignment.CenterStart,
+            ) {
+                LinearProgressIndicator(
+                    progress = fraction,
+                    modifier = GlanceModifier.fillMaxWidth().height(3.dp),
+                    color = cyan,
+                    backgroundColor = line,
+                )
+                if (holding) {
+                    val track = LocalSize.current.width - PADDING * 2
+                    val offset = (track * fraction - HEAD_OUTER / 2).coerceIn(0.dp, (track - HEAD_OUTER).coerceAtLeast(0.dp))
+                    Row(modifier = GlanceModifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        if (offset > 0.dp) Spacer(GlanceModifier.width(offset))
+                        Box(modifier = GlanceModifier.size(HEAD_OUTER), contentAlignment = Alignment.Center) {
+                            Image(
+                                provider = ImageProvider(R.drawable.ic_widget_dot),
+                                contentDescription = null,
+                                modifier = GlanceModifier.size(HEAD_OUTER),
+                                colorFilter = ColorFilter.tint(emberRing),
+                            )
+                            Image(
+                                provider = ImageProvider(R.drawable.ic_widget_dot),
+                                contentDescription = null,
+                                modifier = GlanceModifier.size(HEAD_DOT),
+                                colorFilter = ColorFilter.tint(ember),
+                            )
+                        }
+                    }
+                }
+            }
+            Spacer(GlanceModifier.height(2.dp))
             Row(
                 modifier = GlanceModifier.fillMaxWidth(),
                 horizontalAlignment = Alignment.End,
@@ -117,7 +154,7 @@ class LumenWidget : GlanceAppWidget() {
                 Box(
                     modifier = GlanceModifier
                         .size(48.dp)
-                        .background(amber)
+                        .background(cyan)
                         .cornerRadius(24.dp)
                         .clickable(actionSendBroadcast(WidgetActionReceiver.intent(context, WidgetActionReceiver.ACTION_PLAY_PAUSE))),
                     contentAlignment = Alignment.Center,
@@ -126,7 +163,7 @@ class LumenWidget : GlanceAppWidget() {
                         provider = ImageProvider(if (s.isPlaying) R.drawable.ic_widget_pause else R.drawable.ic_widget_play),
                         contentDescription = if (s.isPlaying) "Pause" else "Play",
                         modifier = GlanceModifier.size(22.dp),
-                        colorFilter = ColorFilter.tint(glyphOnAmber),
+                        colorFilter = ColorFilter.tint(glyphOnCyan),
                     )
                 }
                 Spacer(GlanceModifier.width(12.dp))
@@ -157,6 +194,13 @@ class LumenWidget : GlanceAppWidget() {
                 colorFilter = ColorFilter.tint(tint),
             )
         }
+    }
+
+    private companion object {
+        val PADDING = 14.dp
+        /** The held head: a 12 dp amber dot in a 3 dp black ring. */
+        val HEAD_DOT = 12.dp
+        val HEAD_OUTER = 18.dp
     }
 
     private fun metaLine(s: WidgetSnapshot): String {

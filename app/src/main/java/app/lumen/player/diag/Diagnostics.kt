@@ -87,7 +87,7 @@ object Diagnostics {
         val libraryReport = buildString {
             append("media permission: ${MediaPermissions.describe(context)}\n")
             append(driveLine)
-            append("picker api key: ${if (BuildConfig.PICKER_API_KEY.isBlank()) "absent" else "present"}\n")
+            append("drive scopes requested: drive.readonly, drive.file\n")
             append("mediastore last scan: ")
             if (lastScanAt > 0L) {
                 append(SimpleDateFormat("yyyy-MM-dd HH:mm:ss Z", Locale.UK).format(Date(lastScanAt)))

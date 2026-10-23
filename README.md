@@ -114,53 +114,70 @@ service observes, so there is one path.
 
 ## Phase 1b
 
-### Google Drive (scope `drive.file` plus Google's picker)
+### Google Drive (scopes `drive.readonly` and `drive.file`, Lumen's own folder browser)
 
-The rule the owner set: pick the sermon folder once with Google's own picker, no whole-Drive
-scope, no weekly re-login. How it is built:
+The rule the owner set: choose the sermon folder once, no weekly re-login. 0.3.0 to 0.3.2 used
+`drive.file` with Google's picker; on the owner's phone the scan of the picked folder returned 0
+files, because `drive.file` grants the picked folder itself and not its children. The
+pre-agreed fallback (ruling D2) shipped in 0.3.3: `drive.readonly` to see inside the folder,
+`drive.file` kept for the app's own backup folder, and Lumen's own folder browser in place of
+the picker. How it is built:
 
 1. **Authorisation.** `com.google.android.gms:play-services-auth:22.0.0`,
    `Identity.getAuthorizationClient(context).authorize(AuthorizationRequest.builder()
-   .setRequestedScopes(listOf(Scope("https://www.googleapis.com/auth/drive.file"))).build())`.
-   A missing grant comes back with `hasResolution()`; MainActivity launches its `pendingIntent`
-   through `StartIntentSenderForResult` (the Google sheet, the only sheet Drive ever shows) and
-   reads the token back with `getAuthorizationResultFromIntent`. Once the grant is held, every
-   later `authorize` call returns a fresh short-lived access token silently, so the service, the
+   .setRequestedScopes(listOf(Scope("https://www.googleapis.com/auth/drive.readonly"),
+   Scope("https://www.googleapis.com/auth/drive.file"))).build())`. A missing grant comes back
+   with `hasResolution()`; MainActivity launches its `pendingIntent` through
+   `StartIntentSenderForResult` (the Google sheet, the only sheet Drive ever shows) and reads the
+   token back with `getAuthorizationResultFromIntent`. Once the grant is held, every later
+   `authorize` call returns a fresh short-lived access token silently, so the service, the
    scanner and the backup all call `DriveAuth.tokenBlocking()` without any UI. A 401 clears the
-   token (`clearToken`) and asks once more; a second 401 or any 403 sets the "Sign in to Drive
-   again" line in Settings. Never a dialog. (`data/drive/DriveAuth.kt`)
-2. **The folder picker: WebView route.** Google documents an Android Picker trigger for the
-   authorisation flow (`AuthorizationRequest.ResourceParameter.PICKER_OAUTH_TRIGGER`, with
-   `PICKER_ALLOW_FOLDER_SELECTION`, the result in `AuthorizationResult.getTokenResponseParams()`
-   under `picked_file_ids`; see
-   https://developers.google.com/workspace/drive/picker/guides/desktop-mobile-picker; the
-   parameters arrived in play-services-auth 21.6.0, 27 May 2026). The reference page that
-   names the `AuthorizationRequest.Builder` setter for those parameters is rendered client-side
-   and could not be read from the build environment, and a guessed method name would have
-   broken the build, so this build ships the documented fallback: `DrivePickerActivity` hosts a
-   WebView that loads the bundled `assets/picker.html`, which uses the Picker JS API
-   (`https://apis.google.com/js/api.js`, `gapi.load('picker')`, `PickerBuilder` with
-   `DocsView(ViewId.FOLDERS).setIncludeFolders(true).setSelectFolderEnabled(true)`,
-   `setOAuthToken(token)`, `setDeveloperKey(BuildConfig.PICKER_API_KEY)`) and posts the picked
-   folder id and name back through the `LumenPicker` JavascriptInterface. The page is loaded
-   under the base URL `https://appassets.androidplatform.net/picker/` so the Picker has an
-   https origin. Swapping to the native trigger later touches `MainActivity.startDriveAuthorisation`
-   and nothing else. If `PICKER_API_KEY` is empty the Drive card reads "Drive not configured in
-   this build" and does nothing.
-3. **Listing.** `files.list` with `q = '<folderId>' in parents and trashed = false`, fields
-   `id,name,mimeType,size,modifiedTime,createdTime`, `pageSize=1000`, every page, then the same
-   for each subfolder one level down. Audio and video rows are written to the existing `media`
-   table: `uri = drive://<fileId>`, `folder_uri = drive:<folderId>` (one folder row named
-   "Drive", cloud icon in the Library), title from the name without its extension, `duration_ms`
-   0 until the first play, when the service writes the player's duration (and the refreshed
-   fingerprint) back into the row. Rescan on app start when the last listing is older than 6
-   hours and the silent token still works, and on Rescan in Settings (the Folders Rescan also
-   lists Drive). Each scan logs `drive: N files (...)`.
+   token (`clearToken`) and asks once more; a second 401 or any other 403 sets the "Sign in to
+   Drive again" line in Settings. Never a dialog. (`data/drive/DriveAuth.kt`)
 
-   **The open spike.** `drive.file` only sees files the user picked or that the app created.
-   Google's picker hands the app the folder, and whether files added to that folder later are
-   listed depends on Drive granting folder access through the picker grant. The count in each
-   scan line is how the owner tells: drop a new file into the folder, Rescan, compare.
+   **Grants from 0.3.0 to 0.3.2** hold `drive.file` only. On the first launch after the update
+   the start-up check asks silently for both scopes; that needs the user, so `DriveAuth` asks
+   again for `drive.file` alone (that token still serves backups and kept copies) and records
+   that `drive.readonly` is missing. Settings then shows one line, "Reconnect Drive to see the
+   files in your folder", with a Reconnect action that brings up the Google sheet for the new
+   scope; once granted, the kept folder is scanned at once. The same line appears when
+   `AuthorizationResult.grantedScopes` lacks `drive.readonly` (the scope unticked on the consent
+   screen) or when Drive answers a listing with 403 `insufficientPermissions`.
+2. **The folder browser** (`ui/DriveBrowserScreen.kt`, Settings, Google Drive, Choose folder).
+   The top level lists My Drive (folder id `root`), Shared with me, and each shared drive the
+   account belongs to. Tapping a folder goes in; a breadcrumb row and the back arrow go up. Each
+   folder row shows a count such as "12 audio", loaded lazily as the row comes on screen (one
+   cheap `files.list` of up to 1000 with only `mimeType`, at most four at a time; nothing is
+   shown when the folder has no audio or video directly inside it). Loading is a 1 dp line;
+   an error is one line with Retry. The bottom bar shows the current folder and the
+   "Use this folder" pill, disabled on the top level and on My Drive, Shared with me and the
+   shared drive roots. The Drive calls (REST v3, all with `supportsAllDrives=true` and
+   `includeItemsFromAllDrives=true`, `spaces=drive`, `pageSize=1000`, every page):
+
+   | What | Request |
+   |---|---|
+   | Shared drives | `GET drives?pageSize=100&fields=nextPageToken,drives(id,name)` |
+   | Folders in a folder | `files.list`, `q = '<id>' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`, `orderBy=name`, fields `nextPageToken,files(id,name,mimeType,driveId)`; inside a shared drive also `corpora=drive&driveId=<driveId>` |
+   | Shared with me | `files.list`, `q = sharedWithMe = true and mimeType = 'application/vnd.google-apps.folder' and trashed = false`, `orderBy=name` |
+   | Row count | `files.list`, `q = '<id>' in parents and trashed = false and (mimeType contains 'audio/' or mimeType contains 'video/')`, fields `nextPageToken,files(mimeType)`, one page |
+   | Account email | `GET about?fields=user(emailAddress)` |
+3. **Listing.** `files.list` with `q = '<folderId>' in parents and trashed = false`, fields
+   `id,name,mimeType,size,modifiedTime,createdTime,driveId`, `pageSize=1000`, every page, with
+   `supportsAllDrives=true&includeItemsFromAllDrives=true` (and `corpora=drive&driveId=<id>`
+   when the chosen folder lives in a shared drive, read from `files.get` before each scan).
+   Subfolders are walked breadth first down to 4 levels below the chosen folder (at most 500
+   folders per scan). Audio and video rows are written to the existing `media` table:
+   `uri = drive://<fileId>`, `folder_uri = drive:<chosenFolderId>` for every row however deep it
+   was found, so the Library shows one folder entry, named after the chosen folder, with a cloud
+   icon. `rel_path` keeps the subfolder path (`2024/March/file.mp3`), so search and the Suno rule
+   still see it. Title from the name without its extension, `duration_ms` 0 until the first
+   play, when the service writes the player's duration (and the refreshed fingerprint) back
+   into the row. Folder rows and media rows left by any other Drive folder (from the 0.3.0
+   picker, or before a change of folder) are removed on the next scan; `progress` rows are never
+   touched. When a subfolder fails to list, nothing is removed on that pass. Rescan on app start
+   when the last listing is older than 6 hours and the silent token holds `drive.readonly`, and
+   on Rescan in Settings (the Folders Rescan also lists Drive). Each scan logs
+   `drive: scan: N files (T top-level entries, S subfolders walked, depth limit 4), ...`.
 4. **Playback.** `playback/LumenDataSources.kt`: `LumenDataSourceFactory` keeps Media3's
    `DefaultDataSource` for `content://` and `file://` and routes `drive://` to
    `DriveDataSource`, which opens `https://www.googleapis.com/drive/v3/files/<id>?alt=media`
@@ -182,9 +199,13 @@ scope, no weekly re-login. How it is built:
    plays it with `FileDataSource`; the row's `offline_path` records it (MIGRATION_2_3). Remove
    deletes the file and clears the column.
 6. **Errors.** Offline with nothing cached and no copy: the Library row is greyed with "Offline"
-   in the time slot and a tap does nothing. 401 or 403 anywhere: one line in Settings,
+   in the time slot and a tap does nothing. A grant without `drive.readonly`: one line in
+   Settings, "Reconnect Drive to see the files in your folder". Any other 401 or 403: one line,
    "Sign in to Drive again". Disconnect removes the Drive rows and kept copies; positions and
    labels stay.
+7. **Settings, Google Drive.** Connected: the folder name, "N files · listed 5 min ago", the
+   account email (from `about.get`), then Choose folder, Rescan and Disconnect, the reconnect or
+   sign-in line when needed, and "Allow downloads on mobile data".
 
 ### Backup and restore
 
@@ -192,7 +213,9 @@ Settings, Backup. "Back up" opens ACTION_CREATE_DOCUMENT (default name
 `lumen-backup-YYYYMMDD.json`) and writes one JSON document: positions (with the fingerprint of
 each uri), labels, media_labels (uri and fingerprint), bookmarks and the kv settings minus the
 device-only keys. When Drive is connected the same bytes also go to a "Lumen" folder the app
-creates (`files.create`, multipart; a same-day file is updated with PATCH). "Restore" opens
+creates (`files.create`, multipart, under `drive.file`; a same-day file is updated with PATCH).
+With `drive.readonly` a name search also sees any folder the owner made called "Lumen", so only
+a folder and file with `isAppAuthorized = true` (made by this app) are reused. "Restore" opens
 ACTION_OPEN_DOCUMENT and merges, never deletes: positions win by `updated_at`, labels match by
 name, media by uri first and then by fingerprint, bookmarks by uri and position, settings only
 where this phone has no value. A weekly automatic Drive backup runs on app start when Drive is
@@ -220,26 +243,36 @@ connected and the last Drive copy is older than 7 days. (`data/backup/BackupMana
 
 ### Drive setup for the owner (once)
 
-1. Google Cloud console: create a project (any name), **APIs and Services, Library**: enable
-   **Google Drive API** and **Google Picker API**.
-2. **OAuth consent screen**: user type External, app name Lumen, support and developer email,
-   scope `.../auth/drive.file`, then **Publish** (a Testing app expires its grants after 7 days,
-   which is exactly the weekly re-login the owner ruled out).
-3. **Credentials, Create credentials, OAuth client ID**, type **Android**, package name
+No API key and no GitHub secret are needed any more: the picker and its key are gone, and the
+old picker key secret in the repository's Actions settings is simply unused (delete it at will).
+
+1. Google Cloud console: the project used so far. **APIs and Services, Library**: **Google
+   Drive API** enabled (the Google Picker API is no longer used and may be disabled).
+2. **Google Auth Platform, Data Access** (formerly the OAuth consent screen's scopes):
+   **Add or remove scopes** and make sure both are listed:
+   `https://www.googleapis.com/auth/drive.readonly` (restricted) and
+   `https://www.googleapis.com/auth/drive.file`. Save. Leave the app **In production**, not
+   Testing (a Testing app expires its grants after 7 days, which is exactly the weekly re-login
+   the owner ruled out).
+3. **Credentials**: the existing **Android** OAuth client stays as it is: package name
    `com.aaronalmeida.lumen`, SHA-1 `01:CA:FE:7A:87:31:5F:5D:C6:AC:86:14:85:C1:15:65:6E:49:1E:5B`
    (the release key from the Actions secrets). An Android client has no secret and nothing is
-   pasted into the app: Play Services matches the package and the signing certificate.
-4. **Credentials, Create credentials, API key**: restrict the key to the **Google Picker API**.
-   Application restriction: for this WebView route use **Websites** (HTTP referrers) with
-   `https://appassets.androidplatform.net/*`; the "Android apps" restriction only matches
-   requests made by Play Services libraries, which a WebView page is not. If the native Picker
-   trigger is adopted later, switch the restriction to Android apps with the package and SHA-1.
-5. GitHub repository, **Settings, Secrets and variables, Actions**: add `PICKER_API_KEY` with the
-   key. The workflow passes it as `-PpickerApiKey=...`; `app/build.gradle.kts` turns it into
-   `BuildConfig.PICKER_API_KEY`. Without the secret the build still succeeds and the Drive card
-   says "Drive not configured in this build".
-6. First use: Settings, Google Drive, **Choose folder**. The Google sheet appears once (account
-   and consent), then Google's picker; pick the sermon folder. The listing runs at once.
+   pasted into the app: Play Services matches the package and the signing certificate. The old
+   Picker API key can be deleted.
+4. **The unverified-app screen is expected.** `drive.readonly` is a restricted scope and Lumen
+   is not going through Google's verification, so the consent flow shows "Google hasn't verified
+   this app". Tap **Advanced**, then **Go to Lumen (unsafe)**, then allow. An unverified app is
+   limited to 100 users over its lifetime, which is far more than a family needs.
+5. First use: Settings, Google Drive, **Choose folder**. The Google sheet appears once (account,
+   the unverified-app screen, consent for "See and download all your Google Drive files" and
+   "See, edit, create and delete only the specific Google Drive files you use with this app"),
+   then Lumen's folder browser; go into the sermon folder and tap **Use this folder**. The
+   listing runs at once. On a phone that already ran 0.3.0 to 0.3.2, Settings shows
+   "Reconnect Drive to see the files in your folder" instead: tap **Reconnect**.
+
+Privacy policy: `docs/privacy.html` (Google Drive section: read-only access to list and play
+the audio and video in the chosen folder, nothing modified or deleted, `drive.file` only for
+Lumen's own backup files, and the Limited Use statement).
 
 ## Data
 
@@ -282,8 +315,7 @@ listed as the stable release), `androidx.media3:media3-datasource:1.11.1` and
 `androidx.media3:media3-database:1.11.1` (already transitive through media3-exoplayer; named so
 `SimpleCache` and `StandaloneDatabaseProvider` are pinned to the Phase 0 Media3 version).
 
-Locally: `./gradlew assembleRelease -PpickerApiKey=<key>` (needs network for the first run; the
-key may be left out).
+Locally: `./gradlew assembleRelease` (needs network for the first run).
 
 ## Phase 1 sheet
 
@@ -316,15 +348,16 @@ Resume rule under test everywhere: within 3 s of the request, at the saved posit
 
 ## Phase 1b sheet
 
-Needs a Drive folder with a few sermons (one in a subfolder), a build with `PICKER_API_KEY`, and
-the phone on Wi-Fi to begin with.
+Needs a Drive folder with a few sermons (one in a subfolder two levels down), the Data Access page
+listing `drive.readonly` and `drive.file`, and the phone on Wi-Fi to begin with.
 
 | Step | What to do | Pass when |
 |---|---|---|
 | 1 | Cold start after install | Black system splash with the arc, then the LUMEN lockup on black for well under a second, one fade, then Home; a warm start (back to Recents and back) shows neither |
-| 2 | Settings | The lockup sits above Folders; the Aaron Instinct mark and "by Aaron Almeida" sit at the very bottom and nowhere else; the Google Drive card shows "Choose folder" (or "Drive not configured in this build" on a build without the key, and then nothing is tappable) |
-| 3 | Choose folder | The Google sheet appears once (account, consent for Drive files you pick), then Google's picker; picking the folder closes it; the Drive card shows the folder name, then "N files · listed just now"; Library lists a "Drive" folder with a cloud icon and the files, time "--:--" |
-| 3a | Add a file to the folder from a computer, then Rescan | Note whether the count rises (the open spike); the log line `drive: N files` records it either way |
+| 2 | Settings | The lockup sits above Folders; the Aaron Instinct mark and "by Aaron Almeida" sit at the very bottom and nowhere else; the Google Drive card shows "Choose folder" (on a phone upgraded from 0.3.0 to 0.3.2 with a folder kept: the folder, and the line "Reconnect Drive to see the files in your folder" with Reconnect; Reconnect shows the Google sheet once, the line clears and the scan finds the files) |
+| 3 | Choose folder | The Google sheet appears once (account, "Google hasn't verified this app": Advanced, Go to Lumen, then consent), then Lumen's folder browser: My Drive, Shared with me and any shared drives; "Use this folder" is disabled there; go into the sermon folder (rows show counts such as "12 audio" as they appear, a 1 dp line while loading) and tap Use this folder; the Drive card shows the folder name, "N files · listed just now" and the account email; Library lists one folder named after it with a cloud icon, holding the files from its subfolders too, time "--:--" |
+| 3a | Add a file to a subfolder from a computer, then Rescan | The count rises by one; the log line `drive: scan: N files (... S subfolders walked ...)` records it |
+| 3b | Choose a folder in Shared with me, then one in a shared drive (if there is one) | Both list their files; choosing again replaces the previous folder's rows, positions stay |
 | 4 | Play a Drive sermon | Audio within a few seconds; the row's time fills in after the first play; seek back 2 minutes: no refetch pause; Share diagnostics shows `drive:` in device.txt |
 | 5 | Pause, swipe the app away, press play on the widget | Resumes at saved minus 3 s, from Drive, with no sheet |
 | 6 | Keep offline from the Now Playing chip | A 1 dp line under the chips, then the chip reads "Kept"; aeroplane mode: the item still plays; other Drive rows are greyed with "Offline" and a tap does nothing |

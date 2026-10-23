@@ -71,7 +71,7 @@ jobs:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-        run: ./gradlew assembleRelease --no-daemon --stacktrace "-PpickerApiKey=${{ secrets.PICKER_API_KEY }}"
+        run: ./gradlew assembleRelease --no-daemon --stacktrace
 
       - name: Rename APK
         shell: bash

@@ -83,15 +83,12 @@ fun SettingsScreen(
     update: UpdateInfo?,
     lastSaved: String,
     driveScanning: Boolean,
-    /** False when BuildConfig.PICKER_API_KEY is empty: the Drive card says so and does nothing. */
-    driveConfigured: Boolean,
     backupResult: String,
     backupBusy: Boolean,
     actions: SettingsActions,
 ) {
     val c = Lumen.colours
     val picked = folders.filter { !it.isMediaStore && !it.isDrive }
-    val driveFolder = folders.firstOrNull { it.isDrive }
     Column(Modifier.fillMaxSize().background(c.base).statusBarsPadding().navigationBarsPadding()) {
         Row(
             modifier = Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 8.dp),
@@ -189,9 +186,7 @@ fun SettingsScreen(
                 ListCard {
                     DriveBody(
                         settings = settings,
-                        configured = driveConfigured,
                         connected = settings.driveConnected,
-                        count = driveFolder?.let { folderCounts[it.uri] } ?: 0,
                         scanning = driveScanning,
                         actions = actions,
                     )
@@ -318,95 +313,103 @@ fun SettingsScreen(
 }
 
 /**
- * The Drive card. Not configured: one line, nothing to tap. Not connected: "Choose folder"
- * (the Google sheet appears only when the grant is missing, then Google's picker). Connected:
- * the folder, its count and last scan, Rescan and Change, the mobile data toggle, Disconnect,
- * and the one-line "Sign in to Drive again" after a 401 or 403.
+ * The Drive card. Not connected: "Choose folder" (the Google sheet appears only when the grant
+ * is missing, then Lumen's folder browser). Connected: the folder name, its file count and last
+ * scan, the account, then Choose folder, Rescan and Disconnect, and the mobile data toggle. One
+ * quiet line at most: "Reconnect Drive to see the files in your folder" when the grant lacks
+ * drive.readonly (a 0.3.0 grant), otherwise "Sign in to Drive again" after a 401 or 403.
  */
 @Composable
 private fun DriveBody(
     settings: Settings,
-    configured: Boolean,
     connected: Boolean,
-    count: Int,
     scanning: Boolean,
     actions: SettingsActions,
 ) {
     val c = Lumen.colours
-    if (!configured) {
-        Text(
-            "Drive not configured in this build",
-            style = Lumen.type.bodyS,
-            color = c.text2,
-            modifier = Modifier.padding(14.dp),
-        )
-        return
-    }
-    Row(
-        Modifier.fillMaxWidth().heightIn(min = RowHeight).padding(start = 14.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(Modifier.weight(1f)) {
-            Text(
-                if (connected) settings.driveFolderName.ifBlank { "Drive folder" } else "Sermon folder on Drive",
-                style = Lumen.type.bodyStrong,
-                color = c.text,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Text(
-                when {
-                    !connected -> "Pick the folder once with Google's picker. Lumen only ever sees that folder"
-                    scanning -> "Listing the folder"
-                    settings.driveScanAt > 0L -> "${formatCount(count)} files · listed ${relativeTime(settings.driveScanAt)}"
-                    else -> "Not listed yet"
-                },
-                style = Lumen.type.bodyS,
-                color = c.text2,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-        if (connected) {
-            TextAction(if (scanning) "Listing" else "Rescan", enabled = !scanning, onClick = actions.rescanDrive)
-            TextAction("Change", onClick = actions.connectDrive)
-        } else {
+    if (!connected) {
+        Row(
+            Modifier.fillMaxWidth().heightIn(min = RowHeight).padding(start = 14.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("Sermon folder on Drive", style = Lumen.type.bodyStrong, color = c.text)
+                Text(
+                    "Choose the folder Lumen plays from. Lumen only reads your Drive and never changes it",
+                    style = Lumen.type.bodyS,
+                    color = c.text2,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
             TextAction("Choose folder", onClick = actions.connectDrive)
         }
+        DriveNotice(settings, actions)
+        return
     }
-    if (settings.driveNeedsSignIn) {
-        Row(
-            Modifier.fillMaxWidth().padding(start = 14.dp, end = 4.dp, bottom = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text("Drive refused the last request", style = Lumen.type.bodyS, color = c.text2, modifier = Modifier.weight(1f))
-            Spacer(Modifier.width(8.dp))
-            TextAction("Sign in to Drive again", onClick = actions.driveSignIn)
-        }
-    }
-    if (connected) {
-        HorizontalDivider(color = c.divider, thickness = 1.dp, modifier = Modifier.padding(horizontal = 14.dp))
-        ToggleRow(
-            "Allow downloads on mobile data",
-            "Keep offline otherwise waits for Wi-Fi",
-            settings.driveMobileDownloads,
-            onChange = actions.setMobileDownloads,
+    Column(Modifier.fillMaxWidth().padding(start = 14.dp, end = 14.dp, top = 12.dp)) {
+        Text(
+            settings.driveFolderName.ifBlank { "Drive folder" },
+            style = Lumen.type.bodyStrong,
+            color = c.text,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
-        HorizontalDivider(color = c.divider, thickness = 1.dp, modifier = Modifier.padding(horizontal = 14.dp))
-        Row(
-            Modifier.fillMaxWidth().heightIn(min = RowHeight).padding(start = 14.dp, end = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                "Removes the Drive rows and any kept copies; positions and labels stay",
-                style = Lumen.type.bodyS,
-                color = c.text2,
-                modifier = Modifier.weight(1f),
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
-            TextAction("Disconnect", danger = true, onClick = actions.disconnectDrive)
+        Text(
+            when {
+                scanning -> "Listing the folder"
+                settings.driveScanAt > 0L -> "${formatCount(settings.driveScanCount)} files · listed ${relativeTime(settings.driveScanAt)}"
+                else -> "Not listed yet"
+            },
+            style = Lumen.type.bodyS,
+            color = c.text2,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        if (settings.driveAccount.isNotBlank()) {
+            Text(settings.driveAccount, style = Lumen.type.bodyS, color = c.text3, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
+    }
+    Row(Modifier.fillMaxWidth().padding(start = 2.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        TextAction("Choose folder", onClick = actions.connectDrive)
+        TextAction(if (scanning) "Listing" else "Rescan", enabled = !scanning, onClick = actions.rescanDrive)
+        Spacer(Modifier.weight(1f))
+        TextAction("Disconnect", danger = true, onClick = actions.disconnectDrive)
+    }
+    DriveNotice(settings, actions)
+    HorizontalDivider(color = c.divider, thickness = 1.dp, modifier = Modifier.padding(horizontal = 14.dp))
+    ToggleRow(
+        "Allow downloads on mobile data",
+        "Keep offline otherwise waits for Wi-Fi",
+        settings.driveMobileDownloads,
+        onChange = actions.setMobileDownloads,
+    )
+}
+
+/** The one quiet line under the Drive card's actions, when Drive needs the owner. Never a dialog. */
+@Composable
+private fun DriveNotice(settings: Settings, actions: SettingsActions) {
+    val c = Lumen.colours
+    val text: String
+    val action: String
+    when {
+        settings.driveNeedsReconnect && settings.driveConnected -> {
+            text = "Reconnect Drive to see the files in your folder"
+            action = "Reconnect"
+        }
+        settings.driveNeedsSignIn -> {
+            text = "Drive refused the last request"
+            action = "Sign in to Drive again"
+        }
+        else -> return
+    }
+    Row(
+        Modifier.fillMaxWidth().padding(start = 14.dp, end = 4.dp, bottom = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(text, style = Lumen.type.bodyS, color = c.text2, modifier = Modifier.weight(1f))
+        Spacer(Modifier.width(8.dp))
+        TextAction(action, onClick = actions.driveSignIn)
     }
 }
 

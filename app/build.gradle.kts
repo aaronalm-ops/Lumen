@@ -9,11 +9,6 @@ plugins {
 val githubOwner: String = (project.findProperty("githubOwner") as String?)?.takeIf { it.isNotBlank() } ?: "aaronalm-ops"
 val envVersionName: String = System.getenv("VERSION_NAME")?.takeIf { it.isNotBlank() } ?: "0.1.0"
 val envVersionCode: Int = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
-// Google Picker API key for the Drive folder picker (Phase 1b). Empty means "Drive not configured
-// in this build": the Drive section in Settings says so and does nothing. CI passes
-// -PpickerApiKey=${{ secrets.PICKER_API_KEY }}; locally use ~/.gradle/gradle.properties.
-// Google API keys are [A-Za-z0-9_-]; anything else is dropped so the string literal below stays valid.
-val pickerApiKey: String = (project.findProperty("pickerApiKey") as String?)?.trim().orEmpty().filter { it.isLetterOrDigit() || it == '_' || it == '-' }
 
 // Named env* so they cannot be confused with the SigningConfig properties of the same name.
 val envKeystorePath: String? = System.getenv("KEYSTORE_PATH")
@@ -40,7 +35,6 @@ android {
         versionCode = envVersionCode
         versionName = envVersionName
         buildConfigField("String", "GITHUB_OWNER", "\"$githubOwner\"")
-        buildConfigField("String", "PICKER_API_KEY", "\"$pickerApiKey\"")
     }
 
     signingConfigs {
@@ -115,7 +109,7 @@ dependencies {
     implementation(libs.media3.datasource)
     implementation(libs.media3.database)
 
-    // Phase 1b: Google Drive authorisation (AuthorizationClient, drive.file scope) and the
+    // Phase 1b: Google Drive authorisation (AuthorizationClient, drive.readonly and drive.file) and the
     // Android 12 splash screen API with its compat shim.
     implementation(libs.play.services.auth)
     implementation(libs.core.splashscreen)

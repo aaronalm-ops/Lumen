@@ -24,12 +24,4 @@
         <item name="windowSplashScreenAnimationDuration">0</item>
         <item name="postSplashScreenTheme">@style/Theme.Lumen</item>
     </style>
-
-    <!-- The Drive picker WebView: true black behind the page. -->
-    <style name="Theme.Lumen.Picker" parent="android:Theme.Material.NoActionBar">
-        <item name="android:windowBackground">@color/black</item>
-        <item name="android:windowLightStatusBar">false</item>
-        <item name="android:statusBarColor">@color/black</item>
-        <item name="android:navigationBarColor">@color/black</item>
-    </style>
 </resources>

@@ -17,7 +17,6 @@ import androidx.media3.common.util.UnstableApi
 import app.lumen.player.data.MediaPermissions
 import app.lumen.player.data.backup.BackupManager
 import app.lumen.player.diag.RingLog
-import app.lumen.player.ui.DrivePickerActivity
 import app.lumen.player.ui.LumenRoot
 import app.lumen.player.ui.MainViewModel
 import app.lumen.player.ui.RootActions
@@ -50,13 +49,13 @@ class MainActivity : ComponentActivity() {
         vm.onMediaPermissionResult()
     }
 
-    // Phase 1b: Drive. Whether the sign-in sheet should be followed by the folder picker.
-    private var pickAfterSignIn = false
+    // Phase 1b: Drive. Whether the sign-in sheet should be followed by Lumen's folder browser.
+    private var browseAfterSignIn = false
 
     /** The Google sign-in sheet (AuthorizationResult.pendingIntent); the only sheet Drive ever shows. */
     private val driveSignIn = registerForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
-        val wantPicker = pickAfterSignIn
-        pickAfterSignIn = false
+        val wantBrowser = browseAfterSignIn
+        browseAfterSignIn = false
         if (result.resultCode != Activity.RESULT_OK) {
             RingLog.i("drive", "sign-in sheet dismissed")
             return@registerForActivityResult
@@ -64,25 +63,12 @@ class MainActivity : ComponentActivity() {
         try {
             val auth = LumenApp.from(this).drive.auth
             val token = auth.accept(auth.resultFromIntent(result.data))
-            RingLog.i("drive", "sign-in granted, token ${if (token == null) "missing" else "received"}")
-            vm.onDriveSignedIn()
-            if (wantPicker && token != null) drivePicker.launch(DrivePickerActivity.createIntent(this, token))
+            RingLog.i("drive", "sign-in granted, token ${if (token == null) "missing" else "received"}, drive.readonly ${auth.hasReadonly}")
+            if (token != null) afterAuthorised(auth.hasReadonly, wantBrowser)
         } catch (e: ApiException) {
             RingLog.w("drive", "sign-in result failed: ${e.statusCode} ${e.message}")
         } catch (t: Throwable) {
             RingLog.w("drive", "sign-in result failed: $t")
-        }
-    }
-
-    /** The WebView picker; returns the folder id and name. */
-    private val drivePicker = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-        val data = result.data
-        if (result.resultCode == Activity.RESULT_OK && data != null) {
-            val id = data.getStringExtra(DrivePickerActivity.EXTRA_FOLDER_ID).orEmpty()
-            val name = data.getStringExtra(DrivePickerActivity.EXTRA_FOLDER_NAME).orEmpty()
-            if (id.isNotBlank()) vm.setDriveFolder(id, name)
-        } else {
-            RingLog.i("drive", "picker closed: ${data?.getStringExtra(DrivePickerActivity.EXTRA_REASON) ?: "cancelled"}")
         }
     }
 
@@ -124,8 +110,8 @@ class MainActivity : ComponentActivity() {
             },
             openUpdate = { vm.update.value?.url?.let { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(it))) } },
             openGitHub = { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/${BuildConfig.GITHUB_OWNER}/lumen"))) },
-            connectDrive = { startDriveAuthorisation(thenPick = true) },
-            driveSignIn = { startDriveAuthorisation(thenPick = false) },
+            connectDrive = { startDriveAuthorisation(thenBrowse = true) },
+            driveSignIn = { startDriveAuthorisation(thenBrowse = false) },
             backupNow = {
                 try {
                     createBackup.launch(BackupManager.defaultFileName())
@@ -150,12 +136,12 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * Asks the AuthorizationClient for the drive.file grant. A held grant answers at once with
-     * a token (no UI); a missing one hands back a resolution, shown as the Google sheet. With
-     * [thenPick] the folder picker follows either way.
+     * Asks the AuthorizationClient for drive.readonly and drive.file. A held grant answers at once
+     * with a token (no UI); a missing one (or a 0.3.0 grant without drive.readonly) hands back a
+     * resolution, shown as the Google sheet. With [thenBrowse] Lumen's folder browser follows
+     * either way, once drive.readonly is held.
      */
-    private fun startDriveAuthorisation(thenPick: Boolean) {
-        if (BuildConfig.PICKER_API_KEY.isBlank()) return
+    private fun startDriveAuthorisation(thenBrowse: Boolean) {
         val auth = LumenApp.from(this).drive.auth
         auth.authorizeTask()
             .addOnSuccessListener { result ->
@@ -165,23 +151,32 @@ class MainActivity : ComponentActivity() {
                         RingLog.w("drive", "resolution without a pending intent")
                         return@addOnSuccessListener
                     }
-                    pickAfterSignIn = thenPick
+                    browseAfterSignIn = thenBrowse
                     try {
                         driveSignIn.launch(IntentSenderRequest.Builder(pendingIntent.intentSender).build())
                     } catch (t: Throwable) {
-                        pickAfterSignIn = false
+                        browseAfterSignIn = false
                         RingLog.w("drive", "sign-in sheet failed to open: $t")
                     }
                 } else {
                     val token = auth.accept(result)
-                    vm.onDriveSignedIn()
-                    if (thenPick && token != null) drivePicker.launch(DrivePickerActivity.createIntent(this, token))
-                    else if (thenPick) RingLog.w("drive", "authorised without a token; picker not opened")
+                    if (token != null) afterAuthorised(auth.hasReadonly, thenBrowse)
+                    else RingLog.w("drive", "authorised without a token; browser not opened")
                 }
             }
             .addOnFailureListener { e ->
                 RingLog.w("drive", "authorisation failed: $e")
             }
+    }
+
+    /**
+     * A token is held. Without drive.readonly (the scope was unticked on the consent screen) the
+     * browser would list nothing, so it stays closed and Settings shows the reconnect line.
+     */
+    private fun afterAuthorised(hasReadonly: Boolean, thenBrowse: Boolean) {
+        vm.onDriveSignedIn(hasReadonly, rescan = !thenBrowse)
+        if (thenBrowse && hasReadonly) vm.openDriveBrowser()
+        else if (thenBrowse) RingLog.w("drive", "drive.readonly not granted; browser not opened")
     }
 
     override fun onNewIntent(intent: Intent) {

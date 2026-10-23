@@ -25,7 +25,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
 import androidx.media3.common.util.UnstableApi
-import app.lumen.player.BuildConfig
 import app.lumen.player.data.MediaRepository
 
 class RootActions(
@@ -37,9 +36,12 @@ class RootActions(
     val openUpdate: () -> Unit,
     val openGitHub: () -> Unit,
     // Phase 1b.
-    /** Authorises drive.file (the Google sheet only when the grant is missing) and opens the folder picker. */
+    /**
+     * Authorises drive.readonly and drive.file (the Google sheet only when the grant is missing
+     * or lacks drive.readonly) and opens Lumen's Drive folder browser.
+     */
     val connectDrive: () -> Unit,
-    /** "Sign in to Drive again": the authorisation alone, no picker. */
+    /** "Sign in to Drive again" and "Reconnect": the authorisation alone, no browser. */
     val driveSignIn: () -> Unit,
     /** ACTION_CREATE_DOCUMENT for the backup file. */
     val backupNow: () -> Unit,
@@ -88,6 +90,7 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
     val unreachable by vm.unreachable.collectAsState()
     val backupResult by vm.backupResult.collectAsState()
     val backupBusy by vm.backupBusy.collectAsState()
+    val driveBrowser by vm.driveBrowser.collectAsState()
 
     // Kids lock forces Now Playing open; nothing else can be reached until the corner is held.
     LaunchedEffect(kidsLocked) { if (kidsLocked) vm.nowPlayingOpen.value = true }
@@ -206,7 +209,6 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
                                     update = update,
                                     lastSaved = lastSaved,
                                     driveScanning = driveScanning,
-                                    driveConfigured = BuildConfig.PICKER_API_KEY.isNotBlank(),
                                     backupResult = backupResult,
                                     backupBusy = backupBusy,
                                     actions = SettingsActions(
@@ -232,6 +234,17 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
                                         restoreBackup = actions.restoreBackup,
                                     ),
                                 )
+                                Screen.DriveBrowser -> DriveBrowserScreen(
+                                    state = driveBrowser,
+                                    actions = DriveBrowserActions(
+                                        back = vm::driveBrowserBack,
+                                        open = vm::driveBrowserOpen,
+                                        jump = vm::driveBrowserJump,
+                                        retry = vm::driveBrowserRetry,
+                                        count = vm::driveBrowserCount,
+                                        use = vm::driveBrowserUse,
+                                    ),
+                                )
                             }
                         }
                     }
@@ -246,11 +259,14 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
                             onPlayPause = vm::playPause,
                         )
                     }
-                    if (screen != Screen.Settings) {
+                    if (screen != Screen.Settings && screen != Screen.DriveBrowser) {
                         BottomBar(current = screen) { vm.screen.value = it }
                     }
                 }
-                BackHandler(enabled = screen != Screen.Home) { vm.screen.value = Screen.Home }
+                // The Drive browser goes up a level (and from its top level back to Settings).
+                BackHandler(enabled = screen != Screen.Home) {
+                    if (screen == Screen.DriveBrowser) vm.driveBrowserBack() else vm.screen.value = Screen.Home
+                }
             }
 
             labelSheet?.let { target ->

@@ -27,12 +27,16 @@ val FolderEntity.isDrive: Boolean get() = uri.startsWith(DriveRepository.FOLDER_
 val MediaEntity.isDrive: Boolean get() = uri.startsWith(DriveRepository.URI_PREFIX)
 
 /**
- * The Drive source: one picked folder, listed with `files.list` into the same `media` table the
+ * The Drive source: one chosen folder, listed with `files.list` into the same `media` table the
  * local sources use, so labels, positions and the Library treat a Drive row like any other.
- * Rows are keyed `drive://<fileId>` and sit under one folder row `drive:<folderId>` named
- * "Drive". Subfolders are listed one level down; their files carry the subfolder name in
- * `rel_path` so the Suno rule still applies. Durations are unknown until first play, when the
- * service writes the player's duration back into the row.
+ * Rows are keyed `drive://<fileId>` and all sit under one folder row `drive:<folderId>` named
+ * after the chosen folder (cloud icon in the Library), however deep the file was found.
+ * Subfolders are walked down to [MAX_DEPTH] levels; their files carry the subfolder path in
+ * `rel_path` so search and the Suno rule still see it. Durations are unknown until first play,
+ * when the service writes the player's duration back into the row.
+ *
+ * The folder is chosen in Lumen's own browser ([browseTop], [browse], [countMedia]), which needs
+ * drive.readonly; drive.file alone (0.3.0 to 0.3.2) only saw the folder, never its contents.
  *
  * "Keep offline" streams the file to filesDir/offline/<id>.<ext> and records the path in
  * `offline_path`; the player's data source then reads that file instead of Drive. Downloads wait
@@ -49,10 +53,16 @@ class DriveRepository(
     companion object {
         const val URI_PREFIX = "drive://"
         const val FOLDER_PREFIX = "drive:"
-        const val FOLDER_NAME = "Drive"
+        const val FOLDER_NAME = "Google Drive"
 
         /** Rescan on app start when the last Drive scan is older than this. */
         const val RESCAN_AFTER_MS = 6L * 60 * 60 * 1000
+
+        /** Subfolder levels walked below the chosen folder. */
+        const val MAX_DEPTH = 4
+
+        /** A ceiling on folders listed per scan, so a huge tree cannot run for minutes. */
+        const val MAX_FOLDERS = 500
 
         private const val DOWNLOAD_BUFFER = 64 * 1024
 
@@ -84,9 +94,53 @@ class DriveRepository(
         return files.firstOrNull()
     }
 
+    // Grant state.
+
+    /**
+     * A token, with the Settings notices brought into line: no token sets "Sign in to Drive
+     * again"; a token without drive.readonly sets "Reconnect Drive to see the files in your
+     * folder"; a full token clears the reconnect line. Each flag is written only when it changes.
+     */
+    private suspend fun tokenWithFlags(forceRefresh: Boolean = false): String? {
+        val token = auth.tokenBlocking(forceRefresh)
+        if (token == null) {
+            setFlag(SettingsRepository.KEY_DRIVE_NEEDS_SIGN_IN, true)
+            return null
+        }
+        setFlag(SettingsRepository.KEY_DRIVE_NEEDS_RECONNECT, !auth.hasReadonly)
+        return token
+    }
+
+    private suspend fun setFlag(key: String, on: Boolean) {
+        if ((settings.get(key) == "1") == on) return
+        when (key) {
+            SettingsRepository.KEY_DRIVE_NEEDS_SIGN_IN -> settings.setDriveNeedsSignIn(on)
+            SettingsRepository.KEY_DRIVE_NEEDS_RECONNECT -> settings.setDriveNeedsReconnect(on)
+            else -> settings.put(key, if (on) "1" else "0")
+        }
+    }
+
+    /**
+     * Called on app start while a folder is connected: fetches a token silently so a grant from
+     * 0.3.0 to 0.3.2 (drive.file only) shows the reconnect line at once. No UI.
+     */
+    suspend fun checkGrant() {
+        withContext(Dispatchers.IO) {
+            if (!connectivity.isOnline()) return@withContext
+            val token = tokenWithFlags()
+            RingLog.i("drive", "grant check: ${if (token == null) "no token" else if (auth.hasReadonly) "drive.readonly held" else "drive.readonly missing"}")
+        }
+    }
+
+    /** The interactive sign-in came back: clear the lines that it answers. */
+    suspend fun onSignedIn(hasReadonly: Boolean) {
+        setFlag(SettingsRepository.KEY_DRIVE_NEEDS_SIGN_IN, false)
+        setFlag(SettingsRepository.KEY_DRIVE_NEEDS_RECONNECT, !hasReadonly)
+    }
+
     // Connect, disconnect, scan.
 
-    /** Called after the picker returned a folder. Stores it and scans at once. */
+    /** Called when the browser's "Use this folder" was tapped. Stores the folder and scans at once. */
     suspend fun connectFolder(folderId: String, folderName: String) {
         val previous = settings.get(SettingsRepository.KEY_DRIVE_FOLDER_ID).orEmpty()
         if (previous.isNotBlank() && previous != folderId) {
@@ -94,31 +148,50 @@ class DriveRepository(
             dao.deleteMediaInFolder(folderUriFor(previous))
             dao.deleteFolder(folderUriFor(previous))
         }
-        settings.setDriveFolder(folderId, folderName.ifBlank { FOLDER_NAME })
+        val name = folderName.ifBlank { FOLDER_NAME }
+        settings.setDriveFolder(folderId, name)
+        settings.setDriveScan(0L, 0)
         settings.setDriveNeedsSignIn(false)
-        dao.upsertFolder(FolderEntity(uri = folderUriFor(folderId), name = FOLDER_NAME, addedAt = System.currentTimeMillis()))
-        RingLog.i("drive", "folder connected: $folderName ($folderId)")
+        dao.upsertFolder(FolderEntity(uri = folderUriFor(folderId), name = name, addedAt = System.currentTimeMillis()))
+        RingLog.i("drive", "folder connected: $name ($folderId)")
         scan()
     }
 
-    /** Removes the Drive rows and the folder; offline copies are deleted too. */
+    /** Removes every Drive row and folder; offline copies are deleted too. Progress rows stay. */
     suspend fun disconnect() {
-        val folderId = settings.get(SettingsRepository.KEY_DRIVE_FOLDER_ID).orEmpty()
-        if (folderId.isNotBlank()) {
-            dao.deleteMediaInFolder(folderUriFor(folderId))
-            dao.deleteFolder(folderUriFor(folderId))
-        }
+        val stale = dao.mediaWithFolderPrefix(FOLDER_PREFIX).map { it.uri }
+        stale.chunked(500).forEach { dao.deleteMedia(it) }
+        val folders = dao.foldersWithPrefix(FOLDER_PREFIX).map { it.uri }
+        if (folders.isNotEmpty()) dao.deleteFolders(folders)
         settings.setDriveFolder("", "")
         settings.setDriveScan(0L, 0)
         settings.setDriveNeedsSignIn(false)
+        settings.setDriveNeedsReconnect(false)
+        settings.setDriveAccount("")
         auth.forget()
         withContext(Dispatchers.IO) { offlineDir.listFiles()?.forEach { it.delete() } }
         RingLog.i("drive", "disconnected")
     }
 
     /**
-     * Lists the picked folder and one level of subfolders and brings the `drive://` rows into
-     * line. Returns the row count, or -1 when the token or the listing failed (rows kept).
+     * Drive folders other than the chosen one (left by the 0.3.0 picker or a change of folder)
+     * and their media rows go, with any kept copies. Progress rows are never touched.
+     */
+    private suspend fun removeOtherDriveFolders(keepUri: String) {
+        val staleRows = dao.mediaWithFolderPrefix(FOLDER_PREFIX).filter { it.folderUri != keepUri }
+        val staleFolders = dao.foldersWithPrefix(FOLDER_PREFIX).map { it.uri }.filter { it != keepUri }
+        if (staleRows.isEmpty() && staleFolders.isEmpty()) return
+        staleRows.map { it.uri }.chunked(500).forEach { dao.deleteMedia(it) }
+        staleRows.forEach { row -> row.offlinePath?.let { File(it).delete() } }
+        if (staleFolders.isNotEmpty()) dao.deleteFolders(staleFolders)
+        RingLog.i("drive", "removed ${staleFolders.size} old Drive folders and ${staleRows.size} of their rows")
+    }
+
+    /**
+     * Lists the chosen folder and its subfolders down to [MAX_DEPTH] levels and brings the
+     * `drive://` rows into line, all under the chosen folder's one folder row. Returns the row
+     * count, or -1 when the token or the listing failed (rows kept). When a subfolder could not
+     * be listed, or the [MAX_FOLDERS] ceiling was reached, nothing is removed on that pass.
      */
     suspend fun scan(): Int = withContext(Dispatchers.IO) {
         val folderId = settings.get(SettingsRepository.KEY_DRIVE_FOLDER_ID).orEmpty()
@@ -132,35 +205,83 @@ class DriveRepository(
             val startedAt = System.currentTimeMillis()
             var usedToken: String? = null
             try {
-                val token = auth.tokenBlocking() ?: run {
-                    settings.setDriveNeedsSignIn(true)
+                val token = tokenWithFlags() ?: return@withLock -1
+                usedToken = token
+                if (!auth.hasReadonly) {
+                    RingLog.w("drive", "scan skipped: the grant lacks drive.readonly; Reconnect in Settings")
                     return@withLock -1
                 }
-                usedToken = token
                 val folderUri = folderUriFor(folderId)
-                val top = DriveApi.listChildren(token, folderId)
-                val found = ArrayList<Pair<DriveFile, String>>()
-                top.filter { it.isMedia }.forEach { found += it to it.name }
-                val subfolders = top.filter { it.isFolder }
-                for (sub in subfolders) {
-                    try {
-                        DriveApi.listChildren(token, sub.id).filter { it.isMedia }.forEach { found += it to "${sub.name}/${it.name}" }
-                    } catch (t: DriveAuthException) {
-                        throw t
-                    } catch (t: Throwable) {
-                        RingLog.w("drive", "subfolder ${sub.name} failed: $t")
-                    }
+                val meta = DriveApi.getFile(token, folderId)
+                val driveId = meta?.driveId.orEmpty()
+                val storedName = settings.get(SettingsRepository.KEY_DRIVE_FOLDER_NAME).orEmpty()
+                val folderName = meta?.name?.takeIf { it.isNotBlank() } ?: storedName.ifBlank { FOLDER_NAME }
+                if (folderName != storedName) settings.setDriveFolder(folderId, folderName)
+                removeOtherDriveFolders(folderUri)
+                val folderRow = dao.folders().firstOrNull { it.uri == folderUri }
+                if (folderRow == null || folderRow.name != folderName) {
+                    dao.upsertFolder(FolderEntity(uri = folderUri, name = folderName, addedAt = folderRow?.addedAt ?: System.currentTimeMillis()))
                 }
+
+                // Breadth first, one files.list per folder (all pages). A file reachable twice
+                // (several parents) is kept once, with the first path it was seen under.
+                val found = LinkedHashMap<String, Pair<DriveFile, String>>()
+                val visited = hashSetOf(folderId)
+                var level: List<Pair<String, String>> = listOf(folderId to "")
+                var depth = 0
+                var walked = 0
+                var partial = false
+                var topEntries = 0
+                var notWalked = 0
+                while (level.isNotEmpty()) {
+                    val next = ArrayList<Pair<String, String>>()
+                    for ((id, prefix) in level) {
+                        val children = try {
+                            DriveApi.listChildren(token, id, driveId)
+                        } catch (t: CancellationException) {
+                            throw t
+                        } catch (t: DriveAuthException) {
+                            throw t
+                        } catch (t: Throwable) {
+                            if (id == folderId) throw t
+                            RingLog.w("drive", "subfolder $prefix failed: $t")
+                            partial = true
+                            continue
+                        }
+                        if (id == folderId) topEntries = children.size else walked++
+                        for (file in children) {
+                            if (file.isMedia && !found.containsKey(file.id)) found[file.id] = file to prefix + file.name
+                        }
+                        val subfolders = children.filter { it.isFolder }
+                        if (depth >= MAX_DEPTH) {
+                            notWalked += subfolders.size
+                            continue
+                        }
+                        for (sub in subfolders) {
+                            if (!visited.add(sub.id)) continue
+                            if (visited.size > MAX_FOLDERS) {
+                                partial = true
+                                break
+                            }
+                            next += sub.id to "$prefix${sub.name}/"
+                        }
+                    }
+                    level = next
+                    depth++
+                }
+                if (visited.size > MAX_FOLDERS) RingLog.w("drive", "folder ceiling of $MAX_FOLDERS reached; the rest is not listed")
+                if (notWalked > 0) RingLog.i("drive", "$notWalked subfolders deeper than $MAX_DEPTH levels were not walked")
+
                 val existing = dao.mediaInFolder(folderUri).associateBy { it.uri }
                 val seen = HashSet<String>()
                 val batch = ArrayList<MediaEntity>()
                 var added = 0
                 var updated = 0
-                for ((file, relPath) in found) {
+                for ((file, relPath) in found.values) {
                     val uri = uriFor(file.id)
                     seen += uri
                     val old = existing[uri]
-                    if (old != null && old.sizeBytes == file.size && old.modifiedAt == file.modifiedMs) continue
+                    if (old != null && old.sizeBytes == file.size && old.modifiedAt == file.modifiedMs && old.relPath == relPath) continue
                     val title = MediaRepository.titleFromName(file.name)
                     val duration = old?.durationMs ?: 0L
                     batch += MediaEntity(
@@ -186,27 +307,43 @@ class DriveRepository(
                     dao.upsertMediaAll(batch)
                     for (entity in batch) applySunoRule(entity)
                 }
-                val gone = existing.keys.filter { it !in seen }
+                val gone = if (partial) emptyList() else existing.keys.filter { it !in seen }
                 if (gone.isNotEmpty()) {
                     gone.chunked(500).forEach { dao.deleteMedia(it) }
                     for (uri in gone) existing[uri]?.offlinePath?.let { File(it).delete() }
                 }
                 val total = found.size
                 settings.setDriveScan(System.currentTimeMillis(), total)
-                settings.setDriveNeedsSignIn(false)
-                // The open spike: drive.file sees what the user picked (or the app made). Whether
-                // files added to the picked folder later show up is read off this count.
+                setFlag(SettingsRepository.KEY_DRIVE_NEEDS_SIGN_IN, false)
+                setFlag(SettingsRepository.KEY_DRIVE_NEEDS_RECONNECT, false)
+                if (settings.get(SettingsRepository.KEY_DRIVE_ACCOUNT).isNullOrBlank()) {
+                    val email = try {
+                        DriveApi.accountEmail(token)
+                    } catch (t: CancellationException) {
+                        throw t
+                    } catch (t: Throwable) {
+                        RingLog.w("drive", "account email not read: $t")
+                        ""
+                    }
+                    if (email.isNotBlank()) settings.setDriveAccount(email)
+                }
                 RingLog.i(
                     "drive",
-                    "scan: $total files (${top.size} top-level entries, ${subfolders.size} subfolders), " +
-                        "$added added, $updated updated, ${gone.size} removed, ${System.currentTimeMillis() - startedAt} ms",
+                    "scan: $total files ($topEntries top-level entries, $walked subfolders walked, depth limit $MAX_DEPTH" +
+                        "${if (partial) ", partial" else ""}), $added added, $updated updated, ${gone.size} removed, " +
+                        "${System.currentTimeMillis() - startedAt} ms",
                 )
                 total
             } catch (t: CancellationException) {
                 throw t
             } catch (t: DriveAuthException) {
-                RingLog.w("drive", "scan refused with ${t.code}; sign in again")
-                settings.setDriveNeedsSignIn(true)
+                if (t.insufficientScope) {
+                    RingLog.w("drive", "scan refused with ${t.code} ${t.reason}; reconnect for drive.readonly")
+                    setFlag(SettingsRepository.KEY_DRIVE_NEEDS_RECONNECT, true)
+                } else {
+                    RingLog.w("drive", "scan refused with ${t.code} ${t.reason}; sign in again")
+                    settings.setDriveNeedsSignIn(true)
+                }
                 if (t.code == 401) auth.invalidate(usedToken)
                 -1
             } catch (t: Throwable) {
@@ -216,6 +353,51 @@ class DriveRepository(
                 _scanning.value = false
             }
         }
+    }
+
+    // The folder browser.
+
+    /**
+     * Runs one browser call with a token that carries drive.readonly. A 401 drops the token and
+     * tries once more with a fresh one; a missing scope throws [DriveReconnectException] and sets
+     * the reconnect line.
+     */
+    private suspend fun <T> withReadToken(block: (String) -> T): T = withContext(Dispatchers.IO) {
+        val token = tokenWithFlags() ?: throw DriveAuthException(401, "noToken")
+        if (!auth.hasReadonly) throw DriveReconnectException()
+        try {
+            block(token)
+        } catch (e: DriveAuthException) {
+            if (e.insufficientScope) {
+                setFlag(SettingsRepository.KEY_DRIVE_NEEDS_RECONNECT, true)
+                throw DriveReconnectException()
+            }
+            if (e.code != 401) throw e
+            auth.invalidate(token)
+            val fresh = tokenWithFlags(forceRefresh = true) ?: throw e
+            block(fresh)
+        }
+    }
+
+    /** The browser's top level: My Drive, Shared with me, then each shared drive by name. */
+    suspend fun browseTop(): List<DriveNode> = withReadToken { token ->
+        val drives = DriveApi.listSharedDrives(token)
+        listOf(DriveNode.MyDrive, DriveNode.SharedWithMe) +
+            drives.map { DriveNode(id = it.id, name = it.name.ifBlank { "Shared drive" }, kind = DriveNodeKind.SharedDrive, driveId = it.id) }
+    }
+
+    /** The folders inside [node], by name. */
+    suspend fun browse(node: DriveNode): List<DriveNode> = withReadToken { token ->
+        val folders = when (node.kind) {
+            DriveNodeKind.SharedWithMe -> DriveApi.listSharedWithMeFolders(token)
+            else -> DriveApi.listFolders(token, node.id, node.driveId)
+        }
+        folders.map { DriveNode(id = it.id, name = it.name, kind = DriveNodeKind.Folder, driveId = it.driveId.ifBlank { node.driveId }) }
+    }
+
+    /** Audio and video directly inside [node] (one page of up to 1000), for the row's count. */
+    suspend fun countMedia(node: DriveNode): MediaCount = withReadToken { token ->
+        DriveApi.countMedia(token, node.id, node.driveId)
     }
 
     private suspend fun applySunoRule(media: MediaEntity) {
@@ -236,7 +418,8 @@ class DriveRepository(
     /** Marks the token bad after a 401 or 403 from the player; Settings shows the one line. */
     suspend fun onAuthFailure(code: Int) {
         RingLog.w("drive", "playback refused with $code")
-        settings.setDriveNeedsSignIn(true)
+        if (code == 403 && !auth.hasReadonly) setFlag(SettingsRepository.KEY_DRIVE_NEEDS_RECONNECT, true)
+        else settings.setDriveNeedsSignIn(true)
     }
 
     // Offline copies.
@@ -314,9 +497,9 @@ class DriveRepository(
             throw t
         } catch (t: DriveAuthException) {
             part.delete()
-            settings.setDriveNeedsSignIn(true)
+            if (t.insufficientScope) setFlag(SettingsRepository.KEY_DRIVE_NEEDS_RECONNECT, true) else settings.setDriveNeedsSignIn(true)
             if (t.code == 401) auth.invalidate(usedToken)
-            RingLog.w("drive", "download refused with ${t.code}")
+            RingLog.w("drive", "download refused with ${t.code} ${t.reason}")
             false
         } catch (t: Throwable) {
             part.delete()
@@ -354,8 +537,11 @@ class DriveRepository(
         val at = settings.get(SettingsRepository.KEY_DRIVE_SCAN_AT)?.toLongOrNull() ?: 0L
         val count = settings.get(SettingsRepository.KEY_DRIVE_SCAN_COUNT)?.toIntOrNull() ?: 0
         val needsSignIn = settings.get(SettingsRepository.KEY_DRIVE_NEEDS_SIGN_IN) == "1"
+        val needsReconnect = settings.get(SettingsRepository.KEY_DRIVE_NEEDS_RECONNECT) == "1"
+        val account = settings.get(SettingsRepository.KEY_DRIVE_ACCOUNT).orEmpty().ifBlank { "unknown" }
         val offline = offlineDir.listFiles()?.count { it.isFile && !it.name.endsWith(".part") } ?: 0
-        return "drive: folder \"$name\" ($id), last scan ${if (at > 0) "$at, $count files" else "never"}, " +
-            "needs sign in $needsSignIn, $offline offline copies\n"
+        return "drive: folder \"$name\" ($id), account $account, last scan ${if (at > 0) "$at, $count files" else "never"}, " +
+            "needs sign in $needsSignIn, needs reconnect $needsReconnect, readonly in last token ${auth.hasReadonly}, " +
+            "$offline offline copies\n"
     }
 }

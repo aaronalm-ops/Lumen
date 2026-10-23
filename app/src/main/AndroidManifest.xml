@@ -44,13 +44,6 @@
                 android:resource="@xml/shortcuts" />
         </activity>
 
-        <!-- Phase 1b: the Drive folder picker (Google Picker JS API in a WebView). -->
-        <activity
-            android:name=".ui.DrivePickerActivity"
-            android:exported="false"
-            android:configChanges="orientation|screenSize|keyboardHidden"
-            android:theme="@style/Theme.Lumen.Picker" />
-
         <service
             android:name=".playback.PlaybackService"
             android:exported="true"

@@ -30,7 +30,11 @@ import app.lumen.player.data.MediaRepository
 import app.lumen.player.data.ProgressEntity
 import app.lumen.player.data.Settings
 import app.lumen.player.data.SettingsRepository
+import app.lumen.player.data.drive.DriveAuthException
+import app.lumen.player.data.drive.DriveNode
+import app.lumen.player.data.drive.DriveReconnectException
 import app.lumen.player.data.drive.DriveRepository
+import app.lumen.player.data.drive.MediaCount
 import app.lumen.player.data.drive.isDrive
 import app.lumen.player.data.isMediaStore
 import app.lumen.player.diag.Diagnostics
@@ -42,6 +46,7 @@ import app.lumen.player.update.UpdateChecker
 import app.lumen.player.update.UpdateInfo
 import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.MoreExecutors
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
@@ -59,8 +64,10 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 
-enum class Screen { Home, Library, Settings }
+enum class Screen { Home, Library, Settings, DriveBrowser }
 
 /** One row in Home or Library: a media file with its labels, copies and saved position. */
 data class LibraryItem(
@@ -666,17 +673,129 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     // Phase 1b: Drive.
 
-    /** The picker returned a folder: store it and list it. */
+    /** "Use this folder" in the browser: store it and list it. */
     fun setDriveFolder(folderId: String, folderName: String) {
         app.appScope.launch { drive.connectFolder(folderId, folderName) }
     }
 
-    /** The sign-in sheet came back with a grant: clear the line and refresh the listing. */
-    fun onDriveSignedIn() {
+    /**
+     * A grant came back (silently or from the sheet): clear the lines it answers and, with
+     * drive.readonly held, refresh the listing (a no-op when no folder is chosen yet). [rescan]
+     * is false when the browser opens next, since a new folder brings its own scan; a grant that
+     * just gained drive.readonly rescans the kept folder either way.
+     */
+    fun onDriveSignedIn(hasReadonly: Boolean, rescan: Boolean) {
         app.appScope.launch {
-            settingsRepo.setDriveNeedsSignIn(false)
-            if (settings.value.driveConnected) drive.scan()
+            val wasMissingReadonly = settingsRepo.get(SettingsRepository.KEY_DRIVE_NEEDS_RECONNECT) == "1"
+            drive.onSignedIn(hasReadonly)
+            if (hasReadonly && (rescan || wasMissingReadonly)) drive.scan()
         }
+    }
+
+    // The Drive folder browser (0.3.3).
+
+    val driveBrowser = MutableStateFlow(DriveBrowserState())
+    private var browseJob: Job? = null
+    private val countJobs = HashMap<String, Job>()
+
+    /** At most four count requests in flight while a long list scrolls past. */
+    private val countGate = Semaphore(4)
+
+    /** Opens the browser at its top level (called once the grant holds drive.readonly). */
+    fun openDriveBrowser() {
+        cancelCounts()
+        driveBrowser.value = DriveBrowserState()
+        screen.value = Screen.DriveBrowser
+        loadDriveLevel(emptyList())
+    }
+
+    fun driveBrowserOpen(node: DriveNode) = loadDriveLevel(driveBrowser.value.path + node)
+
+    /** A breadcrumb: -1 is the top level. */
+    fun driveBrowserJump(index: Int) = loadDriveLevel(driveBrowser.value.path.take(index + 1))
+
+    fun driveBrowserRetry() = loadDriveLevel(driveBrowser.value.path)
+
+    /** Up one level; from the top level, back to Settings. */
+    fun driveBrowserBack() {
+        val path = driveBrowser.value.path
+        if (path.isEmpty()) closeDriveBrowser() else loadDriveLevel(path.dropLast(1))
+    }
+
+    /** "Use this folder": only a real folder, never one of the three top-level entries. */
+    fun driveBrowserUse() {
+        val node = driveBrowser.value.current ?: return
+        if (!node.selectable) return
+        RingLog.i("drive", "folder chosen in the browser: ${node.name} (${node.id})")
+        setDriveFolder(node.id, node.name)
+        closeDriveBrowser()
+    }
+
+    private fun closeDriveBrowser() {
+        browseJob?.cancel()
+        browseJob = null
+        cancelCounts()
+        screen.value = Screen.Settings
+    }
+
+    private fun loadDriveLevel(path: List<DriveNode>) {
+        browseJob?.cancel()
+        driveBrowser.value = driveBrowser.value.copy(path = path, entries = emptyList(), loading = true, error = null)
+        browseJob = viewModelScope.launch {
+            try {
+                val node = path.lastOrNull()
+                val entries = if (node == null) drive.browseTop() else drive.browse(node)
+                if (driveBrowser.value.path != path) return@launch
+                driveBrowser.value = driveBrowser.value.copy(entries = entries, loading = false)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                RingLog.w("drive", "browse failed: $t")
+                if (driveBrowser.value.path != path) return@launch
+                driveBrowser.value = driveBrowser.value.copy(loading = false, error = browseError(t))
+            }
+        }
+    }
+
+    /** The lazy count for one visible folder row; asked once per folder while the browser is open. */
+    fun driveBrowserCount(node: DriveNode) {
+        if (!node.selectable) return
+        if (driveBrowser.value.counts.containsKey(node.id) || countJobs.containsKey(node.id)) return
+        countJobs[node.id] = viewModelScope.launch {
+            val text = try {
+                countGate.withPermit { countLabel(drive.countMedia(node)) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                // Nothing is shown for a count that failed; the row still opens.
+                RingLog.w("drive", "count failed for ${node.name}: $t")
+                ""
+            }
+            val state = driveBrowser.value
+            driveBrowser.value = state.copy(counts = state.counts + (node.id to text))
+        }
+    }
+
+    private fun cancelCounts() {
+        countJobs.values.forEach { it.cancel() }
+        countJobs.clear()
+    }
+
+    private fun countLabel(count: MediaCount): String {
+        val plus = if (count.more) "+" else ""
+        return when {
+            count.audio > 0 && count.video > 0 -> "${formatCount(count.audio)} audio · ${formatCount(count.video)} video$plus"
+            count.audio > 0 -> "${formatCount(count.audio)}$plus audio"
+            count.video > 0 -> "${formatCount(count.video)}$plus video"
+            else -> ""
+        }
+    }
+
+    private fun browseError(t: Throwable): String = when {
+        t is DriveReconnectException -> "Reconnect Drive to see the files in your folder"
+        t is DriveAuthException -> "Drive refused the request. Sign in to Drive again from Settings"
+        !app.connectivity.isOnline() -> "Offline. Drive folders need a connection"
+        else -> "Could not reach Drive"
     }
 
     fun rescanDrive() {

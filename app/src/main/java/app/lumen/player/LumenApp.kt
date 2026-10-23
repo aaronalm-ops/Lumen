@@ -74,10 +74,13 @@ class LumenApp : Application() {
         }
         appScope.launch {
             try {
-                // Drive: a stale listing is refreshed silently when the grant still holds; a
-                // refused silent token only sets the "Sign in to Drive again" line.
+                // Drive: the grant is checked first, so a 0.3.0 to 0.3.2 grant (drive.file only)
+                // shows "Reconnect Drive to see the files in your folder" on the first launch
+                // after the update. A stale listing is then refreshed silently when the grant
+                // holds drive.readonly; a refused silent token only sets a line in Settings.
                 val folderId = settings.get(SettingsRepository.KEY_DRIVE_FOLDER_ID).orEmpty()
-                if (folderId.isNotBlank() && BuildConfig.PICKER_API_KEY.isNotBlank()) {
+                if (folderId.isNotBlank()) {
+                    drive.checkGrant()
                     val lastScan = settings.get(SettingsRepository.KEY_DRIVE_SCAN_AT)?.toLongOrNull() ?: 0L
                     if (System.currentTimeMillis() - lastScan > DriveRepository.RESCAN_AFTER_MS) {
                         RingLog.i("app", "drive scan is stale, rescanning")

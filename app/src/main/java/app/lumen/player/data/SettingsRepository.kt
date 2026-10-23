@@ -31,6 +31,13 @@ data class Settings(
     val driveScanCount: Int = 0,
     /** Set after a 401 or 403, or when a silent authorisation needed the user; cleared on sign-in. */
     val driveNeedsSignIn: Boolean = false,
+    /**
+     * Set when the held grant lacks drive.readonly (a 0.3.0 to 0.3.2 grant, or the scope was
+     * unticked on the consent screen); Settings shows "Reconnect Drive to see the files in your folder".
+     */
+    val driveNeedsReconnect: Boolean = false,
+    /** The Google account's email, from Drive's about.get; "" until the first successful scan. */
+    val driveAccount: String = "",
     /** "Allow downloads on mobile data", off by default: Keep offline waits for Wi-Fi. */
     val driveMobileDownloads: Boolean = false,
     /** When the last backup file was written (either destination), 0 when never. */
@@ -94,6 +101,8 @@ class SettingsRepository(private val dao: ProgressDao) {
         const val KEY_DRIVE_SCAN_AT = "drive_scan_at"
         const val KEY_DRIVE_SCAN_COUNT = "drive_scan_count"
         const val KEY_DRIVE_NEEDS_SIGN_IN = "drive_needs_sign_in"
+        const val KEY_DRIVE_NEEDS_RECONNECT = "drive_needs_reconnect"
+        const val KEY_DRIVE_ACCOUNT = "drive_account"
         const val KEY_DRIVE_MOBILE_DOWNLOADS = "drive_mobile_downloads"
         const val KEY_BACKUP_AT = "backup_at"
         const val KEY_BACKUP_DRIVE_AT = "backup_drive_at"
@@ -102,7 +111,7 @@ class SettingsRepository(private val dao: ProgressDao) {
         val deviceOnlyKeys = setOf(
             KEY_EQ_ENGINE, KEY_SEEDED, KEY_MS_SCAN_AT, KEY_MS_SCAN_COUNT, KEY_SLEEP_END_AT, KEY_SLEEP_MINUTES,
             KEY_DRIVE_FOLDER_ID, KEY_DRIVE_FOLDER_NAME, KEY_DRIVE_SCAN_AT, KEY_DRIVE_SCAN_COUNT,
-            KEY_DRIVE_NEEDS_SIGN_IN, KEY_BACKUP_AT, KEY_BACKUP_DRIVE_AT, PositionStore.KEY_LAST_ITEM,
+            KEY_DRIVE_NEEDS_SIGN_IN, KEY_DRIVE_NEEDS_RECONNECT, KEY_DRIVE_ACCOUNT, KEY_BACKUP_AT, KEY_BACKUP_DRIVE_AT, PositionStore.KEY_LAST_ITEM,
         )
 
         val speeds = listOf(1.0f, 1.25f, 1.5f, 1.75f, 2.0f)
@@ -131,6 +140,8 @@ class SettingsRepository(private val dao: ProgressDao) {
                 driveScanAt = map[KEY_DRIVE_SCAN_AT]?.toLongOrNull() ?: 0L,
                 driveScanCount = map[KEY_DRIVE_SCAN_COUNT]?.toIntOrNull() ?: 0,
                 driveNeedsSignIn = map[KEY_DRIVE_NEEDS_SIGN_IN] == "1",
+                driveNeedsReconnect = map[KEY_DRIVE_NEEDS_RECONNECT] == "1",
+                driveAccount = map[KEY_DRIVE_ACCOUNT].orEmpty(),
                 driveMobileDownloads = map[KEY_DRIVE_MOBILE_DOWNLOADS] == "1",
                 backupAt = map[KEY_BACKUP_AT]?.toLongOrNull() ?: 0L,
                 backupDriveAt = map[KEY_BACKUP_DRIVE_AT]?.toLongOrNull() ?: 0L,
@@ -199,6 +210,10 @@ class SettingsRepository(private val dao: ProgressDao) {
     }
 
     suspend fun setDriveNeedsSignIn(needs: Boolean) = put(KEY_DRIVE_NEEDS_SIGN_IN, if (needs) "1" else "0")
+
+    suspend fun setDriveNeedsReconnect(needs: Boolean) = put(KEY_DRIVE_NEEDS_RECONNECT, if (needs) "1" else "0")
+
+    suspend fun setDriveAccount(email: String) = put(KEY_DRIVE_ACCOUNT, email)
 
     suspend fun setDriveMobileDownloads(allow: Boolean) = put(KEY_DRIVE_MOBILE_DOWNLOADS, if (allow) "1" else "0")
 

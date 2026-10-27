@@ -80,6 +80,8 @@ import kotlinx.coroutines.sync.withPermit
 
 enum class Screen { Home, Library, Settings, DriveBrowser }
 
+private const val KEY_LIBRARY_SOURCE = "library_source"
+
 /** One row in Home or Library: a media file with its labels, copies and saved position. */
 data class LibraryItem(
     val media: MediaEntity,
@@ -227,6 +229,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val librarySearch = MutableStateFlow("")
     val librarySortByName = MutableStateFlow(false)
     val libraryFolder = MutableStateFlow<String?>(null)
+
+    /** 0.5.1: the Library section (All, Phone, Drive, YouTube Music, Suno), kept across launches. */
+    val librarySource = MutableStateFlow(LibrarySource.ALL)
+
+    /** 0.5.1: a first-level folder inside the Drive folder, or [DRIVE_TOP_LEVEL]. */
+    val librarySubfolder = MutableStateFlow<String?>(null)
+
+    /** Where the Drive browser goes back to from its top level. */
+    private var browserReturn = Screen.Settings
+
+    private var sourceChosen = false
+
+    fun setLibrarySource(source: LibrarySource) {
+        sourceChosen = true
+        librarySource.value = source
+        libraryFolder.value = null
+        librarySubfolder.value = null
+        viewModelScope.launch { settingsRepo.put(KEY_LIBRARY_SOURCE, source.key) }
+    }
+
+    /** Back inside the Library clears a folder first; returns false when there was none. */
+    fun libraryBack(): Boolean {
+        if (libraryFolder.value == null && librarySubfolder.value == null) return false
+        libraryFolder.value = null
+        librarySubfolder.value = null
+        return true
+    }
     val labelSheet = MutableStateFlow<LabelSheetTarget?>(null)
     val audioOnly = MutableStateFlow(false)
     val kidsUnlocked = MutableStateFlow(false)
@@ -351,6 +380,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }.state(null)
 
     init {
+        viewModelScope.launch {
+            val saved = LibrarySource.fromKey(settingsRepo.get(KEY_LIBRARY_SOURCE))
+            // A share or a Drive pick that landed first wins over the remembered section.
+            if (!sourceChosen) librarySource.value = saved
+        }
         viewModelScope.launch {
             update.value = UpdateChecker.check(application)
         }
@@ -1016,6 +1050,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     /** Opens the browser at its top level (called once the grant holds drive.readonly). */
     fun openDriveBrowser() {
+        if (screen.value != Screen.DriveBrowser) browserReturn = if (screen.value == Screen.Library) Screen.Library else Screen.Settings
         cancelCounts()
         driveBrowser.value = DriveBrowserState()
         screen.value = Screen.DriveBrowser
@@ -1042,13 +1077,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         RingLog.i("drive", "folder chosen in the browser: ${node.name} (${node.id})")
         setDriveFolder(node.id, node.name)
         closeDriveBrowser()
+        // 0.5.1: straight to the Drive section, where the listing shows as it runs.
+        screen.value = Screen.Library
+        setLibrarySource(LibrarySource.DRIVE)
     }
 
     private fun closeDriveBrowser() {
         browseJob?.cancel()
         browseJob = null
         cancelCounts()
-        screen.value = Screen.Settings
+        screen.value = browserReturn
     }
 
     private fun loadDriveLevel(path: List<DriveNode>) {
@@ -1258,7 +1296,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val ids = labelRepo.labelIdsFor(stored.uri)
             nowPlayingOpen.value = false
             screen.value = Screen.Library
-            libraryFolder.value = YtmLink.FOLDER_URI
+            setLibrarySource(LibrarySource.YTM)
             labelSheet.value = LabelSheetTarget.ForItem(
                 LibraryItem(media = stored, labelIds = ids, copies = 1, positionMs = 0L, lastPlayedAt = 0L, folderName = YtmLink.FOLDER_NAME),
             )

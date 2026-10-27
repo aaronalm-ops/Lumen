@@ -611,6 +611,25 @@ holding two local songs.
 | YTM, label, with access | Repeat with the screen off during the YouTube Music song | Local song 2 still starts when the song ends (best effort: Android may refuse to start playback from the background) |
 | YTM, positions | Share diagnostics after the runs | No `store: saved ytm://` lines; the sermon's rows are untouched |
 
+## 0.5.1
+
+### Library sections
+The Library opens on a row of section chips under the title: All, Phone, Drive, YouTube Music, Suno, each with its count. The last section chosen is remembered.
+- All: every file, no folders.
+- Phone: the phone's folders (MediaStore buckets, picked folders, WhatsApp) and their files.
+- Drive: a card with the folder, file count, when it was listed and the account, with Rescan, Change folder and Reconnect when needed; the first level of subfolders inside the Drive folder as folder rows; then the files. A large Drive audio file with no duration yet (over 40 MB) is shown as a sermon.
+- YouTube Music: shared songs and playlists; an empty state explains Share to Lumen; a hint row offers notification access when it is off.
+- Suno: every file the Suno rule labelled, from the phone or Drive; an empty state explains the folder naming.
+- Back clears a folder before it leaves the Library.
+- "Use this folder" in the Drive browser now lands on the Library's Drive section, where the listing shows as it runs. Back from the browser's top level returns to the screen that opened it.
+
+### 0.5.1 sheet
+1. Open Library: the chips show All, Phone, Drive, YouTube Music and Suno with counts.
+2. Tap Drive: the card shows the folder name and file count; subfolders show as rows; tap one to filter, Back to clear.
+3. Tap Change folder, pick a folder: Lumen lands back on the Drive section with the listing line, then the count.
+4. Tap YouTube Music and Suno: either the files or a card saying how to fill the section.
+5. Close and reopen Lumen: the Library opens on the last section chosen.
+
 ## Licence
 
 Not yet decided; private use. See `NOTICE`.

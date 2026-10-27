@@ -23,6 +23,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.lumen.player.data.LabelEntity
 import app.lumen.player.data.MediaRepository
+import app.lumen.player.data.drive.isDrive
 import app.lumen.player.remote.YtmLink
 import app.lumen.player.update.UpdateInfo
 
@@ -156,6 +157,8 @@ fun rowMeta(item: LibraryItem, labels: List<LabelEntity>): String {
         item.media.isVideo -> "Video"
         MediaRepository.isVoiceNote(item.media) -> "Voice note"
         item.media.durationMs > MediaRepository.SPEECH_THRESHOLD_MS -> "Sermon"
+        // 0.5.1: a Drive row has no duration until first play; a large audio file reads as a sermon.
+        item.media.durationMs <= 0L && item.media.sizeBytes > SPEECH_SIZE_GUESS -> "Sermon"
         else -> "Music"
     }
     val names = labels.filter { it.id in item.labelIds }.map { it.name }
@@ -165,7 +168,9 @@ fun rowMeta(item: LibraryItem, labels: List<LabelEntity>): String {
     else if (names.isNotEmpty()) parts += names.first()
     if (item.media.durationMs > 0) parts += formatTime(item.media.durationMs)
     // 0.5.0: a YouTube Music row carries its "via YouTube Music" chip instead of the folder name.
-    if (item.folderName.isNotBlank() && !YtmLink.isYtm(item.media.uri)) parts += item.folderName
+    // 0.5.1: a Drive row names its subfolder ("2025") when it sits in one.
+    val place = driveSubfolder(item)?.takeIf { item.media.isDrive } ?: item.folderName
+    if (place.isNotBlank() && !YtmLink.isYtm(item.media.uri)) parts += place
     return parts.joinToString(" · ")
 }
 

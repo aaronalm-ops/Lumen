@@ -127,6 +127,8 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
     val search by vm.librarySearch.collectAsState()
     val sortByName by vm.librarySortByName.collectAsState()
     val folderFilter by vm.libraryFolder.collectAsState()
+    val librarySource by vm.librarySource.collectAsState()
+    val librarySubfolder by vm.librarySubfolder.collectAsState()
     val driveScanning by vm.driveScanning.collectAsState()
     val downloads by vm.downloads.collectAsState()
     val unreachable by vm.unreachable.collectAsState()
@@ -247,21 +249,35 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
                     folders = folders,
                     labels = labels,
                     player = player,
-                    scanning = scanning || driveScanning,
+                    settings = settings,
+                    source = librarySource,
+                    scanning = scanning,
+                    driveScanning = driveScanning,
                     mediaAccessDenied = mediaAccessDenied,
+                    ytmAccess = ytmAccess,
                     unreachable = unreachable,
                     downloads = downloads,
                     search = search,
                     sortByName = sortByName,
                     folderFilter = folderFilter,
+                    subfolder = librarySubfolder,
                     onSearch = { vm.librarySearch.value = it },
                     onToggleSort = { vm.librarySortByName.value = !vm.librarySortByName.value },
-                    onFolder = { vm.libraryFolder.value = it },
                     onItem = { item, queue -> vm.play(item, queue) },
                     onItemLongPress = { vm.openLabelSheet(LabelSheetTarget.ForItem(it)) },
-                    onScanPhone = actions.scanPhone,
-                    onAddFolder = actions.addFolder,
-                    onOpenAppSettings = actions.openAppSettings,
+                    actions = LibraryActions(
+                        onSource = vm::setLibrarySource,
+                        onFolder = { vm.libraryFolder.value = it },
+                        onSubfolder = { vm.librarySubfolder.value = it },
+                        onScanPhone = actions.scanPhone,
+                        onAddFolder = actions.addFolder,
+                        onOpenAppSettings = actions.openAppSettings,
+                        onChooseDriveFolder = actions.connectDrive,
+                        onRescanDrive = vm::rescanDrive,
+                        onDriveSignIn = actions.driveSignIn,
+                        onOpenYouTubeMusic = vm::openYouTubeMusic,
+                        onAllowYouTubeMusic = actions.openNotificationAccess,
+                    ),
                 )
                 Screen.Settings -> SettingsScreen(
                     settings = settings,
@@ -345,7 +361,11 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
                 }
             }
             BackHandler(enabled = screen != Screen.Home) {
-                if (screen == Screen.DriveBrowser) vm.driveBrowserBack() else vm.screen.value = Screen.Home
+                when {
+                    screen == Screen.DriveBrowser -> vm.driveBrowserBack()
+                    screen == Screen.Library && vm.libraryBack() -> Unit
+                    else -> vm.screen.value = Screen.Home
+                }
             }
         } else {
             // Kids lock shows Now Playing (its lock screen) at once: the effect above opens it a
@@ -382,7 +402,11 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
                         }
                         // The Drive browser goes up a level (and from its top level back to Settings).
                         BackHandler(enabled = screen != Screen.Home) {
-                            if (screen == Screen.DriveBrowser) vm.driveBrowserBack() else vm.screen.value = Screen.Home
+                            when {
+                                screen == Screen.DriveBrowser -> vm.driveBrowserBack()
+                                screen == Screen.Library && vm.libraryBack() -> Unit
+                                else -> vm.screen.value = Screen.Home
+                            }
                         }
                     }
                 }

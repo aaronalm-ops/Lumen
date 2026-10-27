@@ -35,6 +35,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -77,8 +78,13 @@ fun NotesScreen(
     val parsed = remember(notes?.json) { notes?.json?.takeIf { it.isNotBlank() }?.let { SermonNotes.parse(it) } }
     var tab by rememberSaveable(item.uri) { mutableStateOf(if (initialQuery.isNotBlank() && segments.isNotEmpty()) 1 else 0) }
     var query by rememberSaveable(item.uri) { mutableStateOf(initialQuery) }
+    // The transcript arrives a moment after the screen opens; a search from the Library lands on it.
+    LaunchedEffect(segments.isNotEmpty()) {
+        if (initialQuery.isNotBlank() && segments.isNotEmpty()) tab = 1
+    }
 
-    Column(Modifier.fillMaxSize().background(c.base).statusBarsPadding().navigationBarsPadding()) {
+    // pointerInput holds every touch on this screen, so nothing reaches the screen underneath.
+    Column(Modifier.fillMaxSize().background(c.base).pointerInput(Unit) {}.statusBarsPadding().navigationBarsPadding()) {
         Row(
             modifier = Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 8.dp),
             verticalAlignment = Alignment.CenterVertically,

@@ -204,7 +204,7 @@ fun NowPlayingScreen(
             },
     ) {
         when {
-            split != null && remote == null -> TabletopLayout(split, player, controller, item, labels, settings, speech, noInterruptions, timeline, downloadProgress, actions, paned, showCast)
+            split != null && remote == null -> TabletopLayout(split, player, controller, item, labels, settings, speech, noInterruptions, timeline, downloadProgress, actions, paned, showCast, notesState, notesAvailable)
             player.isVideo && landscape && controller != null && remote == null -> VideoSurface(controller, Modifier.fillMaxSize().background(c.base))
             else -> Column(
                 Modifier
@@ -217,7 +217,7 @@ fun NowPlayingScreen(
                 Header(labels, if (remote != null) false else speech, item, paned, actions, showCast = showCast, casting = player.casting)
                 when {
                     remote != null -> RemoteLayout(remote, player, labels, actions)
-                    speech -> SpeechLayout(player, item, settings, timeline, noInterruptions, downloadProgress, actions)
+                    speech -> SpeechLayout(player, item, settings, timeline, noInterruptions, downloadProgress, actions, notesState, notesAvailable)
                     else -> MusicLayout(player, controller, item, labels, settings, audioOnly, downloadProgress, actions)
                 }
             }
@@ -298,6 +298,8 @@ private fun TabletopLayout(
     actions: NowPlayingActions,
     paned: Boolean,
     showCast: Boolean,
+    notesState: String?,
+    notesAvailable: Boolean,
 ) {
     Column(Modifier.fillMaxSize()) {
         Column(
@@ -436,6 +438,8 @@ private fun SpeechLayout(
     noInterruptions: Boolean,
     downloadProgress: Float?,
     actions: NowPlayingActions,
+    notesState: String?,
+    notesAvailable: Boolean,
 ) {
     SpeechTitle(player, actions)
     Spacer(Modifier.height(12.dp))

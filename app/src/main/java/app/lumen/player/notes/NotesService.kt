@@ -63,33 +63,40 @@ class NotesService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        lastStartId = startId
-        goForeground("Getting ready")
+        goForeground(lastStep.ifBlank { "Getting ready" })
         val uri = intent?.getStringExtra(EXTRA_URI)
-        if (uri != null) {
-            val added = synchronized(pending) { pending.add(uri) }
-            if (added) queue.trySend(uri)
+        val idle = synchronized(pending) {
+            lastStartId = startId
+            if (uri != null && pending.add(uri)) queue.trySend(uri)
+            pending.isEmpty()
         }
         if (worker == null) {
             worker = scope.launch {
                 for (next in queue) {
                     run(next)
-                    val empty = synchronized(pending) {
+                    // Read the newest start id under the same lock that saw the queue empty, so a
+                    // job queued meanwhile is never stopped with the service.
+                    val stopId = synchronized(pending) {
                         pending.remove(next)
-                        pending.isEmpty()
+                        if (pending.isEmpty()) lastStartId else -1
                     }
-                    if (empty) {
-                        ServiceCompat.stopForeground(this@NotesService, ServiceCompat.STOP_FOREGROUND_REMOVE)
-                        stopSelfResult(lastStartId)
-                    }
+                    if (stopId >= 0) stopSelfResult(stopId)
                 }
             }
         }
-        if (uri == null && synchronized(pending) { pending.isEmpty() }) stopSelfResult(startId)
+        if (idle) stopSelfResult(startId)
         return START_NOT_STICKY
     }
 
     override fun onDestroy() {
+        // Anything still queued when the service goes cannot carry on; say so on its row.
+        val left = synchronized(pending) { pending.toList() }
+        if (left.isNotEmpty()) {
+            val dao = LumenApp.from(this).notesRepo.dao
+            LumenApp.from(this).appScope.launch {
+                left.forEach { dao.setStatus(it, NotesRepository.STATUS_FAILED, "Stopped before it finished. Tap Write again", System.currentTimeMillis()) }
+            }
+        }
         scope.cancel()
         super.onDestroy()
     }

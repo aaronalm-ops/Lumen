@@ -147,7 +147,6 @@ class GeminiClient(private val apiKey: String) {
             .put("responseMimeType", "application/json")
             .put("responseSchema", schema)
             .put("maxOutputTokens", maxOutputTokens)
-            .put("temperature", 0.2)
         if (thinking != null) config.put("thinkingConfig", JSONObject().put("thinkingLevel", thinking))
         val request = JSONObject()
             .put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", system))))

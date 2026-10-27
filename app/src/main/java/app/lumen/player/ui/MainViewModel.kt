@@ -1386,6 +1386,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         kidsUnlocked.value = false
         withController { c ->
             if (c.currentMediaItem?.mediaId == item.uri) {
+                if (c.playbackState == Player.STATE_IDLE) c.prepare()
                 c.seekTo(target)
                 c.play()
             } else {

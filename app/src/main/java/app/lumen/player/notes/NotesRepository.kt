@@ -79,7 +79,12 @@ class NotesRepository(
             ),
         )
         val intent = Intent(context, NotesService::class.java).putExtra(NotesService.EXTRA_URI, media.uri)
-        ContextCompat.startForegroundService(context, intent)
+        try {
+            ContextCompat.startForegroundService(context, intent)
+        } catch (t: Throwable) {
+            dao.setStatus(media.uri, STATUS_FAILED, "Lumen could not start the notes job. Try again with Lumen open", System.currentTimeMillis())
+            throw t
+        }
         RingLog.i("notes", "queued: ${media.title}")
     }
 

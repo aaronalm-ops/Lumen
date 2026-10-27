@@ -132,7 +132,41 @@ class MainActivity : ComponentActivity() {
             LumenRoot(vm = vm, actions = actions, showBrand = showBrand)
         }
 
-        if (savedInstanceState == null) handleShortcut(intent)
+        if (savedInstanceState == null) {
+            handleShortcut(intent)
+            handleOpenWith(intent)
+        }
+    }
+
+    /**
+     * "Open with Lumen" from Files, WhatsApp, Drive or the browser. The file is matched to the
+     * library by name and size so its saved position and labels apply; otherwise it plays from the
+     * uri the sender granted.
+     */
+    private fun handleOpenWith(intent: Intent?) {
+        if (intent?.action != Intent.ACTION_VIEW) return
+        val uri = intent.data ?: return
+        var name: String? = null
+        var size = -1L
+        try {
+            contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME, android.provider.OpenableColumns.SIZE), null, null, null)?.use { c ->
+                if (c.moveToFirst()) {
+                    name = c.getString(0)
+                    if (!c.isNull(1)) size = c.getLong(1)
+                }
+            }
+        } catch (t: Throwable) {
+            RingLog.w("ui", "open with: query failed: $t")
+        }
+        if (name == null) name = uri.lastPathSegment?.substringAfterLast('/')
+        try {
+            contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        } catch (_: Throwable) {
+            // Most senders grant a one-off permission only; the library match covers resume.
+        }
+        RingLog.i("ui", "open with: $name ($size bytes) type=${intent.type}")
+        vm.openExternal(uri, name ?: "Untitled", size, intent.type ?: contentResolver.getType(uri) ?: "")
+        intent.action = Intent.ACTION_MAIN
     }
 
     /**
@@ -183,6 +217,7 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         handleShortcut(intent)
+        handleOpenWith(intent)
     }
 
     private fun handleShortcut(intent: Intent?) {

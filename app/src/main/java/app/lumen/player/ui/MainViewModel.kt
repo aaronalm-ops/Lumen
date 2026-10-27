@@ -455,6 +455,42 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         nowPlayingOpen.value = true
     }
 
+    /**
+     * Plays a file handed over by another app. A library row with the same size and name is used
+     * when there is one, so the saved position, labels and speech layout apply; otherwise the
+     * sender's uri plays directly (its position is still saved under that uri).
+     */
+    fun openExternal(uri: Uri, displayName: String, sizeBytes: Long, mime: String) {
+        viewModelScope.launch {
+            val base = displayName.substringBeforeLast('.')
+            val match = items.value.firstOrNull { li ->
+                li.uri == uri.toString() ||
+                    (sizeBytes > 0 && li.media.sizeBytes == sizeBytes &&
+                        (li.media.title.equals(base, ignoreCase = true) || li.media.relPath.endsWith(displayName, ignoreCase = true)))
+            } ?: items.value.firstOrNull { li -> sizeBytes > 0 && li.media.sizeBytes == sizeBytes }
+            if (match != null) {
+                RingLog.i("ui", "open with: matched library row ${match.media.title}")
+                play(match)
+                return@launch
+            }
+            val item = MediaItem.Builder()
+                .setMediaId(uri.toString())
+                .setUri(uri)
+                .setMimeType(mime.takeIf { it.isNotBlank() })
+                .setRequestMetadata(MediaItem.RequestMetadata.Builder().setMediaUri(uri).build())
+                .setMediaMetadata(androidx.media3.common.MediaMetadata.Builder().setTitle(base).build())
+                .build()
+            kidsUnlocked.value = false
+            withController { c ->
+                c.shuffleModeEnabled = false
+                c.setMediaItem(item)
+                c.prepare()
+                c.play()
+            }
+            nowPlayingOpen.value = true
+        }
+    }
+
     fun playLabel(label: LabelEntity) {
         val members = items.value.filter { label.id in it.labelIds }.sortedByDescending { it.media.dateAdded }
         if (members.isEmpty()) return

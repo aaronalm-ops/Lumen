@@ -3,6 +3,7 @@ package app.lumen.player.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -39,6 +40,7 @@ import app.lumen.player.data.LabelRepository
 import app.lumen.player.data.MediaRepository
 import app.lumen.player.data.Settings
 import app.lumen.player.data.isMediaStore
+import app.lumen.player.remote.RemoteController
 import app.lumen.player.remote.YtmLink
 import app.lumen.player.remote.isYtm
 
@@ -83,6 +85,10 @@ fun LibraryScreen(
     sortByName: Boolean,
     folderFilter: String?,
     subfolder: String?,
+    /** 0.6.0: lines said in transcribed recordings that match the search. */
+    transcriptHits: List<TranscriptHit> = emptyList(),
+    onHit: (TranscriptHit) -> Unit = {},
+    onHitLongPress: (TranscriptHit) -> Unit = {},
     onSearch: (String) -> Unit,
     onToggleSort: () -> Unit,
     onItem: (LibraryItem, List<LibraryItem>) -> Unit,
@@ -170,11 +176,11 @@ fun LibraryScreen(
                                 "ready for labels and playlists, and plays in YouTube Music when you tap it.",
                             action = "Open YouTube Music",
                             onAction = actions.onOpenYouTubeMusic,
-                            notice = if (!ytmAccess) ({ YtmAccessNotice(actions.onAllowYouTubeMusic) }) else null,
+                            notice = if (!ytmAccess && RemoteController.CONTROL_ENABLED) ({ YtmAccessNotice(actions.onAllowYouTubeMusic) }) else null,
                         )
                     }
                     return@LazyColumn
-                } else if (!ytmAccess) {
+                } else if (!ytmAccess && RemoteController.CONTROL_ENABLED) {
                     item { HintCard("Lumen can pause and skip YouTube Music once it may read its playback controls", "Allow", actions.onAllowYouTubeMusic) }
                 }
                 LibrarySource.SUNO -> if (inSection.isEmpty()) {
@@ -208,12 +214,25 @@ fun LibraryScreen(
             }
 
             item {
-                Spacer(Modifier.height(if (source == LibrarySource.DRIVE || (source == LibrarySource.YTM && !ytmAccess)) 12.dp else 0.dp))
+                Spacer(Modifier.height(if (source == LibrarySource.DRIVE || (source == LibrarySource.YTM && !ytmAccess && RemoteController.CONTROL_ENABLED)) 12.dp else 0.dp))
                 SearchField(
                     value = search,
-                    placeholder = if (source == LibrarySource.ALL) "Search titles, folders and labels" else "Search ${source.title}",
+                    placeholder = if (source == LibrarySource.ALL) "Search titles, labels and what was said" else "Search ${source.title}",
                     onChange = onSearch,
                 )
+            }
+
+            // 0.6.0: what was said. Tap plays from the line; hold opens the transcript at the search.
+            val hits = if (search.trim().length >= 3) transcriptHits.filter { inSource(it.item, source, sunoId) } else emptyList()
+            if (hits.isNotEmpty()) {
+                item {
+                    SectionLabel("Said in recordings", count = hits.size.toString(), modifier = Modifier.padding(top = 16.dp, bottom = 10.dp))
+                    ListCard {
+                        hits.forEachIndexed { index, hit ->
+                            HitRow(hit, search.trim(), divider = index < hits.lastIndex, onClick = { onHit(hit) }, onLongClick = { onHitLongPress(hit) })
+                        }
+                    }
+                }
             }
 
             // Folders: the phone's buckets and picked folders, or the first level inside the Drive folder.
@@ -551,6 +570,30 @@ private fun FolderRow(name: String, icon: ImageVector, count: Int, selected: Boo
             Text(formatCount(count), style = Lumen.type.timeS, color = c.text2)
             Spacer(Modifier.width(2.dp))
             Icon(LumenIcons.ChevronRight, contentDescription = null, tint = c.text3, modifier = Modifier.size(20.dp))
+        }
+        if (divider) HorizontalDivider(color = c.divider, thickness = 1.dp, modifier = Modifier.padding(horizontal = 14.dp))
+    }
+}
+
+/** 0.6.0: one transcript line found by the search: the recording, the line and its time. */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@Composable
+private fun HitRow(hit: TranscriptHit, query: String, divider: Boolean, onClick: () -> Unit, onLongClick: () -> Unit) {
+    val c = Lumen.colours
+    Column {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.Top,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(hit.item.media.title, style = Lumen.type.bodyS, color = c.text2, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(highlight(hit.text, query, c.accentInk), style = Lumen.type.body, color = c.text, maxLines = 3, overflow = TextOverflow.Ellipsis)
+            }
+            Text(formatTime(hit.ms), style = Lumen.type.timeS, color = c.accentInk, modifier = Modifier.padding(top = 2.dp))
         }
         if (divider) HorizontalDivider(color = c.divider, thickness = 1.dp, modifier = Modifier.padding(horizontal = 14.dp))
     }

@@ -76,6 +76,7 @@ import androidx.media3.ui.PlayerView
 import app.lumen.player.data.LabelEntity
 import app.lumen.player.data.Settings
 import app.lumen.player.data.drive.isDrive
+import app.lumen.player.remote.RemoteController
 import app.lumen.player.remote.YtmLink
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -115,6 +116,8 @@ class NowPlayingActions(
     // 0.5.0.
     /** "Open YouTube Music" in remote mode, when Lumen cannot control it from here. */
     val openYouTubeMusic: () -> Unit,
+    /** 0.6.0: the notes and transcript of the item playing. */
+    val openNotes: () -> Unit = {},
 )
 
 /** The tabletop split, in this screen's own coordinates: the height above the hinge and the hinge itself. */
@@ -155,6 +158,10 @@ fun NowPlayingScreen(
     castAvailable: Boolean = false,
     /** 0.5.0: the current item is a YouTube Music link; Now Playing shows and drives YouTube Music. */
     remote: RemoteUi? = null,
+    /** 0.6.0: "working", "done", "failed" or null for the item playing's notes. */
+    notesState: String? = null,
+    /** 0.6.0: whether this item can have notes (audio on the phone or in Drive). */
+    notesAvailable: Boolean = false,
 ) {
     val c = Lumen.colours
     BackHandler(enabled = !paned) { if (!kidsLocked) actions.close() }
@@ -341,7 +348,7 @@ private fun TabletopLayout(
         ) {
             Spacer(Modifier.height(8.dp))
             if (speech) {
-                ChipRow(player, item, settings, noInterruptions, timeline.any { it.bookmark != null }, downloadProgress, actions)
+                ChipRow(player, item, settings, noInterruptions, timeline.any { it.bookmark != null }, downloadProgress, actions, notesState, notesAvailable)
                 Spacer(Modifier.height(12.dp))
                 SpeechTransport(player, settings, actions)
                 ChapterList(player, timeline, actions)
@@ -432,7 +439,7 @@ private fun SpeechLayout(
 ) {
     SpeechTitle(player, actions)
     Spacer(Modifier.height(12.dp))
-    ChipRow(player, item, settings, noInterruptions, timeline.any { it.bookmark != null }, downloadProgress, actions)
+    ChipRow(player, item, settings, noInterruptions, timeline.any { it.bookmark != null }, downloadProgress, actions, notesState, notesAvailable)
     Spacer(Modifier.height(16.dp))
     // Paused on a speech item, Lumen is holding the place: the head turns to the ember.
     Scrubber(
@@ -530,6 +537,8 @@ private fun ChipRow(
     hasBookmarks: Boolean,
     downloadProgress: Float?,
     actions: NowPlayingActions,
+    notesState: String?,
+    notesAvailable: Boolean,
 ) {
     val c = Lumen.colours
     val view = LocalView.current
@@ -572,6 +581,18 @@ private fun ChipRow(
             },
         )
         OfflineChip(item, downloadProgress, actions.toggleOffline)
+        // 0.6.0: notes and transcript. Active once written; "Writing" while the job runs.
+        if (notesAvailable) {
+            StatusChip(
+                text = when (notesState) {
+                    "working" -> "Writing"
+                    else -> "Notes"
+                },
+                icon = LumenIcons.Notes,
+                active = notesState == "done",
+                onClick = actions.openNotes,
+            )
+        }
     }
     if (downloadProgress != null) ProgressLine(fraction = downloadProgress, thickness = 1.dp, modifier = Modifier.padding(top = 4.dp))
     if (player.casting) CastingNote()
@@ -814,7 +835,7 @@ private fun RemoteLayout(remote: RemoteUi, player: PlayerState, labels: List<Lab
     } else {
         Spacer(Modifier.height(8.dp))
         Text("Open YouTube Music to control playback", style = Lumen.type.body, color = c.text2)
-        if (!remote.access) {
+        if (!remote.access && RemoteController.CONTROL_ENABLED) {
             Text(
                 "Allow Lumen to control YouTube Music in Settings to see it here and move on to the next item",
                 style = Lumen.type.bodyS,

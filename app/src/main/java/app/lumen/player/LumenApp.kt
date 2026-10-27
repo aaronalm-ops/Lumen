@@ -15,6 +15,7 @@ import app.lumen.player.data.drive.Connectivity
 import app.lumen.player.data.drive.DriveAuth
 import app.lumen.player.data.drive.DriveRepository
 import app.lumen.player.diag.RingLog
+import app.lumen.player.notes.NotesRepository
 import app.lumen.player.remote.RemoteController
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -38,6 +39,10 @@ class LumenApp : Application() {
     lateinit var drive: DriveRepository
         private set
     lateinit var backup: BackupManager
+        private set
+
+    /** 0.6.0: sermon notes and transcripts. */
+    lateinit var notesRepo: NotesRepository
         private set
 
     /**
@@ -67,7 +72,17 @@ class LumenApp : Application() {
         connectivity = Connectivity(this)
         drive = DriveRepository(this, db.mediaDao(), labels, settings, DriveAuth(this), connectivity)
         backup = BackupManager(this, db, store, settings, labels, drive)
+        notesRepo = NotesRepository(this, db.notesDao(), connectivity)
         RingLog.i("app", "process start, version ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
+        appScope.launch {
+            // 0.6.0: a notes job the last process did not finish cannot carry on; say so.
+            try {
+                val stopped = db.notesDao().markInterrupted()
+                if (stopped > 0) RingLog.i("notes", "$stopped unfinished notes jobs marked stopped")
+            } catch (t: Throwable) {
+                RingLog.w("notes", "interrupted check failed: $t")
+            }
+        }
         appScope.launch {
             try {
                 // 0.4.0: the old Night toggle becomes Appearance "Dark" (once; a no-op after).

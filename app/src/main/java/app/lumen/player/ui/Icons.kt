@@ -236,6 +236,16 @@ object LumenIcons {
         }
     }
 
+    /** 0.6.0: notes, a page with three lines of text. */
+    val Notes: ImageVector by lazy {
+        icon("notes") {
+            stroke { moveTo(6f, 3.5f); lineTo(15f, 3.5f); lineTo(19f, 7.5f); lineTo(19f, 20.5f); lineTo(6f, 20.5f); close() }
+            stroke { moveTo(9f, 10f); lineTo(16f, 10f) }
+            stroke { moveTo(9f, 13.5f); lineTo(16f, 13.5f) }
+            stroke { moveTo(9f, 17f); lineTo(13.5f, 17f) }
+        }
+    }
+
     /** Overflow: three filled dots, vertical, for the chapter list's menu. */
     val More: ImageVector by lazy {
         icon("more") {

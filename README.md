@@ -630,6 +630,32 @@ The Library opens on a row of section chips under the title: All, Phone, Drive, 
 4. Tap YouTube Music and Suno: either the files or a card saying how to fill the section.
 5. Close and reopen Lumen: the Library opens on the last section chosen.
 
+## 0.6.0
+
+### Installs again
+- 0.5.0 and 0.5.1 asked for notification access (the YouTube Music control). Play Protect blocks sideloaded apps that ask for it, so neither could install. 0.6.0 drops the listener; `RemoteController.CONTROL_ENABLED` is false and every row that offered it is hidden. Shared YouTube Music songs still open and play in YouTube Music.
+
+### Sermon notes (Gemini, the owner's own key)
+- Settings, Sermon notes: paste a Gemini key from Google AI Studio. Stored in private preferences (`lumen_secrets`), never in `kv`, so never in a backup.
+- Now Playing, Notes chip (audio on the phone or in Drive). Write notes needs Wi-Fi.
+- `NotesService` (foreground, dataSync): uploads the recording to the Files API (the kept copy, the phone file, or straight from Drive), asks `gemini-3.8-flash` (fallback `gemini-3.6-flash`) for a timed transcript as JSON segments, carrying on past the output limit up to 6 calls, deletes the upload, then asks for notes from the transcript text alone.
+- Notes template (Aaron, 2026-10-27): Study notes and Journal mixed with nothing added. Sections in the speaker's order with time, scriptures cited, what was said as paragraphs, points with times, lines word for word; announcements last. The prompt forbids questions, prayers, applications and summaries the speaker did not say.
+- Every time plays from itself. The transcript tab searches its lines; the line now playing has the amber time.
+- Room v5: `notes` (one row per uri: status, step, JSON, model) and `transcript_segments`. A job cut short by the process dying is marked stopped at the next start.
+
+### Search what was said
+- Library search of three letters or more also lists "Said in recordings": tap plays from that line, hold opens the transcript at the search.
+
+### Deferred
+- True crossfade (two players) moves to 0.6.1. Notes are not in backups yet.
+
+### 0.6.0 sheet
+1. Install 0.6.0 over 0.4.1. It should install without the Play Protect block.
+2. Settings, Sermon notes, Get a key, sign in to Google AI Studio, create a key, copy it, paste, Save.
+3. Play a sermon, tap Notes, Write notes, allow notifications. Leave Lumen; the notification shows each step.
+4. When done: read the notes, tap a time, check the jump lands on what was said.
+5. Transcript tab: search a word; Library search the same word.
+
 ## Licence
 
 Not yet decided; private use. See `NOTICE`.

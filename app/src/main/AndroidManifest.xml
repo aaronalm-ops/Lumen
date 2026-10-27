@@ -4,6 +4,10 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 0.6.0: sermon notes run as a short data sync while the recording uploads and Gemini writes.
+         Notifications are asked for only when the owner first taps Write notes. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Phase 1b: Drive streaming and downloads check for a validated, unmetered network. -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
@@ -83,17 +87,13 @@
             </intent-filter>
         </service>
 
-        <!-- 0.5.0: Notification access, switched on by the owner in system settings. Lumen reads no
-             notifications; the access only lets it find and control YouTube Music's media session. -->
+        <!-- 0.6.0: the YouTube Music notification listener (0.5.0) is gone. Play Protect blocks
+             sideloaded apps that ask for notification access, so 0.5.0 and 0.5.1 could not install. -->
+
         <service
-            android:name=".remote.LumenNotificationListener"
-            android:exported="true"
-            android:label="@string/app_name"
-            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
-            <intent-filter>
-                <action android:name="android.service.notification.NotificationListenerService" />
-            </intent-filter>
-        </service>
+            android:name=".notes.NotesService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
 
         <receiver
             android:name="androidx.media3.session.MediaButtonReceiver"

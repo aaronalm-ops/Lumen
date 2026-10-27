@@ -32,6 +32,8 @@ import app.lumen.player.data.MediaEntity
 import app.lumen.player.data.MediaLabelEntity
 import app.lumen.player.data.MediaPermissions
 import app.lumen.player.data.MediaRepository
+import app.lumen.player.data.NotesEntity
+import app.lumen.player.data.SegmentEntity
 import app.lumen.player.data.ProgressEntity
 import app.lumen.player.data.Settings
 import app.lumen.player.data.SettingsRepository
@@ -67,6 +69,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
@@ -145,6 +149,9 @@ data class TimelineMark(
     val isChapter: Boolean get() = chapter != null
 }
 
+/** 0.6.0: a line said in a transcribed recording that matches the Library search. */
+data class TranscriptHit(val item: LibraryItem, val ms: Long, val text: String)
+
 /** What the label sheet is editing: the labels of one item, or one label's own settings. */
 sealed class LabelSheetTarget {
     data class ForItem(val item: LibraryItem) : LabelSheetTarget()
@@ -152,7 +159,7 @@ sealed class LabelSheetTarget {
 }
 
 @OptIn(UnstableApi::class)
-@kotlin.OptIn(ExperimentalCoroutinesApi::class)
+@kotlin.OptIn(ExperimentalCoroutinesApi::class, kotlinx.coroutines.FlowPreview::class)
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val app = LumenApp.from(application)
@@ -1300,6 +1307,94 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             labelSheet.value = LabelSheetTarget.ForItem(
                 LibraryItem(media = stored, labelIds = ids, copies = 1, positionMs = 0L, lastPlayedAt = 0L, folderName = YtmLink.FOLDER_NAME),
             )
+        }
+    }
+
+
+    // 0.6.0: sermon notes and transcript search.
+
+    private val notesRepo = app.notesRepo
+
+    /** The item whose notes are open, by uri; null when the notes screen is closed. */
+    val notesOpen = MutableStateFlow<String?>(null)
+
+    /** What the transcript tab opens searching for (from a Library hit). */
+    val notesQuery = MutableStateFlow("")
+
+    val notesItem: StateFlow<LibraryItem?> = combine(notesOpen, items) { uri, list ->
+        if (uri == null) null else list.firstOrNull { it.uri == uri }
+    }.state(null)
+
+    val openNotes: StateFlow<NotesEntity?> = notesOpen.flatMapLatest { uri ->
+        if (uri == null) flowOf(null) else notesRepo.notes(uri)
+    }.state(null)
+
+    val openSegments: StateFlow<List<SegmentEntity>> = notesOpen.flatMapLatest { uri ->
+        if (uri == null) flowOf(emptyList()) else notesRepo.segments(uri)
+    }.state(emptyList())
+
+    /** Every notes row by uri, for the Notes chip's state on Now Playing. */
+    val notesByUri: StateFlow<Map<String, NotesEntity>> = notesRepo.all.map { rows -> rows.associateBy { it.mediaUri } }.state(emptyMap())
+
+    val geminiKeyHint = MutableStateFlow(notesRepo.keyHint())
+
+    /** Lines said in any transcribed recording that match the Library search (three letters or more). */
+    val transcriptHits: StateFlow<List<TranscriptHit>> = combine(librarySearch.debounce(250), items) { q, list -> q to list }
+        .mapLatest { (q, list) ->
+            if (q.trim().length < 3) {
+                emptyList()
+            } else {
+                val byUri = list.associateBy { it.uri }
+                notesRepo.search(q).mapNotNull { seg -> byUri[seg.mediaUri]?.let { TranscriptHit(it, seg.startMs, seg.text) } }
+            }
+        }
+        .flowOn(Dispatchers.IO)
+        .state(emptyList())
+
+    fun openNotesFor(item: LibraryItem, query: String = "") {
+        notesQuery.value = query
+        notesOpen.value = item.uri
+    }
+
+    fun closeNotes() {
+        notesOpen.value = null
+        notesQuery.value = ""
+    }
+
+    fun notesBlocker(item: LibraryItem): String? = notesRepo.blocker(item.media)
+
+    fun writeNotes(item: LibraryItem) {
+        if (notesRepo.blocker(item.media) != null) return
+        viewModelScope.launch {
+            try {
+                notesRepo.start(item.media)
+            } catch (t: Throwable) {
+                RingLog.e("notes", "could not start", t)
+            }
+        }
+    }
+
+    fun saveGeminiKey(key: String) {
+        notesRepo.setApiKey(key)
+        geminiKeyHint.value = notesRepo.keyHint()
+    }
+
+    /** Plays [item] from [ms]: a seek when it is already loaded, otherwise a queue of one starting there. */
+    fun playAt(item: LibraryItem, ms: Long) {
+        if (item.media.isYtm) return
+        val target = ms.coerceAtLeast(0L)
+        kidsUnlocked.value = false
+        withController { c ->
+            if (c.currentMediaItem?.mediaId == item.uri) {
+                c.seekTo(target)
+                c.play()
+            } else {
+                c.shuffleModeEnabled = false
+                c.setMediaItems(listOf(mediaItemFor(item)), 0, target)
+                c.prepare()
+                c.play()
+            }
+            RingLog.i("notes", "play ${item.media.title} from $target")
         }
     }
 

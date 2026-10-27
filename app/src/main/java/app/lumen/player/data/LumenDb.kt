@@ -306,6 +306,70 @@ interface LabelDao {
     suspend fun detachAll(labelId: Long)
 }
 
+/**
+ * 0.6.0: a sermon's notes and where the job stands. One row per media uri. [status] is "working",
+ * "done" or "failed"; [step] is the line shown while working or the reason it failed; [json] holds
+ * the notes as Gemini returned them (see notes/SermonNotes.kt), empty until done.
+ */
+@Entity(tableName = "notes")
+data class NotesEntity(
+    @PrimaryKey @ColumnInfo(name = "media_uri") val mediaUri: String,
+    val title: String,
+    @ColumnInfo(name = "size_bytes") val sizeBytes: Long,
+    val status: String,
+    val step: String,
+    val json: String,
+    val model: String,
+    @ColumnInfo(name = "created_at") val createdAt: Long,
+    @ColumnInfo(name = "updated_at") val updatedAt: Long,
+)
+
+/** 0.6.0: one timed line of a transcript, for search and the transcript view. */
+@Entity(tableName = "transcript_segments", indices = [Index(value = ["media_uri"])])
+data class SegmentEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    @ColumnInfo(name = "media_uri") val mediaUri: String,
+    @ColumnInfo(name = "start_ms") val startMs: Long,
+    val text: String,
+)
+
+@Dao
+interface NotesDao {
+    @Query("SELECT * FROM notes WHERE media_uri = :uri LIMIT 1")
+    fun notesFlow(uri: String): Flow<NotesEntity?>
+
+    @Query("SELECT * FROM notes WHERE media_uri = :uri LIMIT 1")
+    suspend fun notes(uri: String): NotesEntity?
+
+    @Query("SELECT * FROM notes")
+    fun allFlow(): Flow<List<NotesEntity>>
+
+    @Upsert
+    suspend fun upsert(notes: NotesEntity)
+
+    @Query("UPDATE notes SET status = :status, step = :step, updated_at = :at WHERE media_uri = :uri")
+    suspend fun setStatus(uri: String, status: String, step: String, at: Long)
+
+    @Query("UPDATE notes SET status = 'failed', step = 'Stopped before it finished. Tap Write notes to try again' WHERE status = 'working'")
+    suspend fun markInterrupted(): Int
+
+    @Query("DELETE FROM notes WHERE media_uri = :uri")
+    suspend fun delete(uri: String)
+
+    @Query("SELECT * FROM transcript_segments WHERE media_uri = :uri ORDER BY start_ms ASC")
+    fun segmentsFlow(uri: String): Flow<List<SegmentEntity>>
+
+    @Insert
+    suspend fun insertSegments(segments: List<SegmentEntity>)
+
+    @Query("DELETE FROM transcript_segments WHERE media_uri = :uri")
+    suspend fun deleteSegments(uri: String)
+
+    /** Plain substring search; a few dozen sermons are tens of thousands of rows at most. */
+    @Query("SELECT * FROM transcript_segments WHERE text LIKE '%' || :q || '%' ORDER BY media_uri ASC, start_ms ASC LIMIT :limit")
+    suspend fun search(q: String, limit: Int): List<SegmentEntity>
+}
+
 @Database(
     entities = [
         ProgressEntity::class,
@@ -316,14 +380,17 @@ interface LabelDao {
         MediaLabelEntity::class,
         BookmarkEntity::class,
         ChapterEntity::class,
+        NotesEntity::class,
+        SegmentEntity::class,
     ],
-    version = 4,
+    version = 5,
     exportSchema = false,
 )
 abstract class LumenDb : RoomDatabase() {
     abstract fun progressDao(): ProgressDao
     abstract fun mediaDao(): MediaDao
     abstract fun labelDao(): LabelDao
+    abstract fun notesDao(): NotesDao
 
     companion object {
         /**
@@ -395,9 +462,27 @@ abstract class LumenDb : RoomDatabase() {
             }
         }
 
+        /** 0.5.x to 0.6.0. Creates `notes` and `transcript_segments`; nothing else is touched. */
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `notes` (" +
+                        "`media_uri` TEXT NOT NULL, `title` TEXT NOT NULL, `size_bytes` INTEGER NOT NULL, " +
+                        "`status` TEXT NOT NULL, `step` TEXT NOT NULL, `json` TEXT NOT NULL, `model` TEXT NOT NULL, " +
+                        "`created_at` INTEGER NOT NULL, `updated_at` INTEGER NOT NULL, PRIMARY KEY(`media_uri`))",
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `transcript_segments` (" +
+                        "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `media_uri` TEXT NOT NULL, " +
+                        "`start_ms` INTEGER NOT NULL, `text` TEXT NOT NULL)",
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_transcript_segments_media_uri` ON `transcript_segments` (`media_uri`)")
+            }
+        }
+
         fun build(context: Context): LumenDb =
             Room.databaseBuilder(context.applicationContext, LumenDb::class.java, "lumen.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                 // Phase 1 only: if a later Phase 1 build changes the new tables, start those over
                 // rather than crash. The 1 to 2 migration above still runs first, so progress
                 // written in Phase 0 is never dropped by it.

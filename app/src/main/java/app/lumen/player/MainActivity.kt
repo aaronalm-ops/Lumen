@@ -18,6 +18,7 @@ import androidx.media3.common.util.UnstableApi
 import app.lumen.player.data.MediaPermissions
 import app.lumen.player.data.backup.BackupManager
 import app.lumen.player.diag.RingLog
+import app.lumen.player.notes.NotesService
 import app.lumen.player.remote.YtmLink
 import app.lumen.player.ui.LumenRoot
 import app.lumen.player.ui.MainViewModel
@@ -73,6 +74,12 @@ class MainActivity : ComponentActivity() {
             RingLog.w("drive", "sign-in result failed: $t")
         }
     }
+
+    /** 0.6.0: notifications, asked once from Write notes so the job's progress can show. */
+    private val requestNotifications = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted: Boolean ->
+        RingLog.i("notes", "notifications ${if (granted) "allowed" else "refused"}")
+    }
+    private var notificationsAsked = false
 
     // Phase 1b: backup, through the system document pickers only.
     private val createBackup = registerForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri: Uri? ->
@@ -134,6 +141,23 @@ class MainActivity : ComponentActivity() {
                     startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
                 } catch (t: Throwable) {
                     RingLog.w("ytm", "notification access page failed: $t")
+                }
+            },
+            openGeminiKeyPage = {
+                try {
+                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://aistudio.google.com/apikey")))
+                } catch (t: Throwable) {
+                    RingLog.w("notes", "key page failed: $t")
+                }
+            },
+            requestNotifications = {
+                if (!notificationsAsked && NotesService.isPermissionNeeded(this)) {
+                    notificationsAsked = true
+                    try {
+                        requestNotifications.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+                    } catch (t: Throwable) {
+                        RingLog.w("notes", "notification request failed: $t")
+                    }
                 }
             },
         )

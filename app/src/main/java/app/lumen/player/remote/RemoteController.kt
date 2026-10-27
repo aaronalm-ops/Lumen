@@ -34,6 +34,12 @@ import kotlinx.coroutines.flow.StateFlow
 class RemoteController(context: Context) {
 
     companion object {
+        /**
+         * 0.6.0: off. Play Protect blocks sideloaded apps that ask for notification access, which
+         * this control needs. Back on if Lumen is ever installed from the Play Store.
+         */
+        const val CONTROL_ENABLED = false
+
         const val YTM_PACKAGE = "com.google.android.apps.youtube.music"
 
         /**
@@ -117,8 +123,12 @@ class RemoteController(context: Context) {
         if (wanted) attach()
     }
 
-    /** True when the owner allowed Lumen in Settings, Notification access. */
-    fun hasAccess(): Boolean = NotificationManagerCompat.getEnabledListenerPackages(appContext).contains(appContext.packageName)
+    /**
+     * True when the owner allowed Lumen in Settings, Notification access. 0.6.0: always false,
+     * since the listener is no longer declared (see [CONTROL_ENABLED]).
+     */
+    fun hasAccess(): Boolean =
+        CONTROL_ENABLED && NotificationManagerCompat.getEnabledListenerPackages(appContext).contains(appContext.packageName)
 
     /**
      * Starts following YouTube Music's session (and picks it up whenever it appears). Returns false,

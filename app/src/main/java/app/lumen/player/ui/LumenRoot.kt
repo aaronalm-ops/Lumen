@@ -58,6 +58,7 @@ import androidx.window.layout.WindowMetricsCalculator
 import app.lumen.player.data.Appearance
 import app.lumen.player.data.MediaRepository
 import app.lumen.player.diag.RingLog
+import app.lumen.player.remote.isYtm
 import kotlinx.coroutines.CancellationException
 
 class RootActions(
@@ -82,6 +83,10 @@ class RootActions(
     val restoreBackup: () -> Unit,
     /** 0.5.0: Settings, Notification access, for the YouTube Music remote. Only from its Settings row. */
     val openNotificationAccess: () -> Unit,
+    /** 0.6.0: Google AI Studio's key page, in the browser. */
+    val openGeminiKeyPage: () -> Unit,
+    /** 0.6.0: asks once for notifications (Android 13 and later) so the notes job can show progress. */
+    val requestNotifications: () -> Unit,
 )
 
 /**
@@ -138,6 +143,13 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
     val castAvailable by vm.castAvailable.collectAsState()
     val remote by vm.remote.collectAsState()
     val ytmAccess by vm.ytmAccess.collectAsState()
+    val notesItem by vm.notesItem.collectAsState()
+    val openNotes by vm.openNotes.collectAsState()
+    val openSegments by vm.openSegments.collectAsState()
+    val notesByUri by vm.notesByUri.collectAsState()
+    val notesQuery by vm.notesQuery.collectAsState()
+    val geminiKeyHint by vm.geminiKeyHint.collectAsState()
+    val transcriptHits by vm.transcriptHits.collectAsState()
 
     // Kids lock forces Now Playing open; nothing else can be reached until the corner is held.
     LaunchedEffect(kidsLocked) { if (kidsLocked) vm.nowPlayingOpen.value = true }
@@ -186,6 +198,7 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
         setLevelOutVoices = vm::setLevelOutVoices,
         setTrimSilences = vm::setTrimSilences,
         openYouTubeMusic = vm::openYouTubeMusic,
+        openNotes = { currentItem?.let { vm.openNotesFor(it) } },
     )
 
     val nowPlaying: @Composable (Boolean) -> Unit = { paned ->
@@ -206,6 +219,8 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
             hingeInWindow = hinge,
             castAvailable = castAvailable,
             remote = remote,
+            notesState = currentItem?.let { notesByUri[it.uri]?.status },
+            notesAvailable = currentItem?.let { !it.media.isYtm && !it.media.isVideo } ?: false,
         )
     }
 
@@ -261,6 +276,9 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
                     sortByName = sortByName,
                     folderFilter = folderFilter,
                     subfolder = librarySubfolder,
+                    transcriptHits = transcriptHits,
+                    onHit = { hit -> vm.playAt(hit.item, hit.ms) },
+                    onHitLongPress = { hit -> vm.openNotesFor(hit.item, search) },
                     onSearch = { vm.librarySearch.value = it },
                     onToggleSort = { vm.librarySortByName.value = !vm.librarySortByName.value },
                     onItem = { item, queue -> vm.play(item, queue) },
@@ -293,6 +311,7 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
                     backupResult = backupResult,
                     backupBusy = backupBusy,
                     ytmAccess = ytmAccess,
+                    notesKeyHint = geminiKeyHint,
                     actions = SettingsActions(
                         back = { vm.screen.value = Screen.Home },
                         scanPhone = actions.scanPhone,
@@ -318,6 +337,8 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
                         setTrimSilences = vm::setTrimSilences,
                         setCrossfadeSeconds = vm::setCrossfadeSeconds,
                         openNotificationAccess = actions.openNotificationAccess,
+                        saveGeminiKey = vm::saveGeminiKey,
+                        openGeminiKeyPage = actions.openGeminiKeyPage,
                     ),
                 )
                 Screen.DriveBrowser -> DriveBrowserScreen(
@@ -441,6 +462,29 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
                     itemTitle = player.title,
                     onSave = vm::saveChapter,
                     onDismiss = vm::closeChapterSheet,
+                )
+            }
+        }
+
+        // 0.6.0: a recording's notes and transcript, over everything, in the chosen appearance.
+        val notesFor = notesItem
+        if (notesFor != null && !kidsLocked) {
+            LumenTheme(dark = appearanceDark) {
+                val c = Lumen.colours
+                SystemBars(light = !appearanceDark, background = c.base)
+                NotesScreen(
+                    item = notesFor,
+                    notes = openNotes,
+                    segments = openSegments,
+                    blocker = vm.notesBlocker(notesFor),
+                    playingMs = if (player.hasItem && player.mediaId == notesFor.uri) player.positionMs else null,
+                    initialQuery = notesQuery,
+                    onClose = vm::closeNotes,
+                    onWrite = {
+                        actions.requestNotifications()
+                        vm.writeNotes(notesFor)
+                    },
+                    onPlayAt = { ms -> vm.playAt(notesFor, ms) },
                 )
             }
         }

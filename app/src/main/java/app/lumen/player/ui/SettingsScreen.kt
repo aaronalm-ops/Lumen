@@ -1,10 +1,22 @@
 package app.lumen.player.ui
 
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.layout.Box
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import app.lumen.player.remote.RemoteController
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -29,13 +41,8 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.lumen.player.BuildConfig
@@ -78,6 +85,10 @@ class SettingsActions(
     val setCrossfadeSeconds: (Int) -> Unit,
     /** 0.5.0: Settings, Notification access, for the YouTube Music remote. */
     val openNotificationAccess: () -> Unit,
+    /** 0.6.0: saves the Gemini key; blank removes it. */
+    val saveGeminiKey: (String) -> Unit,
+    /** 0.6.0: Google AI Studio's key page in the browser. */
+    val openGeminiKeyPage: () -> Unit,
 )
 
 /** Settings, light: one list under mono labels, no row icons. */
@@ -97,6 +108,8 @@ fun SettingsScreen(
     backupBusy: Boolean,
     /** 0.5.0: whether Notification access is on, so Lumen can control YouTube Music. */
     ytmAccess: Boolean,
+    /** 0.6.0: the last four characters of the saved Gemini key, empty when none is saved. */
+    notesKeyHint: String,
     actions: SettingsActions,
 ) {
     val c = Lumen.colours
@@ -205,9 +218,9 @@ fun SettingsScreen(
                 }
             }
 
-            item {
+            if (RemoteController.CONTROL_ENABLED) item {
                 // 0.5.0: the YouTube Music remote. The system page is opened from this row only; Lumen
-                // never asks on its own.
+                // never asks on its own. 0.6.0: hidden while the control is off (Play Protect).
                 SectionLabel("YouTube Music", modifier = Modifier.padding(top = 20.dp, bottom = 10.dp))
                 ListCard {
                     Row(
@@ -230,6 +243,50 @@ fun SettingsScreen(
                         }
                         TextAction(if (ytmAccess) "Change" else "Allow", onClick = actions.openNotificationAccess)
                     }
+                }
+            }
+
+            item {
+                // 0.6.0: sermon notes. The key stays on this phone, outside backups.
+                SectionLabel("Sermon notes", modifier = Modifier.padding(top = 20.dp, bottom = 10.dp))
+                ListCard {
+                    Row(
+                        Modifier.fillMaxWidth().heightIn(min = RowHeight).padding(start = 14.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Gemini key", style = Lumen.type.bodyStrong, color = c.text)
+                            Text(
+                                if (notesKeyHint.isNotBlank()) {
+                                    "Saved, ending $notesKeyHint. Used only to write notes"
+                                } else {
+                                    "Notes are written by Google's Gemini. Get a free key from Google AI Studio and paste it below"
+                                },
+                                style = Lumen.type.bodyS,
+                                color = c.text2,
+                                maxLines = 3,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        if (notesKeyHint.isNotBlank()) {
+                            TextAction("Remove", danger = true, onClick = { actions.saveGeminiKey("") })
+                        } else {
+                            TextAction("Get a key", onClick = actions.openGeminiKeyPage)
+                        }
+                    }
+                    if (notesKeyHint.isBlank()) {
+                        KeyField(onSave = actions.saveGeminiKey)
+                    }
+                    HorizontalDivider(color = c.divider, thickness = 1.dp, modifier = Modifier.padding(horizontal = 14.dp))
+                    Text(
+                        "Tap Notes on a sermon in Now Playing. On Wi-Fi, Lumen uploads the recording to Google, " +
+                            "gets a timed transcript, deletes the recording from Google, then writes notes from the " +
+                            "transcript alone: only what was said. On Google's free tier, Google may use what you send " +
+                            "to improve its products.",
+                        style = Lumen.type.bodyS,
+                        color = c.text2,
+                        modifier = Modifier.padding(14.dp),
+                    )
                 }
             }
 
@@ -660,5 +717,42 @@ private fun LightBandThumb(enabled: Boolean) {
         contentAlignment = Alignment.Center,
     ) {
         if (enabled) Box(Modifier.size(6.dp).background(c.onAccentFill, CircleShape))
+    }
+}
+
+/** 0.6.0: the Gemini key, typed or pasted, hidden as it is entered; Save stores it on this phone. */
+@Composable
+private fun KeyField(onSave: (String) -> Unit) {
+    val c = Lumen.colours
+    var value by remember { mutableStateOf("") }
+    Row(
+        Modifier.fillMaxWidth().padding(start = 14.dp, end = 4.dp, bottom = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            Modifier
+                .weight(1f)
+                .height(44.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(c.thumb)
+                .padding(horizontal = 12.dp),
+            contentAlignment = Alignment.CenterStart,
+        ) {
+            if (value.isEmpty()) Text("Paste your key", style = Lumen.type.bodyS, color = c.text3)
+            BasicTextField(
+                value = value,
+                onValueChange = { value = it.trim() },
+                singleLine = true,
+                textStyle = Lumen.type.bodyS.copy(color = c.text),
+                cursorBrush = SolidColor(c.accentInk),
+                visualTransformation = PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false),
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+        TextAction("Save", enabled = value.length >= 20, onClick = {
+            onSave(value)
+            value = ""
+        })
     }
 }

@@ -5,6 +5,7 @@ import android.net.Uri
 import androidx.media3.common.C
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.database.StandaloneDatabaseProvider
+import androidx.media3.datasource.ByteArrayDataSource
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.DefaultDataSource
@@ -87,7 +88,13 @@ private class SchemeDataSource(private val context: Context, private val local: 
     }
 
     override fun open(dataSpec: DataSpec): Long {
-        val source: DataSource = if (dataSpec.uri.scheme == "drive") DriveDataSource(context) else local.createDataSource()
+        val source: DataSource = when (dataSpec.uri.scheme) {
+            "drive" -> DriveDataSource(context)
+            // 0.5.0: a YouTube Music item is never played here; the queue holds it on a second of
+            // silence so ExoPlayer can move into it, and the service stops at once (see PlaybackService).
+            YTM_SCHEME, YTM_LIST_SCHEME -> ByteArrayDataSource(SilentWav.bytes)
+            else -> local.createDataSource()
+        }
         listeners.forEach { source.addTransferListener(it) }
         delegate = source
         return source.open(dataSpec)
@@ -231,6 +238,47 @@ class DriveDataSource(private val context: Context) : DataSource {
         } catch (t: IOException) {
             RingLog.w("drive", "close: $t")
         }
+    }
+}
+
+private const val YTM_SCHEME = "ytm"
+private const val YTM_LIST_SCHEME = "ytm-list"
+
+/**
+ * One second of silence as a 16-bit mono 8 kHz WAV (44-byte header plus 16,000 bytes), built once.
+ * It is what a YouTube Music queue item "contains" for ExoPlayer; the player is stopped on it.
+ */
+private object SilentWav {
+    private const val SAMPLE_RATE = 8_000
+    private const val DATA_BYTES = SAMPLE_RATE * 2
+
+    val bytes: ByteArray by lazy {
+        val out = ByteArray(44 + DATA_BYTES)
+        fun ascii(at: Int, text: String) = text.forEachIndexed { i, ch -> out[at + i] = ch.code.toByte() }
+        fun le32(at: Int, value: Int) {
+            out[at] = (value and 0xFF).toByte()
+            out[at + 1] = ((value shr 8) and 0xFF).toByte()
+            out[at + 2] = ((value shr 16) and 0xFF).toByte()
+            out[at + 3] = ((value shr 24) and 0xFF).toByte()
+        }
+        fun le16(at: Int, value: Int) {
+            out[at] = (value and 0xFF).toByte()
+            out[at + 1] = ((value shr 8) and 0xFF).toByte()
+        }
+        ascii(0, "RIFF")
+        le32(4, 36 + DATA_BYTES)
+        ascii(8, "WAVE")
+        ascii(12, "fmt ")
+        le32(16, 16)
+        le16(20, 1)
+        le16(22, 1)
+        le32(24, SAMPLE_RATE)
+        le32(28, SAMPLE_RATE * 2)
+        le16(32, 2)
+        le16(34, 16)
+        ascii(36, "data")
+        le32(40, DATA_BYTES)
+        out
     }
 }
 

@@ -27,6 +27,12 @@ coreSplashscreen = "1.2.0"
 # "Window Version 1.5.1", November 19, 2025). window-core carries WindowSizeClass and ships with
 # window at the same version; it is named so the version is pinned, as media3-datasource is.
 window = "1.5.1"
+# 0.5.0 (verified 2026-10-27). media3-cast follows the Media3 version above
+# (developer.android.com/media/media3/cast/create-castplayer lists androidx.media3:media3-cast:1.11.1).
+# play-services-cast-framework is pinned to 22.3.1, the version media3-cast 1.11.1 is built against
+# (androidx/media tag 1.11.1, gradle/libs.versions.toml: gmsPlayServicesCastFrameworkVersion);
+# 23.0.0 (19 October 2026) moves to mediarouter 1.9.0-beta01 and is not taken this close to release.
+playServicesCastFramework = "22.3.1"
 
 [libraries]
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
@@ -45,6 +51,10 @@ compose-ui-tooling = { group = "androidx.compose.ui", name = "ui-tooling" }
 media3-exoplayer = { group = "androidx.media3", name = "media3-exoplayer", version.ref = "media3" }
 media3-session = { group = "androidx.media3", name = "media3-session", version.ref = "media3" }
 media3-common = { group = "androidx.media3", name = "media3-common", version.ref = "media3" }
+
+# 0.5.0: Chromecast (CastPlayer, RemoteCastPlayer, the Compose MediaRouteButton).
+media3-cast = { group = "androidx.media3", name = "media3-cast", version.ref = "media3" }
+play-services-cast-framework = { group = "com.google.android.gms", name = "play-services-cast-framework", version.ref = "playServicesCastFramework" }
 
 media3-ui = { group = "androidx.media3", name = "media3-ui", version.ref = "media3" }
 # Phase 1b: SimpleCache, CacheDataSource, DefaultHttpDataSource (media3-datasource) and

@@ -23,6 +23,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.lumen.player.data.LabelEntity
 import app.lumen.player.data.MediaRepository
+import app.lumen.player.remote.YtmLink
 import app.lumen.player.update.UpdateInfo
 
 /** Home, light by day: wordmark, Continue card, label chips, Recent. One primary action. */
@@ -163,7 +164,8 @@ fun rowMeta(item: LibraryItem, labels: List<LabelEntity>): String {
     if (item.media.artist.isNotBlank()) parts += item.media.artist
     else if (names.isNotEmpty()) parts += names.first()
     if (item.media.durationMs > 0) parts += formatTime(item.media.durationMs)
-    if (item.folderName.isNotBlank()) parts += item.folderName
+    // 0.5.0: a YouTube Music row carries its "via YouTube Music" chip instead of the folder name.
+    if (item.folderName.isNotBlank() && !YtmLink.isYtm(item.media.uri)) parts += item.folderName
     return parts.joinToString(" · ")
 }
 

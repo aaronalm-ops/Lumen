@@ -34,6 +34,8 @@ import app.lumen.player.data.LabelEntity
 import app.lumen.player.data.MediaRepository
 import app.lumen.player.data.drive.isDrive
 import app.lumen.player.data.isMediaStore
+import app.lumen.player.remote.YtmLink
+import app.lumen.player.remote.isYtm
 
 /**
  * Library, light: title, DATE or NAME sort, search, folders with counts, all files. Folders mix
@@ -114,6 +116,7 @@ fun LibraryScreen(
                                 icon = when {
                                     folder.isMediaStore -> LumenIcons.Phone
                                     folder.isDrive -> LumenIcons.Cloud
+                                    folder.isYtm -> LumenIcons.Music
                                     else -> LumenIcons.Folder
                                 },
                                 count = counts[folder.uri] ?: 0,
@@ -162,12 +165,15 @@ fun LibraryScreen(
                             labels.any { it.id in item.labelIds && it.name == "Sermons" }
                         val time = if (playing) player.positionMs else item.positionMs
                         val offline = item.uri in unreachable
+                        val youTubeMusic = item.media.isYtm
                         Box(Modifier.fillMaxWidth().cardSegment(first = index == 0, last = index == visible.lastIndex)) {
                             MediaRow(
                                 title = item.media.title,
                                 meta = rowMeta(item, labels),
                                 // A Drive row with no duration yet shows "--:--" until first play.
                                 time = when {
+                                    // 0.5.0: YouTube Music keeps no position and Lumen knows no duration.
+                                    youTubeMusic -> ""
                                     offline -> "Offline"
                                     time > 0 -> formatTime(time)
                                     item.media.durationMs > 0 -> formatTime(item.media.durationMs)
@@ -184,6 +190,7 @@ fun LibraryScreen(
                                 divider = index < visible.lastIndex,
                                 dimmed = offline,
                                 progress = downloads[item.uri],
+                                badge = if (youTubeMusic) YtmLink.SOURCE_LABEL else null,
                                 // Offline with nothing cached: the tap does nothing and nothing pops up.
                                 onClick = { if (!offline) onItem(item, visible) },
                                 onLongClick = { onItemLongPress(item) },

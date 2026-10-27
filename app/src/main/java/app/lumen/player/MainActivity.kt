@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -17,6 +18,7 @@ import androidx.media3.common.util.UnstableApi
 import app.lumen.player.data.MediaPermissions
 import app.lumen.player.data.backup.BackupManager
 import app.lumen.player.diag.RingLog
+import app.lumen.player.remote.YtmLink
 import app.lumen.player.ui.LumenRoot
 import app.lumen.player.ui.MainViewModel
 import app.lumen.player.ui.RootActions
@@ -126,6 +128,14 @@ class MainActivity : ComponentActivity() {
                     RingLog.w("backup", "open document failed: $t")
                 }
             },
+            openNotificationAccess = {
+                // 0.5.0: only from the Settings row, never on its own.
+                try {
+                    startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+                } catch (t: Throwable) {
+                    RingLog.w("ytm", "notification access page failed: $t")
+                }
+            },
         )
 
         setContent {
@@ -135,7 +145,28 @@ class MainActivity : ComponentActivity() {
         if (savedInstanceState == null) {
             handleShortcut(intent)
             handleOpenWith(intent)
+            handleShare(intent)
         }
+    }
+
+    /**
+     * 0.5.0: a song or playlist shared from YouTube Music (ACTION_SEND, text/plain). Lumen keeps the
+     * link in the Library's YouTube Music folder and opens the label sheet. Any other text gets one
+     * short line, since the owner has just acted.
+     */
+    private fun handleShare(intent: Intent?) {
+        if (intent?.action != Intent.ACTION_SEND) return
+        val text = intent.getStringExtra(Intent.EXTRA_TEXT)
+        val subject = intent.getStringExtra(Intent.EXTRA_SUBJECT)
+        val shared = YtmLink.fromShare(text, subject)
+        intent.action = Intent.ACTION_MAIN
+        if (shared == null) {
+            RingLog.i("ytm", "share ignored: no YouTube Music link")
+            Toast.makeText(this, "Lumen takes YouTube Music songs and playlists", Toast.LENGTH_SHORT).show()
+            return
+        }
+        RingLog.i("ytm", "shared ${shared.link.uri}")
+        vm.addSharedYouTubeMusic(shared)
     }
 
     /**
@@ -218,6 +249,7 @@ class MainActivity : ComponentActivity() {
         setIntent(intent)
         handleShortcut(intent)
         handleOpenWith(intent)
+        handleShare(intent)
     }
 
     private fun handleShortcut(intent: Intent?) {

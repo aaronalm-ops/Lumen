@@ -46,6 +46,7 @@ import app.lumen.player.data.Settings
 import app.lumen.player.data.SettingsRepository
 import app.lumen.player.data.drive.isDrive
 import app.lumen.player.data.isMediaStore
+import app.lumen.player.remote.isYtm
 import app.lumen.player.update.UpdateInfo
 
 class SettingsActions(
@@ -75,6 +76,8 @@ class SettingsActions(
     val setLevelOutVoices: (Boolean) -> Unit,
     val setTrimSilences: (Boolean) -> Unit,
     val setCrossfadeSeconds: (Int) -> Unit,
+    /** 0.5.0: Settings, Notification access, for the YouTube Music remote. */
+    val openNotificationAccess: () -> Unit,
 )
 
 /** Settings, light: one list under mono labels, no row icons. */
@@ -92,10 +95,12 @@ fun SettingsScreen(
     driveScanning: Boolean,
     backupResult: String,
     backupBusy: Boolean,
+    /** 0.5.0: whether Notification access is on, so Lumen can control YouTube Music. */
+    ytmAccess: Boolean,
     actions: SettingsActions,
 ) {
     val c = Lumen.colours
-    val picked = folders.filter { !it.isMediaStore && !it.isDrive }
+    val picked = folders.filter { !it.isMediaStore && !it.isDrive && !it.isYtm }
     Column(Modifier.fillMaxSize().background(c.base).statusBarsPadding().navigationBarsPadding()) {
         Row(
             modifier = Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 8.dp),
@@ -197,6 +202,34 @@ fun SettingsScreen(
                         scanning = driveScanning,
                         actions = actions,
                     )
+                }
+            }
+
+            item {
+                // 0.5.0: the YouTube Music remote. The system page is opened from this row only; Lumen
+                // never asks on its own.
+                SectionLabel("YouTube Music", modifier = Modifier.padding(top = 20.dp, bottom = 10.dp))
+                ListCard {
+                    Row(
+                        Modifier.fillMaxWidth().heightIn(min = RowHeight).padding(start = 14.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Allow Lumen to control YouTube Music", style = Lumen.type.bodyStrong, color = c.text)
+                            Text(
+                                if (ytmAccess) {
+                                    "On. Lumen reads what YouTube Music is playing to show it and move your queue on"
+                                } else {
+                                    "Notification access lets Lumen show and control YouTube Music. Share a song to Lumen to add it"
+                                },
+                                style = Lumen.type.bodyS,
+                                color = c.text2,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        TextAction(if (ytmAccess) "Change" else "Allow", onClick = actions.openNotificationAccess)
+                    }
                 }
             }
 

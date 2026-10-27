@@ -80,6 +80,8 @@ class RootActions(
     val backupNow: () -> Unit,
     /** ACTION_OPEN_DOCUMENT for a backup to merge. */
     val restoreBackup: () -> Unit,
+    /** 0.5.0: Settings, Notification access, for the YouTube Music remote. Only from its Settings row. */
+    val openNotificationAccess: () -> Unit,
 )
 
 /**
@@ -131,6 +133,9 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
     val backupResult by vm.backupResult.collectAsState()
     val backupBusy by vm.backupBusy.collectAsState()
     val driveBrowser by vm.driveBrowser.collectAsState()
+    val castAvailable by vm.castAvailable.collectAsState()
+    val remote by vm.remote.collectAsState()
+    val ytmAccess by vm.ytmAccess.collectAsState()
 
     // Kids lock forces Now Playing open; nothing else can be reached until the corner is held.
     LaunchedEffect(kidsLocked) { if (kidsLocked) vm.nowPlayingOpen.value = true }
@@ -178,6 +183,7 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
         exportNotes = { vm.exportNotes(context) },
         setLevelOutVoices = vm::setLevelOutVoices,
         setTrimSilences = vm::setTrimSilences,
+        openYouTubeMusic = vm::openYouTubeMusic,
     )
 
     val nowPlaying: @Composable (Boolean) -> Unit = { paned ->
@@ -196,6 +202,8 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
             actions = nowPlayingActions,
             paned = paned,
             hingeInWindow = hinge,
+            castAvailable = castAvailable,
+            remote = remote,
         )
     }
 
@@ -268,6 +276,7 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
                     driveScanning = driveScanning,
                     backupResult = backupResult,
                     backupBusy = backupBusy,
+                    ytmAccess = ytmAccess,
                     actions = SettingsActions(
                         back = { vm.screen.value = Screen.Home },
                         scanPhone = actions.scanPhone,
@@ -292,6 +301,7 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
                         setLevelOutVoices = vm::setLevelOutVoices,
                         setTrimSilences = vm::setTrimSilences,
                         setCrossfadeSeconds = vm::setCrossfadeSeconds,
+                        openNotificationAccess = actions.openNotificationAccess,
                     ),
                 )
                 Screen.DriveBrowser -> DriveBrowserScreen(
@@ -352,12 +362,16 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
                         Column(Modifier.fillMaxSize()) {
                             Box(Modifier.weight(1f).fillMaxWidth()) { screens() }
                             if (player.hasItem && screen == Screen.Library) {
-                                val remaining = if (player.durationMs > 0) "-" + formatTime((player.durationMs - player.positionMs).coerceAtLeast(0L)) else "--:--"
+                                // 0.5.0: in remote mode the bar shows YouTube Music's own title and time.
+                                val r = remote
+                                val positionMs = r?.positionMs ?: player.positionMs
+                                val durationMs = r?.durationMs ?: player.durationMs
+                                val remaining = if (durationMs > 0) "-" + formatTime((durationMs - positionMs).coerceAtLeast(0L)) else "--:--"
                                 MiniBar(
-                                    title = player.title,
-                                    time = formatTime(player.positionMs),
-                                    meta = "$remaining · ${speedLabel(player.speed)}",
-                                    isPlaying = player.isPlaying,
+                                    title = r?.title ?: player.title,
+                                    time = formatTime(positionMs),
+                                    meta = if (r != null) "$remaining · YouTube Music" else "$remaining · ${speedLabel(player.speed)}",
+                                    isPlaying = r?.isPlaying ?: player.isPlaying,
                                     onOpen = { vm.nowPlayingOpen.value = true },
                                     onPlayPause = vm::playPause,
                                 )

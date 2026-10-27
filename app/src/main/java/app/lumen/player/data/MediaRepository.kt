@@ -17,6 +17,7 @@ import androidx.documentfile.provider.DocumentFile
 import androidx.palette.graphics.Palette
 import app.lumen.player.data.drive.isDrive
 import app.lumen.player.diag.RingLog
+import app.lumen.player.remote.isYtm
 import java.io.File
 import java.io.FileOutputStream
 import java.security.MessageDigest
@@ -64,6 +65,9 @@ class MediaRepository(
 
         /** Mirrors DriveRepository.FOLDER_PREFIX; named here so this file needs no Drive import for it. */
         const val DRIVE_FOLDER_PREFIX = "drive:"
+
+        /** Mirrors YtmLink.FOLDER_URI: the one folder row for links shared from YouTube Music. */
+        const val YTM_FOLDER = "ytm:"
 
         /** Notification sounds and the like: anything shorter is not a listen. */
         const val MIN_DURATION_MS = 3_000L
@@ -225,8 +229,9 @@ class MediaRepository(
     }
 
     suspend fun removeFolder(folderUri: String) {
-        // Phone buckets come and go with the scan; the Drive folder is DriveRepository's.
-        if (folderUri.startsWith(MEDIASTORE_PREFIX) || folderUri.startsWith(DRIVE_FOLDER_PREFIX)) return
+        // Phone buckets come and go with the scan; the Drive folder is DriveRepository's; the
+        // YouTube Music folder holds shared links, not a tree.
+        if (folderUri.startsWith(MEDIASTORE_PREFIX) || folderUri.startsWith(DRIVE_FOLDER_PREFIX) || folderUri == YTM_FOLDER) return
         dao.deleteMediaInFolder(folderUri)
         dao.deleteFolder(folderUri)
         try {
@@ -237,9 +242,20 @@ class MediaRepository(
         RingLog.i("scan", "folder removed: $folderUri")
     }
 
-    /** Rescans every picked folder. MediaStore buckets and the Drive folder are not trees to walk. */
+    /** Rescans every picked folder. MediaStore buckets, the Drive folder and YouTube Music are not trees to walk. */
     suspend fun rescanAll() {
-        dao.folders().filter { !it.isMediaStore && !it.isDrive }.forEach { scanFolder(it) }
+        dao.folders().filter { !it.isMediaStore && !it.isDrive && !it.isYtm }.forEach { scanFolder(it) }
+    }
+
+    /**
+     * 0.5.0: a link shared from YouTube Music. The `ytm:` folder row is created with the first one;
+     * sharing the same link again refreshes its title and keeps its labels (they are keyed by uri).
+     */
+    suspend fun upsertYouTubeMusic(folder: FolderEntity, media: MediaEntity) = withContext(Dispatchers.IO) {
+        if (dao.folders().none { it.uri == folder.uri }) dao.upsertFolder(folder)
+        val old = dao.mediaByUri(media.uri)
+        dao.upsertMedia(if (old != null) media.copy(dateAdded = old.dateAdded) else media)
+        RingLog.i("ytm", "added ${media.uri} \"${media.title}\"")
     }
 
     private data class Found(
@@ -252,7 +268,7 @@ class MediaRepository(
     )
 
     suspend fun scanFolder(folder: FolderEntity) = withContext(Dispatchers.IO) {
-        if (folder.isMediaStore || folder.isDrive) return@withContext
+        if (folder.isMediaStore || folder.isDrive || folder.isYtm) return@withContext
         scanLock.withLock {
             _scanning.value = true
             try {

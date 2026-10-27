@@ -5,6 +5,7 @@ import android.os.Bundle
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import app.lumen.player.data.MediaEntity
+import app.lumen.player.remote.YtmLink
 import java.io.File
 
 /** Builds the MediaItems the UI, the widget and Android Auto hand to the session. */
@@ -20,6 +21,9 @@ object MediaItems {
 
     /** 0.4.0: a WhatsApp voice note; Smooth transitions never fade into or out of one. */
     const val EXTRA_VOICE_NOTE = "lumen.voiceNote"
+
+    /** 0.5.0: the file size from the library row, for the Cast file server's Content-Length. */
+    const val EXTRA_SIZE_BYTES = "lumen.sizeBytes"
 
     fun forMedia(
         media: MediaEntity,
@@ -38,6 +42,7 @@ object MediaItems {
             putString(EXTRA_FINGERPRINT, media.fingerprint)
             putBoolean(EXTRA_RESUME, resume)
             putBoolean(EXTRA_VOICE_NOTE, voiceNote)
+            putLong(EXTRA_SIZE_BYTES, media.sizeBytes)
         }
         val metadata = MediaMetadata.Builder()
             .setTitle(media.title)
@@ -92,6 +97,12 @@ object MediaItems {
     fun labelIds(item: MediaItem?): List<Long> = item?.mediaMetadata?.extras?.getLongArray(EXTRA_LABEL_IDS)?.toList() ?: emptyList()
 
     fun fingerprint(item: MediaItem?): String? = item?.mediaMetadata?.extras?.getString(EXTRA_FINGERPRINT)
+
+    /** 0 when the item came from outside the library. */
+    fun sizeBytes(item: MediaItem?): Long = item?.mediaMetadata?.extras?.getLong(EXTRA_SIZE_BYTES, 0L) ?: 0L
+
+    /** 0.5.0: a YouTube Music item (`ytm://` or `ytm-list://`), which Lumen never plays itself. */
+    fun isYtm(item: MediaItem?): Boolean = item != null && YtmLink.isYtm(uriOf(item))
 
     fun uriOf(item: MediaItem): String =
         item.localConfiguration?.uri?.toString()

@@ -1,4 +1,4 @@
-# Lumen (0.4.0, Phase 2: clearer sermons, chapters, foldables)
+# Lumen (0.5.0, Phase 3: Chromecast and the YouTube Music remote)
 
 Lumen is a player for long spoken-word recordings and the music that sits beside them. Phase 0
 (v0.1.x) answered one question on one device: does a Media3 playback service survive One UI on a
@@ -7,7 +7,8 @@ the first real product on that service: a library of chosen folders, labels, the
 layouts, an equaliser, a widget, an Android Auto tree and app shortcuts. Phase 1b (v0.3.x) adds
 the Google Drive source, offline copies, backup and restore, and the brand. 0.4.0 bundles the
 Phase 2 items: Appearance, Clarity for sermons, chapters and notes, WhatsApp voice notes, Smooth
-transitions, foldables and large screens (see "0.4.0" below). YouTube Music is a later phase.
+transitions, foldables and large screens (see "0.4.0" below). 0.5.0 adds Chromecast and the
+YouTube Music remote (see "0.5.0" below).
 
 Application id `com.aaronalmeida.lumen` (Kotlin package `app.lumen.player`; the id changed in 0.2.1 because `app.lumen.player` was already taken in the Android Developer Console). minSdk 29, targetSdk 36, compileSdk 37 (Compose 1.12 and later
 require compileSdk 37). Light Home, Library and Settings; true black Now Playing. Design system:
@@ -327,6 +328,18 @@ for the WindowSizeClass, WindowInfoTracker and WindowMetricsCalculator notes). C
 Adaptive 1.3.0 was considered and not used: 1.3.0 deprecates `currentWindowAdaptiveInfo` in
 favour of a V2, and androidx.window alone gives the width class and the fold.
 
+0.5.0 dependencies, verified on 2026-10-27:
+`androidx.media3:media3-cast:1.11.1` (developer.android.com/media/media3/cast/create-castplayer
+lists it beside media3-exoplayer and media3-session 1.11.1; the androidx/media tag 1.11.1 release
+notes carry `CastPlayer.Builder` (1.9.0), `CastParams` and `MediaRouteButtonState` (1.11.0)) and
+`com.google.android.gms:play-services-cast-framework:22.3.1` (developers.google.com/android/guides/releases,
+7 April 2026; it is the version media3-cast 1.11.1 is built against, `gmsPlayServicesCastFrameworkVersion`
+in androidx/media 1.11.1's `gradle/libs.versions.toml`). 23.0.0 (19 October 2026) exists but moves
+the Cast framework onto `androidx.mediarouter:mediarouter:1.9.0-beta01`, so it is not taken yet.
+media3-cast brings `androidx.mediarouter:mediarouter:1.8.1`, `androidx.appcompat:appcompat:1.6.1`
+and Compose Material3 (resolved to this project's BOM) with it. NanoHTTPD was not added: the
+Chromecast file server is about 300 lines on `java.net.ServerSocket` (`cast/CastMediaServer.kt`).
+
 Locally: `./gradlew assembleRelease` (needs network for the first run).
 
 ## Phase 1 sheet
@@ -492,6 +505,111 @@ emulator (Pixel Fold, or a tablet).
 
 Positions under test throughout: every resume is at the saved position minus 3 s, and a seek,
 fade or trim never writes 0 over a saved position.
+
+## 0.5.0
+
+Owner rulings D9 (Chromecast, Phase 3) and D1 (YouTube Music as a universal remote). The position
+promise is unchanged: a saved position is never written over with 0, and speech resumes at the
+saved position minus 3 s. `PositionStore` is not touched. `PlaybackService`'s save guard gains one
+condition beside `pendingResumeId` (the cast handover, below) and a skip for YouTube Music uris;
+both only ever prevent a write.
+
+### Chromecast
+
+- **Player.** Media3's documented pattern (developer.android.com/media/media3/cast/create-castplayer):
+  `CastPlayer.Builder(this).setLocalPlayer(exo).setRemotePlayer(remote).setTransferCallback(...)`,
+  wrapped by `SkipPlayer` and handed to the one `MediaLibrarySession`. When a Cast session starts or
+  ends, CastPlayer swaps the active player underneath the session (its `setPlayer`), so the
+  notification, lock screen, widget and Auto keep talking to the same session. ExoPlayer, its audio
+  session, the effects and silence skipping stay exactly as they were.
+- **Handover** (`PlaybackService.CastTransfer`). Before the queue moves, the source position is
+  saved ("cast start" or "cast end"), never when it is 0 and never while a resume lookup or another
+  handover is settling. Then `castHandoverId` blocks every snapshot of that item (and the "left
+  item" save the swap looks like) until the new player reports READY within 5 s of the handed-over
+  position, or the owner seeks. Coming back, a 0 from a receiver whose session is already gone is
+  replaced by the last cast position Lumen noted in memory (once a second, never written). To the
+  receiver: speed 1.0 and no YouTube Music items (a queue whose current item is YouTube Music is not
+  sent). Back on the phone: the cast position, paused, at the item's own speed. Ending a cast
+  never starts the phone playing by itself.
+- **What is cast.** The Default Media Receiver (`CastMediaControlIntent.DEFAULT_MEDIA_RECEIVER_APPLICATION_ID`,
+  from `cast/LumenCastOptionsProvider`, named in the manifest) fetches a plain URL and cannot add
+  headers, so it can neither read a `content://` file nor send a Drive bearer token. The phone
+  serves the file itself (`cast/CastMediaServer`): bound only while casting, on the Wi-Fi IPv4
+  address (never mobile data, never all interfaces), port 0, GET and HEAD with Range (206 and
+  Content-Range, `bytes=a-b`, `a-`, `-n`), one request per connection. Each item handed to the
+  receiver in this session gets an unguessable path `/m/<32 hex>` from SecureRandom; anything else
+  is a 404 and every token is forgotten when the session ends. Bytes come from Lumen's own data
+  source factory, so local files, the Drive offline copy, the 200 MB cache and Drive with the token
+  all work. `cast/LumenCastConverter` keeps the Lumen uri as the Cast content id, so the receiver's
+  items map back to the original MediaItems and positions keep their keys; local art is served the
+  same way; video goes as a movie.
+- **Sound.** EQ, Level out voices, Trim silences and Smooth transitions act on ExoPlayer only and
+  so do not apply while casting; fades and the sleep fade now set ExoPlayer's own volume, so the
+  TV's volume is never touched. Speed is 1.0 on the receiver and the speed chip is disabled. One
+  ice line sits under the chip row: "Casting: sound settings apply on the phone only".
+- **Button.** Media3's Compose `MediaRouteButton` on the Now Playing top row, before the label
+  button, shown only while the Cast framework reports a device (`CastState` is not
+  NO_DEVICES_AVAILABLE, `cast/CastAvailability`) or while casting; ink while casting.
+- Kids lock works as before: the pads drive whichever player is active.
+
+### YouTube Music remote
+
+- **Adding.** Share a song or playlist from YouTube Music to Lumen (ACTION_SEND text/plain).
+  `remote/YtmLink` reads `music.youtube.com/watch?v=`, `youtube.com/watch?v=`, `youtu.be/` (a song,
+  `ytm://<videoId>`) and `music.youtube.com/playlist?list=` (a playlist or album, `ytm-list://<listId>`),
+  with the title and artist from the subject or text ("Title - Artist") when present. The row goes
+  in the Library folder "YouTube Music" (`ytm:`) with a "via YouTube Music" chip, duration 0 (music
+  layout), and the label sheet opens. Any other shared text gets one short line. Rows sit in labels
+  beside local files; Android Auto never lists them. They are not in the backup file (only their
+  label links are).
+- **Playing.** A YouTube Music item is set as the current queue item (ExoPlayer holds it on one
+  second of generated silence, so the queue can move into it) and the service stops at once, with
+  its notification hidden (`SHOW_NOTIFICATION_FOR_IDLE_PLAYER_NEVER` until the queue moves on). The
+  ViewModel opens `https://music.youtube.com/watch?v=<id>` (playlists `watch?list=<id>`) in
+  `com.google.android.apps.youtube.music` and brings Lumen back to the front 600 ms later
+  (`RemoteController.RETURN_DELAY_MS`). No position is stored for these items.
+- **Controlling.** With Notification access (Settings, YouTube Music, "Allow Lumen to control
+  YouTube Music"; the system page opens from that row only), `remote/RemoteController` finds YouTube
+  Music's session through `MediaSessionManager.getActiveSessions` with `LumenNotificationListener`
+  as the credential, and Now Playing shows remote mode: YouTube Music's art, title and artist, its
+  position on the scrubber, cyan transport (previous, play, next through its TransportControls),
+  the "via YouTube Music" chip and a greyed EQ chip with "EQ is handled by YouTube Music".
+  Without access, or before YouTube Music's session appears: "Open YouTube Music to control
+  playback" and a button, and the queue does not move on by itself.
+- **End of item** (`remote/YtmWatch`). The first track YouTube Music plays after Lumen opened the
+  link is the baseline (at once when its media id is the video id, otherwise after 2.5 s of
+  playing). The item is over when YouTube Music stops, pauses on its last second, or, for a song,
+  plays a different track. Lumen then pauses YouTube Music and plays its next queue item, local or
+  YouTube Music. A playlist moves on only when YouTube Music stops or pauses at its end. While
+  YouTube Music plays, the ViewModel keeps its controller connected after the activity stops, so
+  this also works with Lumen in the background; opening a second YouTube Music item from the
+  background is only possible when YouTube Music's session accepts play-from-uri, otherwise it
+  opens the next time Lumen is on screen.
+
+### 0.5.0 sheet
+
+Needs a Chromecast (or a Google TV with Cast) on the same Wi-Fi, a sermon over 20 minutes on the
+phone, the Drive folder from Phase 1b, YouTube Music installed and signed in (Premium), and a label
+holding two local songs.
+
+| Item | What to do | Pass when |
+|---|---|---|
+| Cast | Open Now Playing with no Cast device on the network | No cast button |
+| Cast | Turn the Chromecast on | The cast button appears before the label button within a few seconds |
+| Cast, local | Play the sermon on the phone to some minute, tap the cast button, pick the Chromecast | The TV picks the sermon up within a few seconds at the phone's position (not 0, not minus 3 s); the button turns ink; the ice line "Casting: sound settings apply on the phone only" shows under the chips; the speed chip is greyed; the scrubber follows the TV |
+| Cast, local | Seek on the phone's scrubber, pause and play from the notification | The TV follows each; Share diagnostics shows `cast: server: listening on 192.168.x.x:<port>` and saves with reason `seek`, `heartbeat` |
+| Cast, Drive | Cast a Drive sermon that is not kept offline, then one that is | Both play on the TV; seeking on the phone works (Range requests) |
+| Cast, Drive | Cast a Drive file with the phone on Wi-Fi only, then turn Wi-Fi off | The TV stops within its buffer; casting ends; nothing is served over mobile data |
+| Cast, end | Mid-sermon, stop casting from the cast button (route controller, Stop casting) | The phone shows the sermon paused at the TV's position to the second; the server is stopped (`cast: server: stopped`); press play: the phone plays from there, at the sermon's speed |
+| Cast, end | Then leave the app, swipe it away, open it again | The Continue card and Resume are at that position minus 3 s, never 0 |
+| Cast, sound | With Smooth transitions on, cast two songs in a row; set the sleep timer | No fade on the TV and the TV's volume never moves; the timer pauses the TV |
+| Cast, kids | Play the Kids label, cast it | The three pads still play, pause and skip on the TV; the corner hold still exits |
+| YTM, add | In YouTube Music, Share on a song, pick Lumen | Lumen opens on the Library's "YouTube Music" folder with the label sheet; tick a label; the row shows "via YouTube Music" and no time |
+| YTM, add | Share a playlist; share plain text from another app | The playlist lands as a row; the plain text gives one short line and no row |
+| YTM, label, without access | Settings, YouTube Music shows "Allow"; put the YouTube Music song between the two local songs in one label (dates or Name sort), play the label | Local song 1 plays; at its end Lumen flashes to YouTube Music (about a second) and comes back; the song plays in YouTube Music; Now Playing reads "Open YouTube Music to control playback" with the button; Lumen's own notification is gone; the queue stays on the song when it ends |
+| YTM, label, with access | Allow in Settings (the row reads "On"), play the label again | At the YouTube Music song Now Playing shows its art, title, artist and moving position; pause, seek and play act on YouTube Music; the EQ chip is greyed with its line; when the song ends Lumen pauses YouTube Music and local song 2 plays with Lumen's notification back |
+| YTM, label, with access | Repeat with the screen off during the YouTube Music song | Local song 2 still starts when the song ends (best effort: Android may refuse to start playback from the background) |
+| YTM, positions | Share diagnostics after the runs | No `store: saved ytm://` lines; the sermon's rows are untouched |
 
 ## Licence
 

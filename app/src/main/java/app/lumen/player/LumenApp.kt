@@ -2,6 +2,8 @@ package app.lumen.player
 
 import android.app.Application
 import android.content.Context
+import androidx.media3.common.util.UnstableApi
+import app.lumen.player.cast.CastMediaServer
 import app.lumen.player.data.LabelRepository
 import app.lumen.player.data.LumenDb
 import app.lumen.player.data.MediaPermissions
@@ -13,6 +15,7 @@ import app.lumen.player.data.drive.Connectivity
 import app.lumen.player.data.drive.DriveAuth
 import app.lumen.player.data.drive.DriveRepository
 import app.lumen.player.diag.RingLog
+import app.lumen.player.remote.RemoteController
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -36,6 +39,16 @@ class LumenApp : Application() {
         private set
     lateinit var backup: BackupManager
         private set
+
+    /**
+     * 0.5.0: the phone-side file server for Chromecast, bound only while casting. One per process,
+     * shared by the service's Cast converter.
+     */
+    @get:UnstableApi
+    val castServer: CastMediaServer by lazy { CastMediaServer(this) }
+
+    /** 0.5.0: YouTube Music's session, followed while a YouTube Music item is current. */
+    val remote: RemoteController by lazy { RemoteController(this) }
 
     /** Application-wide work that must outlive any screen: seeding labels, the start-up scan. */
     val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)

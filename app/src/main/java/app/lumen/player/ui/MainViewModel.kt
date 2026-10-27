@@ -4,20 +4,24 @@ import android.app.Application
 import android.content.ComponentName
 import android.content.Context
 import android.database.ContentObserver
+import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.MediaStore
 import androidx.annotation.OptIn
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.media3.common.C
+import androidx.media3.common.DeviceInfo
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import app.lumen.player.LumenApp
+import app.lumen.player.cast.CastAvailability
 import app.lumen.player.data.BookmarkEntity
 import app.lumen.player.data.ChapterEntity
 import app.lumen.player.data.EqPreset
@@ -45,6 +49,10 @@ import app.lumen.player.notes.NotesExport
 import app.lumen.player.playback.MediaItems
 import app.lumen.player.playback.PlaybackService
 import app.lumen.player.playback.driveRowReachable
+import app.lumen.player.remote.RemoteController
+import app.lumen.player.remote.YtmLink
+import app.lumen.player.remote.YtmWatch
+import app.lumen.player.remote.isYtm
 import app.lumen.player.update.UpdateChecker
 import app.lumen.player.update.UpdateInfo
 import com.google.common.util.concurrent.ListenableFuture
@@ -100,6 +108,26 @@ data class PlayerState(
     val shuffle: Boolean = false,
     val repeat: Int = Player.REPEAT_MODE_OFF,
     val ended: Boolean = false,
+    /** 0.5.0: the session plays on a Cast receiver; sound settings stay on the phone. */
+    val casting: Boolean = false,
+)
+
+/**
+ * 0.5.0: Now Playing's remote mode, while the current Lumen item is a YouTube Music link. With
+ * [access] (Notification access) and [connected] (YouTube Music's session found) the title, artist,
+ * art and position are YouTube Music's own; otherwise they are the Lumen row's and Now Playing
+ * offers "Open YouTube Music".
+ */
+data class RemoteUi(
+    val link: YtmLink,
+    val access: Boolean,
+    val connected: Boolean,
+    val title: String,
+    val artist: String,
+    val art: Bitmap?,
+    val positionMs: Long,
+    val durationMs: Long,
+    val isPlaying: Boolean,
 )
 
 /**
@@ -205,6 +233,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val update = MutableStateFlow<UpdateInfo?>(null)
     val lastSaved: StateFlow<String> = store.lastSaved
 
+    // 0.5.0: Chromecast and the YouTube Music remote.
+
+    /** A Cast device is on the network (the cast button shows). */
+    val castAvailable: StateFlow<Boolean> = CastAvailability.available
+
+    private val ytm: RemoteController = app.remote
+
+    /** Notification access for YouTube Music, refreshed on every start of the activity. */
+    val ytmAccess = MutableStateFlow(false)
+
+    /** The YouTube Music item Lumen holds the queue on, or null. */
+    private var remoteUri: String? = null
+
+    /** Watches YouTube Music for the end of the item Lumen opened; null when it was not opened by Lumen. */
+    private var ytmWatch: YtmWatch? = null
+
+    /** True between the activity's onStart and onStop: only then may Lumen open YouTube Music. */
+    private var foreground = false
+
+    /** Ticks while a YouTube Music item is current, so the remote position moves on screen. */
+    private val remoteTick = MutableStateFlow(0L)
+
     // Player connection.
     private val _player = MutableStateFlow(PlayerState())
     val player: StateFlow<PlayerState> = _player
@@ -240,6 +290,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }.state(false)
 
     val noInterruptions: StateFlow<Boolean> = currentLabels.map { labels -> labels.any { it.noInterruptions } }.state(false)
+
+    /** 0.5.0: Now Playing's remote mode; null unless the current item is a YouTube Music link. */
+    val remote: StateFlow<RemoteUi?> = combine(player, ytm.state, ytmAccess, remoteTick) { p, s, access, _ ->
+        val link = if (p.hasItem) YtmLink.fromUri(p.mediaId) else null
+        if (link == null) {
+            null
+        } else {
+            val live = access && s.connected
+            RemoteUi(
+                link = link,
+                access = access,
+                connected = live,
+                title = if (live) s.title.ifBlank { p.title } else p.title,
+                artist = if (live) s.artist.ifBlank { p.artist } else p.artist,
+                art = if (live) s.art else null,
+                positionMs = if (live) s.positionNow(SystemClock.elapsedRealtime()) else 0L,
+                durationMs = if (live) s.durationMs else 0L,
+                isPlaying = live && s.isPlaying,
+            )
+        }
+    }.state(null)
 
     val bookmarks: StateFlow<List<BookmarkEntity>> = player.map { it.mediaId }.distinctUntilChanged().flatMapLatest { uri ->
         if (uri.isBlank()) flowOf(emptyList()) else mediaRepo.bookmarks(uri)
@@ -286,16 +357,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // Art is read lazily for whole-phone rows: fetch it for whatever is loaded in the player.
         viewModelScope.launch {
             currentItem.map { it?.uri }.distinctUntilChanged().collect { uri ->
-                if (uri != null) mediaRepo.ensureArt(uri)
+                if (uri != null && !YtmLink.isYtm(uri)) mediaRepo.ensureArt(uri)
+            }
+        }
+        // 0.5.0: the YouTube Music item Lumen opened is over; the Lumen queue moves on.
+        viewModelScope.launch {
+            ytm.state.collect { state ->
+                val watch = ytmWatch ?: return@collect
+                if (watch.ended(state)) onRemoteEnded()
             }
         }
     }
 
     private fun sortFolders(folders: List<FolderEntity>): List<FolderEntity> {
-        val picked = folders.filter { !it.isMediaStore && !it.isDrive }.sortedBy { it.addedAt }
+        val picked = folders.filter { !it.isMediaStore && !it.isDrive && !it.isYtm }.sortedBy { it.addedAt }
         val cloud = folders.filter { it.isDrive }
+        val youTubeMusic = folders.filter { it.isYtm }
         val buckets = folders.filter { it.isMediaStore }.sortedBy { it.name.lowercase() }
-        return picked + cloud + buckets
+        return picked + cloud + youTubeMusic + buckets
     }
 
     private fun buildItems(
@@ -328,10 +407,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // Controller lifecycle, driven by MainActivity.onStart and onStop.
 
     fun connect(context: Context) {
+        foreground = true
         refreshMediaAccess()
         startObservingMediaStore()
         app.connectivity.start()
-        if (controllerFuture != null) return
+        // 0.5.0: the cast button's device check, and Notification access (it may just have been
+        // granted in system settings; a YouTube Music item already current is then followed).
+        CastAvailability.start(context)
+        ytmAccess.value = ytm.hasAccess()
+        if (remoteUri != null) ytm.follow(true)
+        if (controllerFuture != null) {
+            // Kept connected while YouTube Music played (see disconnect): the screen ticks again.
+            if (_controller.value != null && ticker == null) startTicker()
+            return
+        }
         val token = SessionToken(context, ComponentName(context, PlaybackService::class.java))
         val future = MediaController.Builder(context, token).buildAsync()
         controllerFuture = future
@@ -344,6 +433,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     _controller.value = c
                     refresh(c)
                     startTicker()
+                    // A YouTube Music item already holding the queue: follow it, but do not open it again.
+                    c.currentMediaItem?.let { item -> MediaItems.uriOf(item).takeIf { YtmLink.isYtm(it) }?.let { enterRemote(it, open = false) } }
                     RingLog.i("ui", "controller connected")
                     val pending = pendingAction
                     pendingAction = null
@@ -356,11 +447,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
 
-    fun disconnect() {
+    fun disconnect() = disconnect(keepForRemote = true)
+
+    /**
+     * 0.5.0: with [keepForRemote], while a YouTube Music item Lumen opened is playing, the
+     * controller stays connected after the activity stops, so the end of that item can still move
+     * the Lumen queue on (Notification access needed). Everything else stops as before.
+     */
+    private fun disconnect(keepForRemote: Boolean) {
+        foreground = false
         stopObservingMediaStore()
         app.connectivity.stop()
         ticker?.cancel()
         ticker = null
+        if (keepForRemote && remoteUri != null && ytmWatch != null && _controller.value != null) {
+            RingLog.i("ytm", "controller kept while YouTube Music plays")
+            return
+        }
         _controller.value?.let { c ->
             c.removeListener(controllerListener)
             // "Audio only when you leave" also covers leaving the app with Now Playing open:
@@ -385,6 +488,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val controllerListener = object : Player.Listener {
         override fun onEvents(player: Player, events: Player.Events) {
             _controller.value?.let { refresh(it) }
+        }
+
+        /** 0.5.0: a YouTube Music item became current (tapped, or reached in the queue): open it there. */
+        override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+            val uri = mediaItem?.let { MediaItems.uriOf(it) }.orEmpty()
+            if (YtmLink.isYtm(uri)) enterRemote(uri, open = true) else leaveRemote()
         }
     }
 
@@ -414,6 +523,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             shuffle = c.shuffleModeEnabled,
             repeat = c.repeatMode,
             ended = c.playbackState == Player.STATE_ENDED,
+            casting = c.deviceInfo.playbackType == DeviceInfo.PLAYBACK_TYPE_REMOTE,
         )
     }
 
@@ -427,6 +537,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         durationMs = c.duration.let { if (it == C.TIME_UNSET) 0L else it },
                     )
                 }
+                if (remoteUri != null) remoteTick.value = SystemClock.elapsedRealtime()
                 delay(500)
             }
         }
@@ -485,22 +596,36 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     // Playback actions.
 
-    /** Plays [item] with the rest of [queue] after it (queue defaults to the item alone). */
+    /**
+     * Plays [item] with the rest of [queue] after it (queue defaults to the item alone). 0.5.0: a
+     * YouTube Music item is set as the current item without playing it here; the transition opens
+     * it in YouTube Music. While casting, YouTube Music items stay out of the queue (the receiver
+     * cannot play them), and tapping one opens YouTube Music on the phone.
+     */
     fun play(item: LibraryItem, queue: List<LibraryItem> = listOf(item)) {
-        val start = queue.indexOfFirst { it.uri == item.uri }.coerceAtLeast(0)
-        val ordered = if (start > 0) queue.drop(start) + queue.take(start) else queue
+        val casting = _player.value.casting
+        if (casting && item.media.isYtm) {
+            YtmLink.fromUri(item.uri)?.let { ytm.open(it, comeBack = true) }
+            return
+        }
+        val usable = if (casting) queue.filterNot { it.media.isYtm } else queue
+        val start = usable.indexOfFirst { it.uri == item.uri }.coerceAtLeast(0)
+        val ordered = if (start > 0) usable.drop(start) + usable.take(start) else usable
         val mediaItems = ordered.map { mediaItemFor(it) }
         kidsUnlocked.value = false
         withController { c ->
             if (c.currentMediaItem?.mediaId == item.uri) {
-                // Tapping the item already loaded resumes it; it never restarts.
-                playOrResume(c)
+                // Tapping the item already loaded resumes it; it never restarts. A YouTube Music
+                // item opens in YouTube Music again.
+                if (item.media.isYtm) enterRemote(item.uri, open = true) else playOrResume(c)
                 return@withController
             }
             c.shuffleModeEnabled = false
             c.setMediaItems(mediaItems)
-            c.prepare()
-            c.play()
+            if (!item.media.isYtm) {
+                c.prepare()
+                c.play()
+            }
             RingLog.i("ui", "queue of ${mediaItems.size} from ${item.media.title}")
         }
         nowPlayingOpen.value = true
@@ -572,6 +697,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun resume() {
         val current = _player.value
+        if (current.hasItem && remoteLink() != null) {
+            remotePlayPause()
+            nowPlayingOpen.value = true
+            return
+        }
         if (current.hasItem) {
             withController { playOrResume(it) }
             nowPlayingOpen.value = true
@@ -582,6 +712,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun playPause() {
+        if (remoteLink() != null) {
+            remotePlayPause()
+            return
+        }
         withController { c -> if (c.isPlaying) c.pause() else playOrResume(c) }
     }
 
@@ -597,11 +731,40 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         c.play()
     }
 
-    fun seekBack() = withController { it.seekBack() }
-    fun seekForward() = withController { it.seekForward() }
-    fun seekTo(ms: Long) = withController { it.seekTo(ms) }
-    fun next() = withController { if (it.hasNextMediaItem()) it.seekToNextMediaItem() }
-    fun previous() = withController { it.seekToPrevious() }
+    // 0.5.0: in remote mode (a YouTube Music item) the transport goes to YouTube Music.
+    fun seekBack() {
+        remote.value?.takeIf { it.connected }?.let { ytm.seekTo(it.positionMs - settings.value.skipBackSeconds * 1000L); return }
+        withController { it.seekBack() }
+    }
+
+    fun seekForward() {
+        remote.value?.takeIf { it.connected }?.let { ytm.seekTo(it.positionMs + settings.value.skipForwardSeconds * 1000L); return }
+        withController { it.seekForward() }
+    }
+
+    fun seekTo(ms: Long) {
+        if (remoteLink() != null) {
+            ytm.seekTo(ms)
+            return
+        }
+        withController { it.seekTo(ms) }
+    }
+
+    fun next() {
+        if (remoteLink() != null) {
+            ytm.next()
+            return
+        }
+        withController { if (it.hasNextMediaItem()) it.seekToNextMediaItem() }
+    }
+
+    fun previous() {
+        if (remoteLink() != null) {
+            ytm.previous()
+            return
+        }
+        withController { it.seekToPrevious() }
+    }
     fun toggleShuffle() = withController { it.shuffleModeEnabled = !it.shuffleModeEnabled }
     fun cycleRepeat() = withController {
         it.repeatMode = when (it.repeatMode) {
@@ -612,6 +775,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun cycleSpeed() {
+        // 0.5.0: speed stays on the phone; the chip is disabled while casting.
+        if (_player.value.casting) return
         val speeds = SettingsRepository.speeds
         val current = _player.value.speed
         val i = speeds.indexOfFirst { kotlin.math.abs(it - current) < 0.01f }
@@ -1013,6 +1178,93 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch { Diagnostics.share(context) }
     }
 
+    // 0.5.0: YouTube Music.
+
+    private fun remoteLink(): YtmLink? {
+        val p = _player.value
+        return if (p.hasItem) YtmLink.fromUri(p.mediaId) else null
+    }
+
+    /** Play or pause in YouTube Music; without its session, open the item there instead. */
+    private fun remotePlayPause() {
+        val link = remoteLink() ?: return
+        val state = ytm.state.value
+        when {
+            ytmAccess.value && state.connected && state.isPlaying -> ytm.pause()
+            ytmAccess.value && state.connected -> ytm.play()
+            else -> enterRemote(link.uri, open = true)
+        }
+    }
+
+    /**
+     * A YouTube Music item is current. Follows YouTube Music's session (with Notification access)
+     * and, with [open], opens the item there: from the foreground with the brief trip out and back
+     * ([RemoteController.RETURN_DELAY_MS]); from the background, where Android does not let Lumen
+     * open an app, only by asking YouTube Music's session to play it, when that session allows it.
+     */
+    private fun enterRemote(uri: String, open: Boolean) {
+        val link = YtmLink.fromUri(uri) ?: return
+        remoteUri = uri
+        ytmAccess.value = ytm.hasAccess()
+        val following = ytm.follow(true)
+        if (!open) return
+        // Without access nothing can be watched, so the queue does not move on by itself.
+        ytmWatch = if (following) YtmWatch(link) else null
+        if (foreground) {
+            ytm.open(link, comeBack = true)
+        } else if (!ytm.playFromUri(link)) {
+            RingLog.i("ytm", "reached ${link.uri} in the background; it opens when Lumen is next on screen")
+        }
+    }
+
+    /** The queue left the YouTube Music item: stop following YouTube Music. */
+    private fun leaveRemote() {
+        if (remoteUri == null) return
+        remoteUri = null
+        ytmWatch = null
+        ytm.follow(false)
+    }
+
+    /** YouTube Music finished the item Lumen opened: pause it and play the next Lumen item, if any. */
+    private fun onRemoteEnded() {
+        ytmWatch = null
+        val c = _controller.value ?: return
+        if (!c.hasNextMediaItem()) {
+            RingLog.i("ytm", "item over, nothing after it in the Lumen queue")
+            return
+        }
+        RingLog.i("ytm", "item over, Lumen moves on")
+        ytm.pause()
+        c.seekToNextMediaItem()
+        val next = c.currentMediaItem
+        if (next != null && !YtmLink.isYtm(MediaItems.uriOf(next))) {
+            c.prepare()
+            c.play()
+        }
+    }
+
+    /** "Open YouTube Music" on Now Playing when Lumen cannot control it. */
+    fun openYouTubeMusic() {
+        ytm.openApp()
+    }
+
+    /** A song or playlist shared from YouTube Music: stored in the Library, then the label sheet. */
+    fun addSharedYouTubeMusic(shared: YtmLink.Shared) {
+        viewModelScope.launch {
+            val now = System.currentTimeMillis()
+            val media = shared.link.toMediaEntity(shared.title, shared.artist, now)
+            mediaRepo.upsertYouTubeMusic(FolderEntity(uri = YtmLink.FOLDER_URI, name = YtmLink.FOLDER_NAME, addedAt = now), media)
+            val stored = mediaRepo.byUri(media.uri) ?: media
+            val ids = labelRepo.labelIdsFor(stored.uri)
+            nowPlayingOpen.value = false
+            screen.value = Screen.Library
+            libraryFolder.value = YtmLink.FOLDER_URI
+            labelSheet.value = LabelSheetTarget.ForItem(
+                LibraryItem(media = stored, labelIds = ids, copies = 1, positionMs = 0L, lastPlayedAt = 0L, folderName = YtmLink.FOLDER_NAME),
+            )
+        }
+    }
+
     /** Static app shortcuts: "resume", "worship", "kids". */
     fun handleShortcut(action: String?) {
         when (action) {
@@ -1026,7 +1278,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     override fun onCleared() {
-        disconnect()
+        disconnect(keepForRemote = false)
+        leaveRemote()
         super.onCleared()
     }
 }

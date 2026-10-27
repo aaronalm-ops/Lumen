@@ -207,6 +207,8 @@ fun MediaRow(
     divider: Boolean = true,
     dimmed: Boolean = false,
     progress: Float? = null,
+    /** 0.5.0: a small source chip after the meta, such as "via YouTube Music". */
+    badge: String? = null,
     onClick: () -> Unit,
     onLongClick: (() -> Unit)? = null,
 ) {
@@ -239,7 +241,18 @@ fun MediaRow(
                 }
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     hues.take(3).forEach { HueDot(it) }
-                    Text(meta, style = Lumen.type.bodyS, color = metaColour, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    if (badge != null) {
+                        Text(
+                            badge.uppercase(),
+                            style = Lumen.type.labelS,
+                            color = metaColour,
+                            maxLines = 1,
+                            modifier = Modifier
+                                .border(1.dp, c.line, RoundedCornerShape(6.dp))
+                                .padding(horizontal = 6.dp, vertical = 2.dp),
+                        )
+                    }
+                    Text(meta, style = Lumen.type.bodyS, color = metaColour, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
                     if (copies > 1) {
                         Text(
                             "x$copies",

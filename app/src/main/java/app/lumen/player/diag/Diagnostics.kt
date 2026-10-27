@@ -14,6 +14,7 @@ import app.lumen.player.data.MediaPermissions
 import app.lumen.player.data.SettingsRepository
 import app.lumen.player.data.drive.isDrive
 import app.lumen.player.data.isMediaStore
+import app.lumen.player.remote.isYtm
 import app.lumen.player.playback.PlaybackService
 import java.io.File
 import java.io.FileOutputStream
@@ -96,8 +97,8 @@ object Diagnostics {
                 append("never\n")
             }
             append("media rows: $mediaCount (mediastore $mediaStoreCount)\n")
-            append("folders: ${folders.size} (${folders.count { it.isMediaStore }} phone buckets, ${folders.count { it.isDrive }} drive, ${folders.count { !it.isMediaStore && !it.isDrive }} picked)\n")
-            folders.forEach { append("  ${if (it.isMediaStore) "phone " else if (it.isDrive) "drive " else "picked"} | ${it.name} | ${it.uri}\n") }
+            append("folders: ${folders.size} (${folders.count { it.isMediaStore }} phone buckets, ${folders.count { it.isDrive }} drive, ${folders.count { it.isYtm }} youtube music, ${folders.count { !it.isMediaStore && !it.isDrive && !it.isYtm }} picked)\n")
+            folders.forEach { append("  ${if (it.isMediaStore) "phone " else if (it.isDrive) "drive " else if (it.isYtm) "ytm   " else "picked"} | ${it.name} | ${it.uri}\n") }
         }
         return withContext(Dispatchers.IO) {
             val dir = File(context.cacheDir, "diagnostics").apply { mkdirs() }

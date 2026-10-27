@@ -108,6 +108,10 @@ dependencies {
     // Phase 1b: Drive streaming through a cached HTTP DataSource.
     implementation(libs.media3.datasource)
     implementation(libs.media3.database)
+    // 0.5.0: Chromecast. CastPlayer swaps between ExoPlayer and the Cast receiver inside the one
+    // MediaSession; the Cast framework is named so its version is pinned to what media3-cast expects.
+    implementation(libs.media3.cast)
+    implementation(libs.play.services.cast.framework)
 
     // Phase 1b: Google Drive authorisation (AuthorizationClient, drive.readonly and drive.file) and the
     // Android 12 splash screen API with its compat shim.

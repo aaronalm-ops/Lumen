@@ -3,13 +3,17 @@ package app.lumen.player.playback
 import android.app.PendingIntent
 import android.content.Intent
 import android.net.Uri
+import androidx.media3.cast.CastPlayer
+import androidx.media3.cast.RemoteCastPlayer
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
+import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
+import androidx.media3.common.PlayerTransferState
 import androidx.media3.common.Timeline
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
@@ -20,8 +24,10 @@ import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaLibraryService.LibraryParams
 import androidx.media3.session.MediaLibraryService.MediaLibrarySession
 import androidx.media3.session.MediaSession
+import androidx.media3.session.MediaSessionService
 import app.lumen.player.LumenApp
 import app.lumen.player.MainActivity
+import app.lumen.player.cast.LumenCastConverter
 import app.lumen.player.data.EqPreset
 import app.lumen.player.data.LabelRepository
 import app.lumen.player.data.MediaEntity
@@ -31,6 +37,7 @@ import app.lumen.player.data.Settings
 import app.lumen.player.data.SettingsRepository
 import app.lumen.player.data.drive.DriveRepository
 import app.lumen.player.diag.RingLog
+import app.lumen.player.remote.YtmLink
 import app.lumen.player.widget.WidgetSnapshot
 import app.lumen.player.widget.WidgetState
 import com.google.common.collect.ImmutableList
@@ -74,6 +81,12 @@ class PlaybackService : MediaLibraryService() {
         private const val FADE_STEP_MS = 50L
         private const val FADE_IDLE_MAX_MS = 1_000L
 
+        /** 0.5.0: how often the cast position is noted in memory (never written) while casting. */
+        private const val CAST_TICK_MS = 1_000L
+
+        /** 0.5.0: a player that reaches READY this close to the handed-over position ends the handover. */
+        private const val HANDOVER_TOLERANCE_MS = 5_000L
+
         const val ROOT_ID = "root"
         const val CONTINUE_ID = "continue"
         const val LABELS_ID = "labels"
@@ -82,8 +95,12 @@ class PlaybackService : MediaLibraryService() {
         const val LABEL_PREFIX = "label:"
     }
 
-    /** ExoPlayer with mutable seek increments, so Settings can change them without a rebuild. */
-    private class SkipPlayer(exo: ExoPlayer) : ForwardingPlayer(exo) {
+    /**
+     * The session's player with mutable seek increments, so Settings can change them without a
+     * rebuild. 0.5.0: it wraps the CastPlayer (ExoPlayer on the phone, the receiver while casting),
+     * or ExoPlayer alone where the Cast framework is missing.
+     */
+    private class SkipPlayer(inner: Player) : ForwardingPlayer(inner) {
         @Volatile
         var backMs: Long = 10_000L
 
@@ -107,6 +124,32 @@ class PlaybackService : MediaLibraryService() {
 
     private lateinit var exo: ExoPlayer
     private lateinit var player: SkipPlayer
+
+    // 0.5.0: Chromecast. CastPlayer (Media3's documented pattern: one MediaSession, one Player)
+    // moves the queue between ExoPlayer and RemoteCastPlayer when a cast session starts or ends,
+    // through [CastTransfer]. Null where the Cast framework could not be set up.
+    private var castPlayer: CastPlayer? = null
+    private var remoteCast: RemoteCastPlayer? = null
+
+    /** True while the receiver is the active player. Sound settings then stay on the phone. */
+    private var castActive = false
+
+    /**
+     * 0.5.0, the position promise across a cast handover. The media id of the item that just moved
+     * between phone and receiver: until the new player reports READY near [castHandoverTargetMs]
+     * (or the owner seeks), no snapshot is written for it, because a player that has only just
+     * been handed the queue can report 0. The true position was saved by the handover itself.
+     */
+    private var castHandoverId: String? = null
+    private var castHandoverTargetMs = 0L
+
+    /** The last cast position seen for [lastCastId], kept in memory in case the receiver reports 0 at the end. */
+    private var lastCastId: String? = null
+    private var lastCastPositionMs = 0L
+    private var castTicker: Job? = null
+
+    /** 0.5.0: true while a YouTube Music item holds the queue and the session's notification is hidden. */
+    private var heldForYtm = false
     private lateinit var store: PositionStore
     private lateinit var mediaRepo: MediaRepository
     private lateinit var labelRepo: LabelRepository
@@ -192,7 +235,7 @@ class PlaybackService : MediaLibraryService() {
         // A stable, explicit audio session so the effects bind before the first frame.
         val sessionId = (getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager).generateAudioSessionId()
         exo.setAudioSessionId(sessionId)
-        player = SkipPlayer(exo)
+        player = SkipPlayer(buildCastPlayer(exo) ?: exo)
         player.addListener(playerListener)
         bindEffects(exo.audioSessionId)
 
@@ -220,13 +263,19 @@ class PlaybackService : MediaLibraryService() {
         saveBlocking("destroy")
         publishWidget(forcePaused = true)
         scope.cancel()
+        castTicker?.cancel()
         session?.let { s ->
             player.removeListener(playerListener)
             s.release()
             effects.release()
-            exo.release()
+            // CastPlayer releases the receiver player and ExoPlayer together.
+            val cast = castPlayer
+            if (cast != null) cast.release() else exo.release()
         }
         session = null
+        castPlayer = null
+        remoteCast = null
+        LumenApp.from(this).castServer.stop()
         isRunning = false
         super.onDestroy()
     }
@@ -301,7 +350,7 @@ class PlaybackService : MediaLibraryService() {
         sleepFading = false
         sleepFiring = false
         // A timer replaced or cleared mid-fade must not leave the volume where the fade stopped.
-        player.volume = 1f
+        exo.volume = 1f
         if (endAt <= 0L) return
         val now = System.currentTimeMillis()
         if (endAt <= now) {
@@ -318,23 +367,24 @@ class PlaybackService : MediaLibraryService() {
             sleepFading = true
             for (i in 1..steps) {
                 if (!isActive) return@launch
-                player.volume = (1f - i.toFloat() / steps).coerceIn(0f, 1f)
+                exo.volume = (1f - i.toFloat() / steps).coerceIn(0f, 1f)
                 delay(SLEEP_FADE_STEP_MS)
             }
             sleepFiring = true
             player.pause()
             sleepFiring = false
             sleepFading = false
-            player.volume = 1f
+            exo.volume = 1f
             RingLog.i("sleep", "timer fired, paused")
             settingsRepo.clearSleep()
         }
     }
 
-    /** True for an item that streams: Drive or any http(s) uri. Never faded into. */
+    /** True for an item that streams: Drive, any http(s) uri, or (0.5.0) YouTube Music. Never faded into. */
     private fun isRemote(item: MediaItem): Boolean {
         val uri = MediaItems.uriOf(item)
-        return uri.startsWith(DriveRepository.URI_PREFIX) || uri.startsWith("http://") || uri.startsWith("https://")
+        return uri.startsWith(DriveRepository.URI_PREFIX) || uri.startsWith("http://") || uri.startsWith("https://") ||
+            YtmLink.isYtm(uri)
     }
 
     /**
@@ -369,7 +419,7 @@ class PlaybackService : MediaLibraryService() {
         fadeInActive = false
         fadeOutActive = false
         lastRemainingMs = -1L
-        if (!sleepFading && player.volume != 1f) player.volume = 1f
+        if (!sleepFading && exo.volume != 1f) exo.volume = 1f
         if (wasFading) RingLog.i("fade", "reset on $reason")
     }
 
@@ -377,7 +427,8 @@ class PlaybackService : MediaLibraryService() {
     private fun restartFade() {
         fadeJob?.cancel()
         fadeJob = null
-        if (fadeWindowMs <= 0L || !itemFadeEligible || !player.isPlaying) return
+        // 0.5.0: never while casting; the receiver's volume is the owner's TV, not Lumen's.
+        if (castActive || fadeWindowMs <= 0L || !itemFadeEligible || !player.isPlaying) return
         fadeJob = scope.launch {
             while (isActive && fadeWindowMs > 0L) {
                 delay(fadeTick())
@@ -429,7 +480,7 @@ class PlaybackService : MediaLibraryService() {
         }
         if (!sleepFading) {
             val volume = target.coerceIn(0f, 1f)
-            if (player.volume != volume) player.volume = volume
+            if (exo.volume != volume) exo.volume = volume
         }
         return wait
     }
@@ -470,7 +521,8 @@ class PlaybackService : MediaLibraryService() {
     private fun currentSnapshot(): Snapshot? {
         val item = player.currentMediaItem ?: return null
         val uri = MediaItems.uriOf(item)
-        if (uri.isBlank()) return null
+        // 0.5.0: positions are never stored for YouTube Music items (music, played elsewhere).
+        if (uri.isBlank() || YtmLink.isYtm(uri)) return null
         val duration = player.duration.let { if (it == C.TIME_UNSET) 0L else it }
         val title = player.mediaMetadata.title?.toString()
             ?: item.mediaMetadata.title?.toString()
@@ -491,9 +543,19 @@ class PlaybackService : MediaLibraryService() {
         if (pendingResumeId == id) pendingResumeId = null
     }
 
+    /** 0.5.0: true while the current item has just moved between phone and receiver (see [castHandoverId]). */
+    private fun handoverPending(): Boolean {
+        val id = castHandoverId ?: return false
+        return id == player.currentMediaItem?.mediaId
+    }
+
     private fun save(reason: String) {
         if (resumePending()) {
             RingLog.i("store", "skipped $reason save: resume position still pending")
+            return
+        }
+        if (handoverPending()) {
+            RingLog.i("store", "skipped $reason save: cast handover in progress")
             return
         }
         val s = currentSnapshot() ?: return
@@ -503,6 +565,10 @@ class PlaybackService : MediaLibraryService() {
     private fun saveBlocking(reason: String) {
         if (resumePending()) {
             RingLog.i("store", "skipped $reason save: resume position still pending")
+            return
+        }
+        if (handoverPending()) {
+            RingLog.i("store", "skipped $reason save: cast handover in progress")
             return
         }
         val s = currentSnapshot() ?: return
@@ -625,7 +691,8 @@ class PlaybackService : MediaLibraryService() {
                 // 0.4.0, item 4: a long voice note resumes like speech in the music layout, so the
                 // saved-position lookup below keys on this rather than on the layout.
                 val resume = resumes(item, media, labelNames)
-                player.setPlaybackSpeed(if (speech) settings.speed else 1.0f)
+                // 0.5.0: speed above 1.0 stays on the phone; a cast plays at 1.0.
+                player.setPlaybackSpeed(if (speech && !castActive) settings.speed else 1.0f)
                 val preset = presetFor(speech, labelNames)
                 if (preset != settings.eqPreset) settingsRepo.setActivePreset(preset)
                 if (lookUpPosition) {
@@ -680,9 +747,9 @@ class PlaybackService : MediaLibraryService() {
         // often not read yet, so "not speech" means nothing and it never fades.
         val known = media != null || MediaItems.speechOrNull(item) != null
         val video = MediaItems.isVideo(item) || media?.isVideo == true
-        itemFadeEligible = known && !speech && !voiceNote && !video && ids.none { it in kidsLabelIds }
+        itemFadeEligible = known && !speech && !voiceNote && !video && !MediaItems.isYtm(item) && ids.none { it in kidsLabelIds }
         if (!itemFadeEligible) {
-            if (fadeInActive || fadeOutActive) resetFade("ineligible item") else if (!sleepFading && player.volume != 1f) player.volume = 1f
+            if (fadeInActive || fadeOutActive) resetFade("ineligible item") else if (!sleepFading && exo.volume != 1f) exo.volume = 1f
         }
         restartFade()
     }
@@ -718,6 +785,143 @@ class PlaybackService : MediaLibraryService() {
         return window.durationMs
     }
 
+    // 0.5.0: Chromecast.
+
+    /**
+     * CastPlayer.Builder with ExoPlayer as the local player, as in
+     * developer.android.com/media/media3/cast/create-castplayer: the session keeps one Player and
+     * CastPlayer swaps the active one underneath when a Cast session starts or ends, calling
+     * [CastTransfer] in between. Null (ExoPlayer alone) where the Cast framework cannot be set up.
+     */
+    private fun buildCastPlayer(local: ExoPlayer): Player? = try {
+        val remote = RemoteCastPlayer.Builder(this)
+            .setMediaItemConverter(LumenCastConverter(LumenApp.from(this).castServer))
+            .build()
+        val cast = CastPlayer.Builder(this)
+            .setLocalPlayer(local)
+            .setRemotePlayer(remote)
+            .setTransferCallback(CastTransfer())
+            .build()
+        remoteCast = remote
+        castPlayer = cast
+        RingLog.i("cast", "cast player ready")
+        cast
+    } catch (t: Throwable) {
+        RingLog.w("cast", "Cast unavailable, playing on the phone only: $t")
+        null
+    }
+
+    /**
+     * Moves the queue between the phone and the receiver. Media3's default callback copies the
+     * whole state; this one also keeps the position promise and the "sound stays on the phone" rule:
+     *
+     * - The source's position is saved first ("cast start" or "cast end"), never when it is 0 or
+     *   while a resume lookup or another handover is still settling, so 0 is never written over a
+     *   saved place. Then the handover guard ([castHandoverId]) holds every snapshot of that item
+     *   until the target reports READY near the handed-over position.
+     * - Coming back from the receiver, a 0 it may report once the session is gone is replaced by
+     *   the last cast position Lumen saw in memory.
+     * - To the receiver: speed 1.0, and only items it can fetch (no YouTube Music items). A queue
+     *   whose current item is YouTube Music is not sent at all.
+     * - Back to the phone: the cast position, paused, at the item's own speed.
+     */
+    private inner class CastTransfer : CastPlayer.TransferCallback {
+        override fun transferState(sourcePlayer: Player, targetPlayer: Player) {
+            val toRemote = targetPlayer === remoteCast
+            val sourceItem = sourcePlayer.currentMediaItem
+            val sourceUri = sourceItem?.let { MediaItems.uriOf(it) }.orEmpty()
+            var position = sourcePlayer.currentPosition.coerceAtLeast(0L)
+            if (!toRemote && sourceItem != null && sourceItem.mediaId == lastCastId && position == 0L && lastCastPositionMs > 0L) {
+                RingLog.w("cast", "receiver reported 0 at the end; using the last cast position $lastCastPositionMs")
+                position = lastCastPositionMs
+            }
+            val settling = resumePending() || castHandoverId != null
+            if (sourceItem != null && sourceUri.isNotBlank() && !YtmLink.isYtm(sourceUri) && position > 0L && !settling) {
+                val duration = sourcePlayer.duration.let { if (it == C.TIME_UNSET) 0L else it }
+                val title = sourcePlayer.mediaMetadata.title?.toString() ?: sourceItem.mediaMetadata.title?.toString() ?: sourceUri
+                store.save(sourceUri, title, position, duration, if (toRemote) "cast start" else "cast end")
+            }
+
+            val items = (0 until sourcePlayer.mediaItemCount).map { sourcePlayer.getMediaItemAt(it) }
+            val currentIndex = sourcePlayer.currentMediaItemIndex
+            val currentCastable = sourceItem == null || !toRemote || !MediaItems.isYtm(sourceItem)
+            val kept = ArrayList<MediaItem>(items.size)
+            var newIndex = currentIndex
+            if (currentCastable) {
+                items.forEachIndexed { i, item ->
+                    val castable = item.localConfiguration != null && !(toRemote && MediaItems.isYtm(item))
+                    if (castable) kept += item else if (i < currentIndex) newIndex--
+                }
+            } else {
+                RingLog.i("cast", "a YouTube Music item is current; nothing is sent to the receiver")
+            }
+            val index = if (kept.isEmpty()) C.INDEX_UNSET else newIndex.coerceIn(0, kept.size - 1)
+            val speed = if (!toRemote && currentSpeech.value) settings.speed else 1.0f
+            val state = PlayerTransferState.builderFromPlayer(sourcePlayer)
+                .setMediaItems(kept)
+                .setCurrentMediaItemIndex(index)
+                .setCurrentPosition(if (kept.isEmpty()) 0L else position)
+                .setPlayWhenReady(toRemote && kept.isNotEmpty() && sourcePlayer.playWhenReady)
+                .setPlaybackParameters(PlaybackParameters(speed))
+                .build()
+
+            castHandoverId = if (kept.isEmpty()) null else kept[index].mediaId
+            castHandoverTargetMs = position
+            castActive = toRemote
+            resetFade("cast")
+            exo.volume = 1f
+            RingLog.i("cast", "${if (toRemote) "to the receiver" else "back to the phone"}: ${kept.size} items, index $index at $position")
+            state.setToPlayer(targetPlayer)
+            // Back on the phone the item is prepared paused, so it reports READY at the cast
+            // position (which ends the handover) and the next play starts at once. A YouTube Music
+            // item is never prepared here.
+            if (!toRemote && kept.isNotEmpty() && !MediaItems.isYtm(kept[index])) targetPlayer.prepare()
+
+            castTicker?.cancel()
+            castTicker = null
+            if (toRemote) {
+                lastCastId = null
+                lastCastPositionMs = 0L
+                castTicker = scope.launch {
+                    while (isActive) {
+                        delay(CAST_TICK_MS)
+                        val current = player.currentMediaItem ?: continue
+                        val p = player.currentPosition
+                        if (castHandoverId == null && p > 0L) {
+                            lastCastId = current.mediaId
+                            lastCastPositionMs = p
+                        }
+                    }
+                }
+            } else {
+                LumenApp.from(this@PlaybackService).castServer.stop()
+            }
+        }
+    }
+
+    // 0.5.0: YouTube Music items.
+
+    /**
+     * A YouTube Music item is current: it plays in YouTube Music (MainViewModel opens it), never
+     * here. The phone's player stops on it, and with it the session's notification, until the queue
+     * moves on. No position is written for it.
+     */
+    private fun holdForYtm(reason: String) {
+        if (!heldForYtm) {
+            heldForYtm = true
+            setShowNotificationForIdlePlayer(MediaSessionService.SHOW_NOTIFICATION_FOR_IDLE_PLAYER_NEVER)
+        }
+        RingLog.i("ytm", "holding the queue on a YouTube Music item ($reason)")
+        if (player.playWhenReady) player.pause()
+        if (player.playbackState != Player.STATE_IDLE) player.stop()
+    }
+
+    /** The queue moved off a YouTube Music item: the notification behaves as before again. */
+    private fun releaseYtmHold() {
+        heldForYtm = false
+        setShowNotificationForIdlePlayer(MediaSessionService.SHOW_NOTIFICATION_FOR_IDLE_PLAYER_AFTER_STOP_OR_ERROR)
+    }
+
     private val playerListener = object : Player.Listener {
         /**
          * 0.4.0. Any pause puts a transition fade back to full volume. A pause the user asked for
@@ -736,6 +940,12 @@ class PlaybackService : MediaLibraryService() {
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             RingLog.i("player", "isPlaying=$isPlaying")
+            // 0.5.0: a play that reaches a YouTube Music item (the widget, a headset) is stopped
+            // again: that item plays in YouTube Music, never here.
+            if (isPlaying && !castActive && MediaItems.isYtm(player.currentMediaItem)) {
+                holdForYtm("play on a YouTube Music item")
+                return
+            }
             // Buffering also stops isPlaying; the volume stays where the fade had it until play
             // resumes or the user pauses (onPlayWhenReadyChanged above).
             if (isPlaying) restartFade() else {
@@ -766,6 +976,12 @@ class PlaybackService : MediaLibraryService() {
                 resetFade("seek")
                 restartFade()
             }
+            // 0.5.0: the owner's own seek during a cast handover ends it (the position is theirs
+            // now). A seek to 0 does not: a receiver that has just been handed the queue can report one.
+            if (reason == Player.DISCONTINUITY_REASON_SEEK && castHandoverId != null && newPosition.positionMs > 0L) {
+                RingLog.i("cast", "handover ended by a seek")
+                castHandoverId = null
+            }
             // Queue moved on (auto, next/previous, or a new queue set at the same index): keep
             // the old item's last position. A new queue gives every period a new uid, so the
             // index alone would miss the case where the replacement lands at the same index.
@@ -774,6 +990,14 @@ class PlaybackService : MediaLibraryService() {
             if (leftItem) {
                 val old = oldPosition.mediaItem ?: return
                 val uri = MediaItems.uriOf(old)
+                // 0.5.0: the swap between phone and receiver looks like leaving the item; its true
+                // position was saved by the handover, and the old player may already read 0.
+                if (castHandoverId != null && old.mediaId == castHandoverId) {
+                    RingLog.i("store", "skipped left item save: cast handover in progress")
+                    return
+                }
+                // 0.5.0: no positions for YouTube Music items.
+                if (YtmLink.isYtm(uri)) return
                 val title = old.mediaMetadata.title?.toString() ?: uri
                 // The player's duration for that window, not the scanner's: the two can differ by
                 // a few ms and the progress key is uri|duration. Zero lets the store write into
@@ -801,11 +1025,18 @@ class PlaybackService : MediaLibraryService() {
             // speech item never runs the check loop on the last item's eligibility.
             itemFadeEligible = mediaItem != null && fadeEligibleByExtras(mediaItem)
             fadeInActive = reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO && fadedOut && fadeWindowMs > 0L && itemFadeEligible
-            if (!fadeInActive && !sleepFading && player.volume != 1f) player.volume = 1f
+            if (!fadeInActive && !sleepFading && exo.volume != 1f) exo.volume = 1f
             // The fade-in starts now from the near-silent end of the fade-out. isPlaying does not
             // change across an automatic transition, so nothing else would restart the loop before
             // onNewItem's lookups finish (and a failed lookup would leave the volume near 0).
             if (fadeInActive) restartFade()
+            // 0.5.0: a YouTube Music item holds the queue (it plays in YouTube Music, see
+            // MainViewModel); any other item, or an empty queue, brings the notification back.
+            if (mediaItem != null && MediaItems.isYtm(mediaItem) && !castActive) {
+                holdForYtm("transition")
+            } else if (heldForYtm) {
+                releaseYtmHold()
+            }
             if (mediaItem == null) return
             when (reason) {
                 Player.MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED -> {
@@ -822,6 +1053,14 @@ class PlaybackService : MediaLibraryService() {
         override fun onPlaybackStateChanged(playbackState: Int) {
             RingLog.i("player", "state=$playbackState")
             if (playbackState == Player.STATE_READY) {
+                // 0.5.0: the player the queue moved to is ready where it was handed the position.
+                castHandoverId?.let { id ->
+                    val current = player.currentMediaItem?.mediaId
+                    if (current != id || kotlin.math.abs(player.currentPosition - castHandoverTargetMs) <= HANDOVER_TOLERANCE_MS) {
+                        RingLog.i("cast", "handover complete at ${player.currentPosition}")
+                        castHandoverId = null
+                    }
+                }
                 save("ready")
                 publishWidget()
                 learnDriveDuration()
@@ -835,7 +1074,9 @@ class PlaybackService : MediaLibraryService() {
 
         override fun onAudioSessionIdChanged(audioSessionId: Int) {
             RingLog.i("player", "audio session id=$audioSessionId")
-            bindEffects(audioSessionId)
+            // 0.5.0: while casting the session reports the receiver's (unset) id; the effects
+            // always belong to ExoPlayer's own session.
+            bindEffects(exo.audioSessionId)
         }
 
         override fun onPlayerError(error: PlaybackException) {
@@ -1021,7 +1262,7 @@ class PlaybackService : MediaLibraryService() {
             parentId == SERMONS_ID -> {
                 val all = mediaRepo.all()
                 val sermons = labelRepo.byName(LabelRepository.SERMONS)?.let { labelRepo.mediaUrisFor(it.id) }?.toSet() ?: emptySet()
-                all.filter { it.durationMs > MediaRepository.SPEECH_THRESHOLD_MS || it.uri in sermons }
+                all.filter { (it.durationMs > MediaRepository.SPEECH_THRESHOLD_MS || it.uri in sermons) && !YtmLink.isYtm(it.uri) }
                     .sortedByDescending { it.dateAdded }
                     .distinctBy { it.fingerprint }
                     .map { itemFor(it) }
@@ -1033,7 +1274,8 @@ class PlaybackService : MediaLibraryService() {
             parentId.startsWith(LABEL_PREFIX) -> {
                 val id = parentId.removePrefix(LABEL_PREFIX).toLongOrNull()
                 if (id == null) emptyList()
-                else labelRepo.mediaUrisFor(id).mapNotNull { mediaRepo.byUri(it) }
+                // 0.5.0: YouTube Music rows play in YouTube Music, so Android Auto never lists them.
+                else labelRepo.mediaUrisFor(id).filterNot { YtmLink.isYtm(it) }.mapNotNull { mediaRepo.byUri(it) }
                     .sortedByDescending { it.dateAdded }
                     .distinctBy { it.fingerprint }
                     .map { itemFor(it) }

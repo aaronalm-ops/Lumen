@@ -38,8 +38,10 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -65,6 +67,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.media3.cast.MediaRouteButton
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.MediaController
@@ -73,6 +76,7 @@ import androidx.media3.ui.PlayerView
 import app.lumen.player.data.LabelEntity
 import app.lumen.player.data.Settings
 import app.lumen.player.data.drive.isDrive
+import app.lumen.player.remote.YtmLink
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -108,6 +112,9 @@ class NowPlayingActions(
     val exportNotes: () -> Unit,
     val setLevelOutVoices: (Boolean) -> Unit,
     val setTrimSilences: (Boolean) -> Unit,
+    // 0.5.0.
+    /** "Open YouTube Music" in remote mode, when Lumen cannot control it from here. */
+    val openYouTubeMusic: () -> Unit,
 )
 
 /** The tabletop split, in this screen's own coordinates: the height above the hinge and the hinge itself. */
@@ -144,17 +151,23 @@ fun NowPlayingScreen(
     actions: NowPlayingActions,
     paned: Boolean = false,
     hingeInWindow: Rect? = null,
+    /** 0.5.0: a Cast device is on the network, so the cast button shows (it always shows while casting). */
+    castAvailable: Boolean = false,
+    /** 0.5.0: the current item is a YouTube Music link; Now Playing shows and drives YouTube Music. */
+    remote: RemoteUi? = null,
 ) {
     val c = Lumen.colours
     BackHandler(enabled = !paned) { if (!kidsLocked) actions.close() }
     KeepScreenOn(enabled = noInterruptions)
+    val showCast = (castAvailable || player.casting) && remote == null
 
     val tintValue = item?.media?.tint
     val tint = if (!speech && tintValue != null) Color(tintValue) else c.base
     val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
 
     if (kidsLocked) {
-        KidsLock(player, actions)
+        // Kids lock keeps its three pads in remote mode too; they drive YouTube Music.
+        KidsLock(if (remote != null) player.copy(title = remote.title, isPlaying = remote.isPlaying) else player, actions)
         return
     }
 
@@ -184,8 +197,8 @@ fun NowPlayingScreen(
             },
     ) {
         when {
-            split != null -> TabletopLayout(split, player, controller, item, labels, settings, speech, noInterruptions, timeline, downloadProgress, actions, paned)
-            player.isVideo && landscape && controller != null -> VideoSurface(controller, Modifier.fillMaxSize().background(c.base))
+            split != null && remote == null -> TabletopLayout(split, player, controller, item, labels, settings, speech, noInterruptions, timeline, downloadProgress, actions, paned, showCast)
+            player.isVideo && landscape && controller != null && remote == null -> VideoSurface(controller, Modifier.fillMaxSize().background(c.base))
             else -> Column(
                 Modifier
                     .fillMaxSize()
@@ -194,27 +207,68 @@ fun NowPlayingScreen(
                     .verticalScroll(rememberScrollState())
                     .padding(horizontal = Gutter),
             ) {
-                Header(labels, speech, item, paned, actions)
-                if (speech) SpeechLayout(player, item, settings, timeline, noInterruptions, downloadProgress, actions)
-                else MusicLayout(player, controller, item, labels, settings, audioOnly, downloadProgress, actions)
+                Header(labels, if (remote != null) false else speech, item, paned, actions, showCast = showCast, casting = player.casting)
+                when {
+                    remote != null -> RemoteLayout(remote, player, labels, actions)
+                    speech -> SpeechLayout(player, item, settings, timeline, noInterruptions, downloadProgress, actions)
+                    else -> MusicLayout(player, controller, item, labels, settings, audioOnly, downloadProgress, actions)
+                }
             }
         }
     }
 }
 
-/** Chevron (not in the paned layout), the eyebrow, the label button. */
+/**
+ * Chevron (not in the paned layout), the eyebrow, the label button. 0.5.0: the cast button sits
+ * before the label button while a Cast device is on the network (an empty slot balances it on the
+ * left so the eyebrow stays centred); it is ink while casting.
+ */
 @Composable
-private fun Header(labels: List<LabelEntity>, speech: Boolean, item: LibraryItem?, paned: Boolean, actions: NowPlayingActions) {
+private fun Header(
+    labels: List<LabelEntity>,
+    speech: Boolean,
+    item: LibraryItem?,
+    paned: Boolean,
+    actions: NowPlayingActions,
+    showCast: Boolean = false,
+    casting: Boolean = false,
+) {
     val c = Lumen.colours
     Row(Modifier.fillMaxWidth().height(56.dp), verticalAlignment = Alignment.CenterVertically) {
         if (paned) Spacer(Modifier.size(TouchTarget)) else IconTap(LumenIcons.ChevronDown, "Close", c.text, onClick = actions.close)
+        if (showCast) Spacer(Modifier.size(TouchTarget))
         Spacer(Modifier.weight(1f))
         val labelName = labels.firstOrNull()?.name
         val eyebrow = listOfNotNull(labelName, if (speech) "Speech" else "Music").joinToString(" · ")
         Text(eyebrow.uppercase(), style = Lumen.type.label, color = c.text2)
         Spacer(Modifier.weight(1f))
+        if (showCast) CastButton(casting)
         IconTap(LumenIcons.Label, "Labels", c.text, enabled = item != null, onClick = actions.openLabelSheet)
     }
+}
+
+/**
+ * 0.5.0: Media3's Compose MediaRouteButton (media3-cast): a 48 dp Material3 IconButton that opens
+ * the route chooser, or the route controller while casting. Its glyph takes LocalContentColor.
+ */
+@androidx.annotation.OptIn(UnstableApi::class)
+@Composable
+private fun CastButton(casting: Boolean) {
+    val c = Lumen.colours
+    CompositionLocalProvider(LocalContentColor provides if (casting) c.accentInk else c.text) {
+        MediaRouteButton()
+    }
+}
+
+/** 0.5.0: the one ice line under the chip row while casting. */
+@Composable
+private fun CastingNote() {
+    Text(
+        "Casting: sound settings apply on the phone only",
+        style = Lumen.type.bodyS,
+        color = Lumen.colours.ice,
+        modifier = Modifier.padding(top = 4.dp),
+    )
 }
 
 /**
@@ -236,6 +290,7 @@ private fun TabletopLayout(
     downloadProgress: Float?,
     actions: NowPlayingActions,
     paned: Boolean,
+    showCast: Boolean,
 ) {
     Column(Modifier.fillMaxSize()) {
         Column(
@@ -245,7 +300,7 @@ private fun TabletopLayout(
                 .statusBarsPadding()
                 .padding(horizontal = Gutter),
         ) {
-            Header(labels, speech, item, paned, actions)
+            Header(labels, speech, item, paned, actions, showCast = showCast, casting = player.casting)
             if (speech) {
                 SpeechTitle(player, actions)
                 Spacer(Modifier.weight(1f))
@@ -292,7 +347,7 @@ private fun TabletopLayout(
                 ChapterList(player, timeline, actions)
                 if (player.nextTitle != null) UpNext(player)
             } else {
-                MusicChips(item, labels, settings, downloadProgress, actions)
+                MusicChips(item, labels, settings, downloadProgress, actions, player.casting)
                 Spacer(Modifier.height(12.dp))
                 MusicTransport(player, actions)
                 UpNext(player)
@@ -480,7 +535,8 @@ private fun ChipRow(
     val view = LocalView.current
     val sleepLeft = if (settings.sleepActive) ((settings.sleepEndAt - System.currentTimeMillis()) / 60_000L + 1).coerceAtLeast(1) else 0L
     Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        StatusChip(text = speedLabel(player.speed), active = player.speed != 1.0f, onClick = {
+        // 0.5.0: speed stays on the phone, so the chip is disabled while casting.
+        StatusChip(text = speedLabel(player.speed), active = player.speed != 1.0f, enabled = !player.casting, onClick = {
             view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
             actions.cycleSpeed()
         })
@@ -518,6 +574,7 @@ private fun ChipRow(
         OfflineChip(item, downloadProgress, actions.toggleOffline)
     }
     if (downloadProgress != null) ProgressLine(fraction = downloadProgress, thickness = 1.dp, modifier = Modifier.padding(top = 4.dp))
+    if (player.casting) CastingNote()
     Text(
         "Long press Mark for a chapter, the title to switch layouts",
         style = Lumen.type.bodyS,
@@ -626,13 +683,21 @@ private fun MusicTitle(player: PlayerState, actions: NowPlayingActions) {
 
 /** Label chips, the preset chip and the Drive chip, with the download line under them. */
 @Composable
-private fun MusicChips(item: LibraryItem?, labels: List<LabelEntity>, settings: Settings, downloadProgress: Float?, actions: NowPlayingActions) {
+private fun MusicChips(
+    item: LibraryItem?,
+    labels: List<LabelEntity>,
+    settings: Settings,
+    downloadProgress: Float?,
+    actions: NowPlayingActions,
+    casting: Boolean = false,
+) {
     Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         labels.take(2).forEach { LabelChip(name = it.name, hue = it.hue, onClick = actions.openLabelSheet) }
         StatusChip(text = settings.eqPreset, active = settings.eqPreset != "Flat", enabled = settings.eqEngine != "none", onClick = actions.cyclePreset)
         OfflineChip(item, downloadProgress, actions.toggleOffline)
     }
     if (downloadProgress != null) ProgressLine(fraction = downloadProgress, thickness = 1.dp, modifier = Modifier.padding(top = 4.dp))
+    if (casting) CastingNote()
 }
 
 /** Shuffle, previous, the 72 dp play button, next, repeat. */
@@ -699,13 +764,100 @@ private fun MusicLayout(
     Spacer(Modifier.height(16.dp))
     MusicTitle(player, actions)
     Spacer(Modifier.height(8.dp))
-    MusicChips(item, labels, settings, downloadProgress, actions)
+    MusicChips(item, labels, settings, downloadProgress, actions, player.casting)
     Spacer(Modifier.height(8.dp))
     Scrubber(positionMs = player.positionMs, durationMs = player.durationMs, enabled = player.hasItem, thin = true, onSeek = actions.seekTo)
     Spacer(Modifier.height(16.dp))
     MusicTransport(player, actions)
     UpNext(player)
     Spacer(Modifier.height(16.dp))
+}
+
+/**
+ * 0.5.0: remote mode, a YouTube Music item. YouTube Music's art, title and artist, the "via YouTube
+ * Music" chip (tap opens YouTube Music), a greyed EQ chip with its reason, then YouTube Music's own
+ * position on the scrubber and cyan transport. Without Notification access, or before YouTube
+ * Music's session appears, one line and "Open YouTube Music" take the place of the controls, and
+ * the Lumen queue does not move on by itself.
+ */
+@Composable
+private fun RemoteLayout(remote: RemoteUi, player: PlayerState, labels: List<LabelEntity>, actions: NowPlayingActions) {
+    val c = Lumen.colours
+    Spacer(Modifier.height(10.dp))
+    RemoteArt(remote)
+    Spacer(Modifier.height(16.dp))
+    Text(remote.title.ifBlank { "YouTube Music" }, style = Lumen.type.displayS, color = c.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
+    if (remote.artist.isNotBlank()) {
+        Spacer(Modifier.height(4.dp))
+        Text(remote.artist, style = Lumen.type.bodyS, color = c.text2, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+    Spacer(Modifier.height(8.dp))
+    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        StatusChip(text = YtmLink.SOURCE_LABEL, onClick = actions.openYouTubeMusic)
+        labels.take(2).forEach { LabelChip(name = it.name, hue = it.hue, onClick = actions.openLabelSheet) }
+        StatusChip(text = "EQ", enabled = false, onClick = {})
+    }
+    Text("EQ is handled by YouTube Music", style = Lumen.type.bodyS, color = c.text3, modifier = Modifier.padding(top = 2.dp))
+    Spacer(Modifier.height(8.dp))
+    if (remote.connected) {
+        Scrubber(positionMs = remote.positionMs, durationMs = remote.durationMs, enabled = true, thin = true, onSeek = actions.seekTo)
+        Spacer(Modifier.height(16.dp))
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(28.dp, Alignment.CenterHorizontally),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconTap(LumenIcons.SkipPrevious, "Previous in YouTube Music", c.accentInk, size = 28.dp, onClick = actions.previous)
+            PlayButton(isPlaying = remote.isPlaying, enabled = true, size = 72.dp, onClick = actions.playPause)
+            IconTap(LumenIcons.SkipNext, "Next in YouTube Music", c.accentInk, size = 28.dp, onClick = actions.next)
+        }
+    } else {
+        Spacer(Modifier.height(8.dp))
+        Text("Open YouTube Music to control playback", style = Lumen.type.body, color = c.text2)
+        if (!remote.access) {
+            Text(
+                "Allow Lumen to control YouTube Music in Settings to see it here and move on to the next item",
+                style = Lumen.type.bodyS,
+                color = c.text3,
+                modifier = Modifier.padding(top = 2.dp),
+            )
+        }
+        Spacer(Modifier.height(16.dp))
+        PrimaryPill("Open YouTube Music", icon = LumenIcons.Play, onClick = actions.openYouTubeMusic)
+    }
+    UpNext(player)
+    Spacer(Modifier.height(16.dp))
+}
+
+/** YouTube Music's own art from its session, or the flat block with the first letter. */
+@Composable
+private fun RemoteArt(remote: RemoteUi) {
+    val c = Lumen.colours
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .aspectRatio(1f)
+            .clip(RoundedCornerShape(CardRadius))
+            .background(c.elevated),
+        contentAlignment = Alignment.Center,
+    ) {
+        val art = remote.art
+        if (art != null) {
+            Image(bitmap = art.asImageBitmap(), contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+        } else {
+            Text(
+                remote.title.trim().take(1).uppercase().ifBlank { "Y" },
+                style = Lumen.type.displayL.copy(fontSize = Lumen.type.displayL.fontSize * 4),
+                color = c.line,
+            )
+            Text(
+                YtmLink.FOLDER_NAME.uppercase(),
+                style = Lumen.type.labelS,
+                color = c.text2,
+                modifier = Modifier.align(Alignment.BottomStart).padding(start = 14.dp, bottom = 12.dp),
+            )
+        }
+    }
 }
 
 /** Embedded art from the cache, or a flat block with the first letter. Tint comes from data. */

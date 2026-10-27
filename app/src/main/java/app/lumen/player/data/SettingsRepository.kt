@@ -14,7 +14,11 @@ data class Settings(
     val eqEngine: String = "",
     val sleepEndAt: Long = 0L,
     val sleepMinutes: Int = 0,
-    val night: Boolean = false,
+    /**
+     * 0.4.0: "auto" follows the system dark mode, "light" or "dark" fixes Home, Library and
+     * Settings. Replaces the 0.3 Night toggle; a stored night=1 reads as "dark".
+     */
+    val appearance: String = Appearance.AUTO,
     val skipBackSeconds: Int = 10,
     val skipForwardSeconds: Int = 30,
     /** uri to "speech" or "music". */
@@ -44,10 +48,32 @@ data class Settings(
     val backupAt: Long = 0L,
     /** When the last backup reached Drive, 0 when never; drives the weekly automatic upload. */
     val backupDriveAt: Long = 0L,
+    // 0.4.0: Sound.
+    /** "Level out voices": a gentler, stronger compressor on speech items. Never on music. */
+    val levelOutVoices: Boolean = false,
+    /** "Trim silences": Media3 silence skipping on speech items. Never on music. */
+    val trimSilences: Boolean = false,
+    /** "Smooth transitions" between music items: 0 (off), 2, 4 or 6 seconds. */
+    val crossfadeSeconds: Int = 0,
 ) {
     val driveConnected: Boolean get() = driveFolderId.isNotBlank()
 
     val sleepActive: Boolean get() = sleepEndAt > System.currentTimeMillis()
+}
+
+/** The three Appearance choices for Home, Library and Settings. Now Playing is always black. */
+object Appearance {
+    const val AUTO = "auto"
+    const val LIGHT = "light"
+    const val DARK = "dark"
+
+    val order = listOf(AUTO, LIGHT, DARK)
+
+    fun label(value: String): String = when (value) {
+        LIGHT -> "Light"
+        DARK -> "Dark"
+        else -> "Automatic"
+    }
 }
 
 object EqPreset {
@@ -89,7 +115,12 @@ class SettingsRepository(private val dao: ProgressDao) {
         const val KEY_EQ_ENGINE = "eq_engine"
         const val KEY_SLEEP_END_AT = "sleep_end_at"
         const val KEY_SLEEP_MINUTES = "sleep_minutes"
+        /** 0.3 Night toggle; read only to migrate it to [KEY_APPEARANCE]. */
         const val KEY_NIGHT = "night"
+        const val KEY_APPEARANCE = "appearance"
+        const val KEY_LEVEL_OUT = "level_out"
+        const val KEY_TRIM_SILENCES = "trim_silences"
+        const val KEY_CROSSFADE = "crossfade_s"
         const val KEY_SKIP_BACK = "skip_back_s"
         const val KEY_SKIP_FORWARD = "skip_fwd_s"
         const val KEY_SEEDED = "labels_seeded"
@@ -116,6 +147,7 @@ class SettingsRepository(private val dao: ProgressDao) {
 
         val speeds = listOf(1.0f, 1.25f, 1.5f, 1.75f, 2.0f)
         val sleepChoices = listOf(0, 15, 30, 45, 60)
+        val crossfadeChoices = listOf(0, 2, 4, 6)
 
         fun parse(entries: List<KvEntity>): Settings {
             val map = entries.associate { it.k to it.v }
@@ -128,7 +160,8 @@ class SettingsRepository(private val dao: ProgressDao) {
                 eqEngine = map[KEY_EQ_ENGINE] ?: "",
                 sleepEndAt = map[KEY_SLEEP_END_AT]?.toLongOrNull() ?: 0L,
                 sleepMinutes = map[KEY_SLEEP_MINUTES]?.toIntOrNull() ?: 0,
-                night = map[KEY_NIGHT] == "1",
+                appearance = map[KEY_APPEARANCE]?.takeIf { it in Appearance.order }
+                    ?: if (map[KEY_NIGHT] == "1") Appearance.DARK else Appearance.AUTO,
                 skipBackSeconds = map[KEY_SKIP_BACK]?.toIntOrNull()?.coerceIn(5, 60) ?: 10,
                 skipForwardSeconds = map[KEY_SKIP_FORWARD]?.toIntOrNull()?.coerceIn(5, 120) ?: 30,
                 layoutOverrides = map.filterKeys { it.startsWith(LAYOUT_PREFIX) }
@@ -145,6 +178,9 @@ class SettingsRepository(private val dao: ProgressDao) {
                 driveMobileDownloads = map[KEY_DRIVE_MOBILE_DOWNLOADS] == "1",
                 backupAt = map[KEY_BACKUP_AT]?.toLongOrNull() ?: 0L,
                 backupDriveAt = map[KEY_BACKUP_DRIVE_AT]?.toLongOrNull() ?: 0L,
+                levelOutVoices = map[KEY_LEVEL_OUT] == "1",
+                trimSilences = map[KEY_TRIM_SILENCES] == "1",
+                crossfadeSeconds = map[KEY_CROSSFADE]?.toIntOrNull()?.takeIf { it in crossfadeChoices } ?: 0,
             )
         }
     }
@@ -182,7 +218,28 @@ class SettingsRepository(private val dao: ProgressDao) {
         put(KEY_SLEEP_END_AT, "0")
     }
 
-    suspend fun setNight(on: Boolean) = put(KEY_NIGHT, if (on) "1" else "0")
+    suspend fun setAppearance(value: String) {
+        if (value in Appearance.order) put(KEY_APPEARANCE, value)
+    }
+
+    /**
+     * 0.4.0, once on start: a phone that had the 0.3 Night toggle on gets Appearance "dark"
+     * written, so the choice survives even if the old key is ever cleared. Nothing is written
+     * when Appearance already has a value or Night was off (Automatic is the default).
+     */
+    suspend fun migrateNightToAppearance() {
+        if (get(KEY_APPEARANCE) != null) return
+        if (get(KEY_NIGHT) == "1") put(KEY_APPEARANCE, Appearance.DARK)
+    }
+
+    suspend fun setLevelOutVoices(on: Boolean) = put(KEY_LEVEL_OUT, if (on) "1" else "0")
+
+    suspend fun setTrimSilences(on: Boolean) = put(KEY_TRIM_SILENCES, if (on) "1" else "0")
+
+    suspend fun setCrossfadeSeconds(seconds: Int) {
+        val value = crossfadeChoices.minByOrNull { kotlin.math.abs(it - seconds) } ?: 0
+        put(KEY_CROSSFADE, value.toString())
+    }
 
     suspend fun setSkips(backSeconds: Int, forwardSeconds: Int) {
         put(KEY_SKIP_BACK, backSeconds.coerceIn(5, 60).toString())

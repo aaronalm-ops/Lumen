@@ -106,6 +106,19 @@ data class BookmarkEntity(
     @ColumnInfo(name = "created_at") val createdAt: Long,
 )
 
+/**
+ * 0.4.0: a typed chapter on a speech item (long press on the bookmark chip). Listed with the
+ * bookmarks, sorted by time, and exported as notes. Keyed by the player's uri like bookmarks.
+ */
+@Entity(tableName = "chapters", indices = [Index(value = ["media_uri"])])
+data class ChapterEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    @ColumnInfo(name = "media_uri") val mediaUri: String,
+    @ColumnInfo(name = "position_ms") val positionMs: Long,
+    val title: String,
+    @ColumnInfo(name = "created_at") val createdAt: Long,
+)
+
 @Dao
 interface ProgressDao {
     @Upsert
@@ -229,6 +242,23 @@ interface MediaDao {
 
     @Delete
     suspend fun deleteBookmark(bookmark: BookmarkEntity)
+
+    // 0.4.0: chapters.
+
+    @Query("SELECT * FROM chapters WHERE media_uri = :uri ORDER BY position_ms ASC")
+    fun chaptersFlow(uri: String): Flow<List<ChapterEntity>>
+
+    @Query("SELECT * FROM chapters ORDER BY media_uri ASC, position_ms ASC")
+    suspend fun allChapters(): List<ChapterEntity>
+
+    @Query("SELECT * FROM chapters WHERE media_uri = :uri ORDER BY position_ms ASC")
+    suspend fun chaptersFor(uri: String): List<ChapterEntity>
+
+    @Insert
+    suspend fun insertChapter(chapter: ChapterEntity): Long
+
+    @Delete
+    suspend fun deleteChapter(chapter: ChapterEntity)
 }
 
 @Dao
@@ -285,8 +315,9 @@ interface LabelDao {
         LabelEntity::class,
         MediaLabelEntity::class,
         BookmarkEntity::class,
+        ChapterEntity::class,
     ],
-    version = 3,
+    version = 4,
     exportSchema = false,
 )
 abstract class LumenDb : RoomDatabase() {
@@ -348,9 +379,25 @@ abstract class LumenDb : RoomDatabase() {
             }
         }
 
+        /**
+         * 0.3.x to 0.4.0. Creates `chapters` and its index and touches nothing else, so
+         * `progress`, `kv` and every other table survive as they are. The column types match
+         * what Room expects for [ChapterEntity] (Long and String non-null, autoGenerate id).
+         */
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `chapters` (" +
+                        "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `media_uri` TEXT NOT NULL, " +
+                        "`position_ms` INTEGER NOT NULL, `title` TEXT NOT NULL, `created_at` INTEGER NOT NULL)",
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_chapters_media_uri` ON `chapters` (`media_uri`)")
+            }
+        }
+
         fun build(context: Context): LumenDb =
             Room.databaseBuilder(context.applicationContext, LumenDb::class.java, "lumen.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                 // Phase 1 only: if a later Phase 1 build changes the new tables, start those over
                 // rather than crash. The 1 to 2 migration above still runs first, so progress
                 // written in Phase 0 is never dropped by it.

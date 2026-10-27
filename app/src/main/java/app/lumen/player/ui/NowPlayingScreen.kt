@@ -3,8 +3,10 @@ package app.lumen.player.ui
 import android.app.Activity
 import android.content.res.Configuration
 import android.graphics.BitmapFactory
+import android.graphics.Rect
 import android.view.HapticFeedbackConstants
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -19,6 +21,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -31,12 +34,15 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -49,10 +55,14 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.Player
@@ -60,7 +70,6 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.MediaController
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
-import app.lumen.player.data.BookmarkEntity
 import app.lumen.player.data.LabelEntity
 import app.lumen.player.data.Settings
 import app.lumen.player.data.drive.isDrive
@@ -84,16 +93,38 @@ class NowPlayingActions(
     val cyclePreset: () -> Unit,
     val cycleSleep: () -> Unit,
     val addBookmark: () -> Unit,
-    val deleteBookmark: (BookmarkEntity) -> Unit,
     val toggleLayout: () -> Unit,
     val unlockKids: () -> Unit,
     val setAudioOnly: (Boolean) -> Unit,
     val openLabelSheet: () -> Unit,
     /** Phase 1b: "Keep offline" or "Remove download" for a Drive item. */
     val toggleOffline: () -> Unit,
+    // 0.4.0.
+    /** Long press on the bookmark chip: the chapter sheet at the current position. */
+    val openChapterSheet: () -> Unit,
+    /** Long press on a chapter list row: removes that chapter or bookmark. */
+    val deleteMark: (TimelineMark) -> Unit,
+    /** The chapter list's overflow: shares the notes as a plain-text file. */
+    val exportNotes: () -> Unit,
+    val setLevelOutVoices: (Boolean) -> Unit,
+    val setTrimSilences: (Boolean) -> Unit,
 )
 
-/** True black. Speech or music layout by duration, label or the per-item override. */
+/** The tabletop split, in this screen's own coordinates: the height above the hinge and the hinge itself. */
+private data class HingeSplit(val top: Dp, val hinge: Dp)
+
+/** Below this height either side of the hinge, a split would crush the controls; the screen stays whole. */
+private val MinSplitPane = 200.dp
+
+/**
+ * True black. Speech or music layout by duration, label or the per-item override.
+ *
+ * 0.4.0: [paned] is true when Now Playing is the right pane of the two-pane layout (no close
+ * chevron, Back is left to the Library pane). [hingeInWindow] is the bounds of a half-opened,
+ * horizontal fold in window coordinates (tabletop posture); when it crosses this screen with room
+ * on both sides, the screen splits at it: title, art and scrubber above, chips and transport
+ * below, nothing across the hinge.
+ */
 @androidx.annotation.OptIn(UnstableApi::class)
 @Composable
 fun NowPlayingScreen(
@@ -105,14 +136,17 @@ fun NowPlayingScreen(
     speech: Boolean,
     kidsLocked: Boolean,
     noInterruptions: Boolean,
-    bookmarks: List<BookmarkEntity>,
+    /** Chapters and bookmarks of the loaded item, by time. */
+    timeline: List<TimelineMark>,
     audioOnly: Boolean,
     /** Fraction of a running "Keep offline" download for this item, null when none. */
     downloadProgress: Float?,
     actions: NowPlayingActions,
+    paned: Boolean = false,
+    hingeInWindow: Rect? = null,
 ) {
     val c = Lumen.colours
-    BackHandler(enabled = true) { if (!kidsLocked) actions.close() }
+    BackHandler(enabled = !paned) { if (!kidsLocked) actions.close() }
     KeepScreenOn(enabled = noInterruptions)
 
     val tintValue = item?.media?.tint
@@ -124,34 +158,147 @@ fun NowPlayingScreen(
         return
     }
 
-    if (player.isVideo && landscape && controller != null) {
-        Box(Modifier.fillMaxSize().background(c.base)) {
-            VideoSurface(controller, Modifier.fillMaxSize())
+    // Where this screen sits in the window, so a hinge given in window coordinates can be placed.
+    var screenTop by remember { mutableFloatStateOf(0f) }
+    var screenHeight by remember { mutableFloatStateOf(0f) }
+    val density = LocalDensity.current
+    val split: HingeSplit? = hingeInWindow?.let { h ->
+        val top = h.top - screenTop
+        val bottom = h.bottom - screenTop
+        val minPx = with(density) { MinSplitPane.toPx() }
+        if (screenHeight > 0f && top >= minPx && screenHeight - bottom >= minPx) {
+            with(density) { HingeSplit(top = top.toDp(), hinge = (bottom - top).coerceAtLeast(0f).toDp()) }
+        } else {
+            null
         }
-        return
     }
 
-    Column(
+    Box(
         Modifier
             .fillMaxSize()
             .background(tint)
-            .statusBarsPadding()
-            .navigationBarsPadding()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = Gutter),
+            .onGloballyPositioned { coordinates ->
+                val bounds = coordinates.boundsInWindow()
+                screenTop = bounds.top
+                screenHeight = bounds.height
+            },
     ) {
-        Row(Modifier.fillMaxWidth().height(56.dp), verticalAlignment = Alignment.CenterVertically) {
-            IconTap(LumenIcons.ChevronDown, "Close", c.text, onClick = actions.close)
-            Spacer(Modifier.weight(1f))
-            val labelName = labels.firstOrNull()?.name
-            val eyebrow = listOfNotNull(labelName, if (speech) "Speech" else "Music").joinToString(" · ")
-            Text(eyebrow.uppercase(), style = Lumen.type.label, color = c.text2)
-            Spacer(Modifier.weight(1f))
-            IconTap(LumenIcons.Label, "Labels", c.text, enabled = item != null, onClick = actions.openLabelSheet)
+        when {
+            split != null -> TabletopLayout(split, player, controller, item, labels, settings, speech, noInterruptions, timeline, downloadProgress, actions, paned)
+            player.isVideo && landscape && controller != null -> VideoSurface(controller, Modifier.fillMaxSize().background(c.base))
+            else -> Column(
+                Modifier
+                    .fillMaxSize()
+                    .statusBarsPadding()
+                    .navigationBarsPadding()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = Gutter),
+            ) {
+                Header(labels, speech, item, paned, actions)
+                if (speech) SpeechLayout(player, item, settings, timeline, noInterruptions, downloadProgress, actions)
+                else MusicLayout(player, controller, item, labels, settings, audioOnly, downloadProgress, actions)
+            }
         }
+    }
+}
 
-        if (speech) SpeechLayout(player, item, settings, bookmarks, noInterruptions, downloadProgress, actions)
-        else MusicLayout(player, controller, item, labels, settings, audioOnly, downloadProgress, actions)
+/** Chevron (not in the paned layout), the eyebrow, the label button. */
+@Composable
+private fun Header(labels: List<LabelEntity>, speech: Boolean, item: LibraryItem?, paned: Boolean, actions: NowPlayingActions) {
+    val c = Lumen.colours
+    Row(Modifier.fillMaxWidth().height(56.dp), verticalAlignment = Alignment.CenterVertically) {
+        if (paned) Spacer(Modifier.size(TouchTarget)) else IconTap(LumenIcons.ChevronDown, "Close", c.text, onClick = actions.close)
+        Spacer(Modifier.weight(1f))
+        val labelName = labels.firstOrNull()?.name
+        val eyebrow = listOfNotNull(labelName, if (speech) "Speech" else "Music").joinToString(" · ")
+        Text(eyebrow.uppercase(), style = Lumen.type.label, color = c.text2)
+        Spacer(Modifier.weight(1f))
+        IconTap(LumenIcons.Label, "Labels", c.text, enabled = item != null, onClick = actions.openLabelSheet)
+    }
+}
+
+/**
+ * Tabletop: the part above the hinge holds the header, title, art (music) and scrubber; the part
+ * below holds the chips, transport and, for speech, the chapter list. Nothing crosses the hinge.
+ */
+@androidx.annotation.OptIn(UnstableApi::class)
+@Composable
+private fun TabletopLayout(
+    split: HingeSplit,
+    player: PlayerState,
+    controller: MediaController?,
+    item: LibraryItem?,
+    labels: List<LabelEntity>,
+    settings: Settings,
+    speech: Boolean,
+    noInterruptions: Boolean,
+    timeline: List<TimelineMark>,
+    downloadProgress: Float?,
+    actions: NowPlayingActions,
+    paned: Boolean,
+) {
+    Column(Modifier.fillMaxSize()) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .height(split.top)
+                .statusBarsPadding()
+                .padding(horizontal = Gutter),
+        ) {
+            Header(labels, speech, item, paned, actions)
+            if (speech) {
+                SpeechTitle(player, actions)
+                Spacer(Modifier.weight(1f))
+            } else {
+                Row(Modifier.fillMaxWidth().weight(1f).padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    val square = Modifier.fillMaxHeight().aspectRatio(1f, matchHeightConstraintsFirst = true)
+                    if (player.isVideo && controller != null) {
+                        VideoSurface(
+                            controller,
+                            Modifier.fillMaxHeight().aspectRatio(16f / 9f, matchHeightConstraintsFirst = true).clip(RoundedCornerShape(CardRadius)),
+                        )
+                    } else {
+                        ArtBlock(item, player.title, square)
+                    }
+                    Spacer(Modifier.width(16.dp))
+                    Column(Modifier.weight(1f)) { MusicTitle(player, actions) }
+                }
+            }
+            Scrubber(
+                positionMs = player.positionMs,
+                durationMs = player.durationMs,
+                enabled = player.hasItem,
+                thin = !speech,
+                holdingPlace = speech && player.hasItem && !player.isPlaying,
+                onSeek = actions.seekTo,
+            )
+            Spacer(Modifier.height(8.dp))
+        }
+        // The hinge itself: left empty.
+        Spacer(Modifier.fillMaxWidth().height(split.hinge))
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                .navigationBarsPadding()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = Gutter),
+        ) {
+            Spacer(Modifier.height(8.dp))
+            if (speech) {
+                ChipRow(player, item, settings, noInterruptions, timeline.any { it.bookmark != null }, downloadProgress, actions)
+                Spacer(Modifier.height(12.dp))
+                SpeechTransport(player, settings, actions)
+                ChapterList(player, timeline, actions)
+                if (player.nextTitle != null) UpNext(player)
+            } else {
+                MusicChips(item, labels, settings, downloadProgress, actions)
+                Spacer(Modifier.height(12.dp))
+                MusicTransport(player, actions)
+                UpNext(player)
+            }
+            Spacer(Modifier.height(16.dp))
+        }
     }
 }
 
@@ -177,17 +324,10 @@ private fun OfflineChip(item: LibraryItem?, downloadProgress: Float?, onToggle: 
     )
 }
 
+/** The speech title (32 sp, long press switches layouts) and the speaker. */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun SpeechLayout(
-    player: PlayerState,
-    item: LibraryItem?,
-    settings: Settings,
-    bookmarks: List<BookmarkEntity>,
-    noInterruptions: Boolean,
-    downloadProgress: Float?,
-    actions: NowPlayingActions,
-) {
+private fun SpeechTitle(player: PlayerState, actions: NowPlayingActions) {
     val c = Lumen.colours
     val view = LocalView.current
     Spacer(Modifier.height(8.dp))
@@ -209,8 +349,35 @@ private fun SpeechLayout(
         Spacer(Modifier.height(6.dp))
         Text(player.artist, style = Lumen.type.body, color = c.text2, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
+}
+
+/** Back, the 80 dp play button, forward. */
+@Composable
+private fun SpeechTransport(player: PlayerState, settings: Settings, actions: NowPlayingActions) {
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(28.dp, Alignment.CenterHorizontally),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        SkipButton(seconds = settings.skipBackSeconds, forward = false, enabled = player.hasItem, onClick = actions.seekBack)
+        PlayButton(isPlaying = player.isPlaying, enabled = player.hasItem || player.connected, size = 80.dp, onClick = actions.playPause)
+        SkipButton(seconds = settings.skipForwardSeconds, forward = true, enabled = player.hasItem, onClick = actions.seekForward)
+    }
+}
+
+@Composable
+private fun SpeechLayout(
+    player: PlayerState,
+    item: LibraryItem?,
+    settings: Settings,
+    timeline: List<TimelineMark>,
+    noInterruptions: Boolean,
+    downloadProgress: Float?,
+    actions: NowPlayingActions,
+) {
+    SpeechTitle(player, actions)
     Spacer(Modifier.height(12.dp))
-    ChipRow(player, item, settings, noInterruptions, bookmarks.isNotEmpty(), downloadProgress, actions)
+    ChipRow(player, item, settings, noInterruptions, timeline.any { it.bookmark != null }, downloadProgress, actions)
     Spacer(Modifier.height(16.dp))
     // Paused on a speech item, Lumen is holding the place: the head turns to the ember.
     Scrubber(
@@ -222,38 +389,81 @@ private fun SpeechLayout(
         onSeek = actions.seekTo,
     )
     Spacer(Modifier.height(24.dp))
-    Row(
-        Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(28.dp, Alignment.CenterHorizontally),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        SkipButton(seconds = settings.skipBackSeconds, forward = false, enabled = player.hasItem, onClick = actions.seekBack)
-        PlayButton(isPlaying = player.isPlaying, enabled = player.hasItem || player.connected, size = 80.dp, onClick = actions.playPause)
-        SkipButton(seconds = settings.skipForwardSeconds, forward = true, enabled = player.hasItem, onClick = actions.seekForward)
-    }
-    if (bookmarks.isNotEmpty()) {
-        Spacer(Modifier.height(26.dp))
-        SectionLabel("Bookmarks", count = bookmarks.size.toString())
-        Spacer(Modifier.height(4.dp))
-        bookmarks.forEachIndexed { index, b ->
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .height(44.dp)
-                    .combinedClickable(onClick = { actions.seekTo(b.positionMs) }, onLongClick = { actions.deleteBookmark(b) }),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(LumenIcons.BookmarkFilled, contentDescription = null, tint = c.text2, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(10.dp))
-                Text("Bookmark ${index + 1}", style = Lumen.type.bodyS, color = c.text, modifier = Modifier.weight(1f))
-                Text(formatTime(b.positionMs), style = Lumen.type.timeS, color = c.text2)
-            }
-            if (index < bookmarks.lastIndex) HorizontalDivider(color = c.line, thickness = 1.dp)
-        }
-        Text("Tap to seek, long press to remove", style = Lumen.type.bodyS, color = c.text3, modifier = Modifier.padding(top = 6.dp))
-    }
+    SpeechTransport(player, settings, actions)
+    ChapterList(player, timeline, actions)
     if (player.nextTitle != null) UpNext(player)
     Spacer(Modifier.height(24.dp))
+}
+
+/**
+ * 0.4.0: typed chapters and bookmarks together by time. Tap seeks, long press removes. The row
+ * the playhead is in carries the 6 dp ink dot and an ink timecode; nothing animates when it moves
+ * on. The overflow holds "Export notes".
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun ChapterList(player: PlayerState, timeline: List<TimelineMark>, actions: NowPlayingActions) {
+    val c = Lumen.colours
+    if (timeline.isEmpty()) return
+    var menu by remember { mutableStateOf(false) }
+    val current = timeline.indexOfLast { it.positionMs <= player.positionMs }
+    Spacer(Modifier.height(20.dp))
+    SectionLabel(
+        "Chapters",
+        count = timeline.size.toString(),
+        trailing = {
+            Box {
+                IconTap(LumenIcons.More, "More for chapters", c.text2, size = 20.dp) { menu = true }
+                DropdownMenu(
+                    expanded = menu,
+                    onDismissRequest = { menu = false },
+                    shape = RoundedCornerShape(CardRadius),
+                    containerColor = c.elevated,
+                    tonalElevation = 0.dp,
+                    shadowElevation = 0.dp,
+                    border = BorderStroke(1.dp, c.line),
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("Export notes", style = Lumen.type.body, color = c.text) },
+                        onClick = {
+                            menu = false
+                            actions.exportNotes()
+                        },
+                    )
+                }
+            }
+        },
+    )
+    timeline.forEachIndexed { index, mark ->
+        val isCurrent = index == current
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .height(TouchTarget)
+                .combinedClickable(onClick = { actions.seekTo(mark.positionMs) }, onLongClick = { actions.deleteMark(mark) }),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(Modifier.size(16.dp), contentAlignment = Alignment.Center) {
+                when {
+                    isCurrent -> Box(Modifier.size(6.dp).background(c.accentInk, CircleShape))
+                    mark.bookmark != null -> Icon(LumenIcons.BookmarkFilled, contentDescription = null, tint = c.text2, modifier = Modifier.size(16.dp))
+                }
+            }
+            Spacer(Modifier.width(10.dp))
+            Text(
+                mark.title,
+                style = if (mark.isChapter) Lumen.type.body else Lumen.type.bodyS,
+                color = if (mark.isChapter) c.text else c.text2,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(formatTime(mark.positionMs), style = Lumen.type.timeS, color = if (isCurrent) c.accentInk else c.text2)
+        }
+        if (index < timeline.lastIndex) HorizontalDivider(color = c.line, thickness = 1.dp)
+    }
+    Text("Tap to seek, long press to remove", style = Lumen.type.bodyS, color = c.text3, modifier = Modifier.padding(top = 6.dp))
 }
 
 @Composable
@@ -280,6 +490,7 @@ private fun ChipRow(
             enabled = settings.eqEngine != "none",
             onClick = actions.cyclePreset,
         )
+        ClarityChip(settings, actions)
         if (!noInterruptions) {
             StatusChip(
                 text = if (sleepLeft > 0) "$sleepLeft min" else "Sleep",
@@ -295,6 +506,10 @@ private fun ChipRow(
             text = "Mark",
             icon = if (hasBookmarks) LumenIcons.BookmarkFilled else LumenIcons.Bookmark,
             enabled = player.hasItem,
+            onLongClick = {
+                view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                actions.openChapterSheet()
+            },
             onClick = {
                 view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
                 actions.addBookmark()
@@ -304,48 +519,91 @@ private fun ChipRow(
     }
     if (downloadProgress != null) ProgressLine(fraction = downloadProgress, thickness = 1.dp, modifier = Modifier.padding(top = 4.dp))
     Text(
-        "Long press the title to switch between the speech and music layouts",
+        "Long press Mark for a chapter, the title to switch layouts",
         style = Lumen.type.bodyS,
         color = c.text3,
         modifier = Modifier.padding(top = 2.dp),
     )
 }
 
-@OptIn(ExperimentalFoundationApi::class)
-@androidx.annotation.OptIn(UnstableApi::class)
+/**
+ * 0.4.0: "Clarity", the speech sound options as a chip menu: Level out voices and Trim silences,
+ * the same two switches as Settings, Sound. Active (ice on black) while either is on. Level out
+ * needs the DynamicsProcessing engine, so it is disabled on the Equaliser fallback.
+ */
 @Composable
-private fun MusicLayout(
-    player: PlayerState,
-    controller: MediaController?,
-    item: LibraryItem?,
-    labels: List<LabelEntity>,
-    settings: Settings,
-    audioOnly: Boolean,
-    downloadProgress: Float?,
-    actions: NowPlayingActions,
-) {
+private fun ClarityChip(settings: Settings, actions: NowPlayingActions) {
+    val c = Lumen.colours
+    var open by remember { mutableStateOf(false) }
+    val levelOutAvailable = settings.eqEngine != "eq" && settings.eqEngine != "none"
+    Box {
+        StatusChip(
+            text = "Clarity",
+            active = (settings.levelOutVoices && levelOutAvailable) || settings.trimSilences,
+            onClick = { open = true },
+        )
+        DropdownMenu(
+            expanded = open,
+            onDismissRequest = { open = false },
+            shape = RoundedCornerShape(CardRadius),
+            containerColor = c.elevated,
+            // No shadows on black (DESIGN.md section 4): height is the surface step and the line.
+            tonalElevation = 0.dp,
+            shadowElevation = 0.dp,
+            border = BorderStroke(1.dp, c.line),
+        ) {
+            MenuToggle(
+                title = "Level out voices",
+                explanation = if (levelOutAvailable) "Brings quiet and loud speakers closer" else "Needs an equaliser this phone does not offer",
+                checked = settings.levelOutVoices && levelOutAvailable,
+                enabled = levelOutAvailable,
+                onChange = actions.setLevelOutVoices,
+            )
+            MenuToggle(
+                title = "Trim silences",
+                explanation = "Skips long pauses in speech",
+                checked = settings.trimSilences,
+                enabled = true,
+                onChange = actions.setTrimSilences,
+            )
+        }
+    }
+}
+
+/** One switch row inside a chip menu: title, one line, and the label sheet's tick box. */
+@Composable
+private fun MenuToggle(title: String, explanation: String, checked: Boolean, enabled: Boolean, onChange: (Boolean) -> Unit) {
+    val c = Lumen.colours
+    DropdownMenuItem(
+        text = {
+            Column(Modifier.padding(vertical = 6.dp)) {
+                Text(title, style = Lumen.type.body, color = if (enabled) c.text else c.text3)
+                Text(explanation, style = Lumen.type.bodyS, color = c.text2)
+            }
+        },
+        trailingIcon = {
+            Box(
+                Modifier
+                    .size(24.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(if (checked) c.accentFill else c.surface)
+                    .border(1.dp, if (checked) c.accentFill else c.switchOffEdge, RoundedCornerShape(6.dp)),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (checked) Icon(LumenIcons.Check, contentDescription = null, tint = c.onAccentFill, modifier = Modifier.size(16.dp))
+            }
+        },
+        enabled = enabled,
+        onClick = { onChange(!checked) },
+    )
+}
+
+/** The music title (22 sp, long press switches layouts) and the artist. */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun MusicTitle(player: PlayerState, actions: NowPlayingActions) {
     val c = Lumen.colours
     val view = LocalView.current
-    Spacer(Modifier.height(10.dp))
-    if (player.isVideo && controller != null) {
-        VideoSurface(
-            controller,
-            Modifier
-                .fillMaxWidth()
-                .aspectRatio(16f / 9f)
-                .clip(RoundedCornerShape(CardRadius)),
-        )
-        Spacer(Modifier.height(10.dp))
-        ToggleRow(
-            title = "Audio only when you leave",
-            explanation = "Keeps the sound going and drops the picture while the screen is away",
-            checked = audioOnly,
-            onChange = actions.setAudioOnly,
-        )
-    } else {
-        ArtBlock(item, player.title)
-    }
-    Spacer(Modifier.height(16.dp))
     Text(
         player.title.ifBlank { "Nothing loaded" },
         style = Lumen.type.displayS,
@@ -364,16 +622,23 @@ private fun MusicLayout(
         Spacer(Modifier.height(4.dp))
         Text(player.artist, style = Lumen.type.bodyS, color = c.text2, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
-    Spacer(Modifier.height(8.dp))
+}
+
+/** Label chips, the preset chip and the Drive chip, with the download line under them. */
+@Composable
+private fun MusicChips(item: LibraryItem?, labels: List<LabelEntity>, settings: Settings, downloadProgress: Float?, actions: NowPlayingActions) {
     Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         labels.take(2).forEach { LabelChip(name = it.name, hue = it.hue, onClick = actions.openLabelSheet) }
         StatusChip(text = settings.eqPreset, active = settings.eqPreset != "Flat", enabled = settings.eqEngine != "none", onClick = actions.cyclePreset)
         OfflineChip(item, downloadProgress, actions.toggleOffline)
     }
     if (downloadProgress != null) ProgressLine(fraction = downloadProgress, thickness = 1.dp, modifier = Modifier.padding(top = 4.dp))
-    Spacer(Modifier.height(8.dp))
-    Scrubber(positionMs = player.positionMs, durationMs = player.durationMs, enabled = player.hasItem, thin = true, onSeek = actions.seekTo)
-    Spacer(Modifier.height(16.dp))
+}
+
+/** Shuffle, previous, the 72 dp play button, next, repeat. */
+@Composable
+private fun MusicTransport(player: PlayerState, actions: NowPlayingActions) {
+    val c = Lumen.colours
     Row(
         Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(18.dp, Alignment.CenterHorizontally),
@@ -398,13 +663,54 @@ private fun MusicLayout(
     if (player.repeat == Player.REPEAT_MODE_ONE) {
         Text("Repeating this one", style = Lumen.type.labelS, color = c.text3, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(top = 4.dp))
     }
+}
+
+@androidx.annotation.OptIn(UnstableApi::class)
+@Composable
+private fun MusicLayout(
+    player: PlayerState,
+    controller: MediaController?,
+    item: LibraryItem?,
+    labels: List<LabelEntity>,
+    settings: Settings,
+    audioOnly: Boolean,
+    downloadProgress: Float?,
+    actions: NowPlayingActions,
+) {
+    Spacer(Modifier.height(10.dp))
+    if (player.isVideo && controller != null) {
+        VideoSurface(
+            controller,
+            Modifier
+                .fillMaxWidth()
+                .aspectRatio(16f / 9f)
+                .clip(RoundedCornerShape(CardRadius)),
+        )
+        Spacer(Modifier.height(10.dp))
+        ToggleRow(
+            title = "Audio only when you leave",
+            explanation = "Keeps the sound going and drops the picture while the screen is away",
+            checked = audioOnly,
+            onChange = actions.setAudioOnly,
+        )
+    } else {
+        ArtBlock(item, player.title)
+    }
+    Spacer(Modifier.height(16.dp))
+    MusicTitle(player, actions)
+    Spacer(Modifier.height(8.dp))
+    MusicChips(item, labels, settings, downloadProgress, actions)
+    Spacer(Modifier.height(8.dp))
+    Scrubber(positionMs = player.positionMs, durationMs = player.durationMs, enabled = player.hasItem, thin = true, onSeek = actions.seekTo)
+    Spacer(Modifier.height(16.dp))
+    MusicTransport(player, actions)
     UpNext(player)
     Spacer(Modifier.height(16.dp))
 }
 
 /** Embedded art from the cache, or a flat block with the first letter. Tint comes from data. */
 @Composable
-private fun ArtBlock(item: LibraryItem?, title: String) {
+private fun ArtBlock(item: LibraryItem?, title: String, modifier: Modifier = Modifier.fillMaxWidth().aspectRatio(1f)) {
     val c = Lumen.colours
     // Null means the art has not been read yet (the ViewModel is fetching it), "" means none.
     val path = item?.media?.artPath?.takeIf { it.isNotBlank() }
@@ -418,9 +724,7 @@ private fun ArtBlock(item: LibraryItem?, title: String) {
         }
     }
     Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .aspectRatio(1f)
+        modifier = modifier
             .clip(RoundedCornerShape(CardRadius))
             .background(c.elevated),
         contentAlignment = Alignment.Center,

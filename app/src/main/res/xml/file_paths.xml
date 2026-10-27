@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths>
     <cache-path name="diagnostics" path="diagnostics/" />
+    <cache-path name="notes" path="notes/" />
     <files-path name="art" path="art/" />
 </paths>

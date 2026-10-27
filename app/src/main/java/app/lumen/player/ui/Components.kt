@@ -143,14 +143,17 @@ fun LabelChip(name: String, hue: Int, selected: Boolean = false, onClick: () -> 
 
 /**
  * Speed, preset, sleep, bookmark: rest, active, disabled with a reason. Active is secondary
- * state: charcoal with cyan on light, an ice border and ice text on black.
+ * state: charcoal with cyan on light, an ice border and ice text on black. [onLongClick] (0.4.0)
+ * gives the chip a second action, such as a chapter on the bookmark chip.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun StatusChip(
     text: String,
     icon: ImageVector? = null,
     active: Boolean = false,
     enabled: Boolean = true,
+    onLongClick: (() -> Unit)? = null,
     onClick: () -> Unit,
 ) {
     val c = Lumen.colours
@@ -167,7 +170,7 @@ fun StatusChip(
         modifier = Modifier
             .height(TouchTarget)
             .clip(shape)
-            .clickable(enabled = enabled, onClick = onClick),
+            .combinedClickable(enabled = enabled, onClick = onClick, onLongClick = onLongClick),
         contentAlignment = Alignment.Center,
     ) {
         Row(

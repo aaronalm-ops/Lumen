@@ -39,9 +39,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.lumen.player.BuildConfig
+import app.lumen.player.data.Appearance
 import app.lumen.player.data.EqPreset
 import app.lumen.player.data.FolderEntity
 import app.lumen.player.data.Settings
+import app.lumen.player.data.SettingsRepository
 import app.lumen.player.data.drive.isDrive
 import app.lumen.player.data.isMediaStore
 import app.lumen.player.update.UpdateInfo
@@ -56,7 +58,8 @@ class SettingsActions(
     val setPreset: (String) -> Unit,
     val setCustomBands: (List<Float>) -> Unit,
     val setSkips: (Int, Int) -> Unit,
-    val setNight: (Boolean) -> Unit,
+    /** 0.4.0: "auto", "light" or "dark", replacing the Night toggle. */
+    val setAppearance: (String) -> Unit,
     val shareDiagnostics: () -> Unit,
     val openUpdate: () -> Unit,
     val openGitHub: () -> Unit,
@@ -68,6 +71,10 @@ class SettingsActions(
     val setMobileDownloads: (Boolean) -> Unit,
     val backupNow: () -> Unit,
     val restoreBackup: () -> Unit,
+    // 0.4.0: Sound.
+    val setLevelOutVoices: (Boolean) -> Unit,
+    val setTrimSilences: (Boolean) -> Unit,
+    val setCrossfadeSeconds: (Int) -> Unit,
 )
 
 /** Settings, light: one list under mono labels, no row icons. */
@@ -207,7 +214,7 @@ fun SettingsScreen(
                                     backupBusy -> "Working"
                                     backupResult.isNotBlank() -> backupResult
                                     settings.backupAt > 0L -> "Last backup ${relativeTime(settings.backupAt)}"
-                                    else -> "Positions, labels, bookmarks and settings as one file you choose where to keep"
+                                    else -> "Positions, labels, bookmarks, chapters and settings as one file you choose where to keep"
                                 },
                                 style = Lumen.type.bodyS,
                                 color = c.text2,
@@ -259,6 +266,13 @@ fun SettingsScreen(
             }
 
             item {
+                SectionLabel("Sound", modifier = Modifier.padding(top = 20.dp, bottom = 10.dp))
+                ListCard {
+                    SoundBody(settings, actions)
+                }
+            }
+
+            item {
                 SectionLabel("Skip intervals", modifier = Modifier.padding(top = 20.dp, bottom = 10.dp))
                 ListCard {
                     StepperRow("Back", settings.skipBackSeconds, listOf(5, 10, 15, 30)) { actions.setSkips(it, settings.skipForwardSeconds) }
@@ -268,9 +282,28 @@ fun SettingsScreen(
             }
 
             item {
-                SectionLabel("Night", modifier = Modifier.padding(top = 20.dp, bottom = 10.dp))
+                SectionLabel("Appearance", modifier = Modifier.padding(top = 20.dp, bottom = 10.dp))
                 ListCard {
-                    ToggleRow("Black Home and Library", "Now Playing is always black", settings.night, onChange = actions.setNight)
+                    Column(Modifier.padding(start = 14.dp, end = 14.dp, top = 6.dp, bottom = 10.dp)) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Appearance.order.forEach { value ->
+                                StatusChip(
+                                    text = Appearance.label(value),
+                                    active = settings.appearance == value,
+                                    onClick = { actions.setAppearance(value) },
+                                )
+                            }
+                        }
+                        Text(
+                            when (settings.appearance) {
+                                Appearance.LIGHT -> "Home, Library and Settings stay light. Now Playing is always black"
+                                Appearance.DARK -> "Home, Library and Settings stay black. Now Playing is always black"
+                                else -> "Follows the phone's dark theme. Now Playing is always black"
+                            },
+                            style = Lumen.type.bodyS,
+                            color = c.text2,
+                        )
+                    }
                 }
             }
 
@@ -474,6 +507,76 @@ private fun EqualiserBody(settings: Settings, actions: SettingsActions) {
             color = c.text3,
             modifier = Modifier.padding(top = 4.dp),
         )
+    }
+}
+
+/**
+ * 0.4.0: Settings, Sound. Two switches for speech (they also sit behind the Clarity chip on the
+ * speech Now Playing) and the Smooth transitions slider for music: Off, 2, 4 or 6 seconds.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SoundBody(settings: Settings, actions: SettingsActions) {
+    val c = Lumen.colours
+    val levelOutAvailable = settings.eqEngine != "eq" && settings.eqEngine != "none"
+    ToggleRow(
+        "Level out voices",
+        if (levelOutAvailable) "Sermons only: brings quiet and loud speakers closer" else "Needs an equaliser this phone does not offer",
+        settings.levelOutVoices && levelOutAvailable,
+        enabled = levelOutAvailable,
+        onChange = actions.setLevelOutVoices,
+    )
+    HorizontalDivider(color = c.divider, thickness = 1.dp, modifier = Modifier.padding(horizontal = 14.dp))
+    ToggleRow(
+        "Trim silences",
+        "Sermons only: skips long pauses. Music is never trimmed",
+        settings.trimSilences,
+        onChange = actions.setTrimSilences,
+    )
+    HorizontalDivider(color = c.divider, thickness = 1.dp, modifier = Modifier.padding(horizontal = 14.dp))
+    val choices = SettingsRepository.crossfadeChoices
+    var draft by remember(settings.crossfadeSeconds) { mutableStateOf(settings.crossfadeSeconds.toFloat()) }
+    val shown = choices.minByOrNull { kotlin.math.abs(it - draft) } ?: 0
+    Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Smooth transitions", style = Lumen.type.body, color = c.text)
+                Text("Fades a song out and the next one in. Music only, never into a sermon", style = Lumen.type.bodyS, color = c.text2)
+            }
+            Spacer(Modifier.width(12.dp))
+            Text(if (shown == 0) "Off" else "$shown s", style = Lumen.type.timeL, color = c.text, modifier = Modifier.width(48.dp), textAlign = androidx.compose.ui.text.style.TextAlign.End)
+        }
+        val interaction = remember { MutableInteractionSource() }
+        val colours = SliderDefaults.colors(
+            thumbColor = c.text,
+            activeTrackColor = c.accentFill,
+            inactiveTrackColor = c.divider,
+            activeTickColor = c.onAccentFill,
+            inactiveTickColor = c.line,
+        )
+        Slider(
+            value = draft,
+            onValueChange = { draft = it },
+            onValueChangeFinished = { actions.setCrossfadeSeconds(shown) },
+            valueRange = 0f..choices.last().toFloat(),
+            steps = choices.size - 2,
+            colors = colours,
+            interactionSource = interaction,
+            thumb = {
+                if (c.isDark) {
+                    SliderDefaults.Thumb(interactionSource = interaction, colors = colours, enabled = true)
+                } else {
+                    LightBandThumb(enabled = true)
+                }
+            },
+            modifier = Modifier.fillMaxWidth().height(TouchTarget),
+        )
+        Row(Modifier.fillMaxWidth()) {
+            choices.forEachIndexed { index, value ->
+                if (index > 0) Spacer(Modifier.weight(1f))
+                Text(if (value == 0) "Off" else "$value s", style = Lumen.type.timeS, color = c.text3)
+            }
+        }
     }
 }
 

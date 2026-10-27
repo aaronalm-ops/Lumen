@@ -153,6 +153,7 @@ fun HomeScreen(
 fun rowMeta(item: LibraryItem, labels: List<LabelEntity>): String {
     val kind = when {
         item.media.isVideo -> "Video"
+        MediaRepository.isVoiceNote(item.media) -> "Voice note"
         item.media.durationMs > MediaRepository.SPEECH_THRESHOLD_MS -> "Sermon"
         else -> "Music"
     }
@@ -191,13 +192,17 @@ private fun ContinueCard(item: LibraryItem?, speech: Boolean, player: PlayerStat
                 Text(who, style = Lumen.type.bodyS, color = c.text2, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             Spacer(Modifier.height(18.dp))
-            // Night Home only: while a speech item is held (not playing), the line ends in the
-            // amber stop point. Light screens never show amber.
+            // Dark Home only (Appearance Dark, or Automatic with the phone dark): while a speech
+            // item is held (not playing), the line ends in the amber stop point. Light screens
+            // never show amber.
             val holding = c.isDark && speech && !(live && player.isPlaying) && position > 0 && duration > 0
             ProgressLine(fraction = if (duration > 0) position.toFloat() / duration else 0f, emberStop = holding)
             Spacer(Modifier.height(8.dp))
             Row(Modifier.fillMaxWidth()) {
-                Text(formatTime(position), style = Lumen.type.timeS, color = c.text2)
+                // 0.4.0, the owner's mock: on light, the playing time is set in the ink, as the
+                // playing timecode is everywhere else. Black keeps text2.
+                val playingInk = !c.isDark && live && player.isPlaying
+                Text(formatTime(position), style = Lumen.type.timeS, color = if (playingInk) c.accentInk else c.text2)
                 Spacer(Modifier.weight(1f))
                 Text(if (duration > 0) formatTime(duration) else "--:--", style = Lumen.type.timeS, color = c.text2)
             }

@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import app.lumen.player.BuildConfig
 import app.lumen.player.data.BookmarkEntity
+import app.lumen.player.data.ChapterEntity
 import app.lumen.player.data.KvEntity
 import app.lumen.player.data.LabelEntity
 import app.lumen.player.data.LabelRepository
@@ -27,13 +28,14 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * The backup file: positions, labels, media_labels (by uri and by fingerprint), bookmarks and
- * settings as one JSON document. "Back up now" writes it where the owner chose through
+ * The backup file: positions, labels, media_labels (by uri and by fingerprint), bookmarks,
+ * chapters (0.4.0) and settings as one JSON document. "Back up now" writes it where the owner chose through
  * ACTION_CREATE_DOCUMENT and, when Drive is connected, also into a "Lumen" folder the app
  * creates (drive.file sees it because the app made it). Once a week the Drive copy is refreshed
  * on app start. Restore merges and never deletes: a position wins by `updated_at`, labels match
- * by name, media by uri first and fingerprint second, bookmarks by uri and position, settings
- * only where this device has no value yet.
+ * by name, media by uri first and fingerprint second, bookmarks by uri and position, chapters by
+ * uri, position and title, settings only where this device has no value yet. A backup written
+ * before 0.4.0 has no "chapters" array and restores as before.
  */
 class BackupManager(
     private val context: Context,
@@ -123,6 +125,19 @@ class BackupManager(
             )
         }
         root.put("bookmarks", bookmarks)
+
+        val chapters = JSONArray()
+        for (ch in mediaDao.allChapters()) {
+            chapters.put(
+                JSONObject()
+                    .put("uri", ch.mediaUri)
+                    .put("fingerprint", media[ch.mediaUri]?.fingerprint ?: JSONObject.NULL)
+                    .put("position_ms", ch.positionMs)
+                    .put("title", ch.title)
+                    .put("created_at", ch.createdAt),
+            )
+        }
+        root.put("chapters", chapters)
 
         val kv = JSONObject()
         for (entry in settings.allEntries()) {
@@ -332,6 +347,25 @@ class BackupManager(
             }
         }
 
+        var chapters = 0
+        root.optJSONArray("chapters")?.let { arr ->
+            for (i in 0 until arr.length()) {
+                val ch = arr.optJSONObject(i) ?: continue
+                val fingerprint = ch.optString("fingerprint", "").takeIf { it.isNotBlank() && it != "null" }
+                val positionMs = ch.optLong("position_ms", -1L)
+                val title = ch.optString("title", "").trim()
+                if (positionMs < 0L || title.isBlank()) continue
+                for (target in resolveUris(ch.optString("uri", ""), fingerprint)) {
+                    val existing = mediaDao.chaptersFor(target)
+                    if (existing.any { kotlin.math.abs(it.positionMs - positionMs) < 1_000L && it.title == title }) continue
+                    mediaDao.insertChapter(
+                        ChapterEntity(mediaUri = target, positionMs = positionMs, title = title, createdAt = ch.optLong("created_at", System.currentTimeMillis())),
+                    )
+                    chapters++
+                }
+            }
+        }
+
         var kvAdded = 0
         root.optJSONObject("settings")?.let { kv ->
             val local = settings.allEntries().associate { it.k to it.v }
@@ -350,6 +384,7 @@ class BackupManager(
         if (labelsAdded > 0) parts += "$labelsAdded labels"
         if (links > 0) parts += "$links label links"
         if (bookmarks > 0) parts += "$bookmarks bookmarks"
+        if (chapters > 0) parts += "$chapters chapters"
         if (kvAdded > 0) parts += "$kvAdded settings"
         return "Restored " + parts.joinToString(", ")
     }

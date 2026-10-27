@@ -15,7 +15,20 @@ object MediaItems {
     const val EXTRA_DURATION_MS = "lumen.durationMs"
     const val EXTRA_FINGERPRINT = "lumen.fingerprint"
 
-    fun forMedia(media: MediaEntity, labelIds: List<Long>, speech: Boolean, browsable: Boolean = false): MediaItem {
+    /** 0.4.0: whether the item resumes at its saved place; differs from speech for long voice notes. */
+    const val EXTRA_RESUME = "lumen.resume"
+
+    /** 0.4.0: a WhatsApp voice note; Smooth transitions never fade into or out of one. */
+    const val EXTRA_VOICE_NOTE = "lumen.voiceNote"
+
+    fun forMedia(
+        media: MediaEntity,
+        labelIds: List<Long>,
+        speech: Boolean,
+        browsable: Boolean = false,
+        resume: Boolean = speech,
+        voiceNote: Boolean = false,
+    ): MediaItem {
         val uri = Uri.parse(media.uri)
         val extras = Bundle().apply {
             putBoolean(EXTRA_IS_VIDEO, media.isVideo)
@@ -23,6 +36,8 @@ object MediaItems {
             putBoolean(EXTRA_SPEECH, speech)
             putLong(EXTRA_DURATION_MS, media.durationMs)
             putString(EXTRA_FINGERPRINT, media.fingerprint)
+            putBoolean(EXTRA_RESUME, resume)
+            putBoolean(EXTRA_VOICE_NOTE, voiceNote)
         }
         val metadata = MediaMetadata.Builder()
             .setTitle(media.title)
@@ -65,6 +80,14 @@ object MediaItems {
         val extras = item?.mediaMetadata?.extras ?: return null
         return if (extras.containsKey(EXTRA_SPEECH)) extras.getBoolean(EXTRA_SPEECH) else null
     }
+
+    /** Null for an item built before 0.4.0 or outside the library; callers then fall back to speech. */
+    fun resumeOrNull(item: MediaItem?): Boolean? {
+        val extras = item?.mediaMetadata?.extras ?: return null
+        return if (extras.containsKey(EXTRA_RESUME)) extras.getBoolean(EXTRA_RESUME) else null
+    }
+
+    fun isVoiceNote(item: MediaItem?): Boolean = item?.mediaMetadata?.extras?.getBoolean(EXTRA_VOICE_NOTE, false) ?: false
 
     fun labelIds(item: MediaItem?): List<Long> = item?.mediaMetadata?.extras?.getLongArray(EXTRA_LABEL_IDS)?.toList() ?: emptyList()
 

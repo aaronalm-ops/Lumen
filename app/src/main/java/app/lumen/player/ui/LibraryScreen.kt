@@ -209,7 +209,9 @@ fun filterItems(items: List<LibraryItem>, labels: List<LabelEntity>, search: Str
                 item.labelIds.any { labelNames[it]?.contains(q) == true }
             )
     }
-    return if (byName) filtered.sortedBy { it.media.title.lowercase() } else filtered.sortedByDescending { it.media.dateAdded }
+    // 0.4.0: the WhatsApp voice notes folder always lists newest first, whatever the sort chip says.
+    val newestFirst = !byName || folder == MediaRepository.VOICE_NOTES_FOLDER
+    return if (newestFirst) filtered.sortedByDescending { it.media.dateAdded } else filtered.sortedBy { it.media.title.lowercase() }
 }
 
 @Composable

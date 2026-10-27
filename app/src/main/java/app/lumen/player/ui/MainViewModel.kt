@@ -19,6 +19,7 @@ import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import app.lumen.player.LumenApp
 import app.lumen.player.data.BookmarkEntity
+import app.lumen.player.data.ChapterEntity
 import app.lumen.player.data.EqPreset
 import app.lumen.player.data.FolderEntity
 import app.lumen.player.data.LabelEntity
@@ -39,6 +40,8 @@ import app.lumen.player.data.drive.isDrive
 import app.lumen.player.data.isMediaStore
 import app.lumen.player.diag.Diagnostics
 import app.lumen.player.diag.RingLog
+import app.lumen.player.notes.NoteMark
+import app.lumen.player.notes.NotesExport
 import app.lumen.player.playback.MediaItems
 import app.lumen.player.playback.PlaybackService
 import app.lumen.player.playback.driveRowReachable
@@ -98,6 +101,19 @@ data class PlayerState(
     val repeat: Int = Player.REPEAT_MODE_OFF,
     val ended: Boolean = false,
 )
+
+/**
+ * 0.4.0: one row of the speech Now Playing chapter list, a typed chapter or a bookmark, sorted
+ * together by time. Exactly one of [chapter] and [bookmark] is set.
+ */
+data class TimelineMark(
+    val positionMs: Long,
+    val title: String,
+    val chapter: ChapterEntity? = null,
+    val bookmark: BookmarkEntity? = null,
+) {
+    val isChapter: Boolean get() = chapter != null
+}
 
 /** What the label sheet is editing: the labels of one item, or one label's own settings. */
 sealed class LabelSheetTarget {
@@ -225,9 +241,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     val noInterruptions: StateFlow<Boolean> = currentLabels.map { labels -> labels.any { it.noInterruptions } }.state(false)
 
-    val bookmarks: StateFlow<List<BookmarkEntity>> = player.map { it.mediaId }.flatMapLatest { uri ->
+    val bookmarks: StateFlow<List<BookmarkEntity>> = player.map { it.mediaId }.distinctUntilChanged().flatMapLatest { uri ->
         if (uri.isBlank()) flowOf(emptyList()) else mediaRepo.bookmarks(uri)
     }.state(emptyList())
+
+    /** 0.4.0: the typed chapters of the loaded item. */
+    private val chapters: StateFlow<List<ChapterEntity>> = player.map { it.mediaId }.distinctUntilChanged().flatMapLatest { uri ->
+        if (uri.isBlank()) flowOf(emptyList()) else mediaRepo.chapters(uri)
+    }.state(emptyList())
+
+    /** Chapters and bookmarks together by time; bookmarks keep their "Bookmark N" names. */
+    val timeline: StateFlow<List<TimelineMark>> = combine(chapters, bookmarks) { chapters, bookmarks ->
+        val marks = ArrayList<TimelineMark>(chapters.size + bookmarks.size)
+        chapters.forEach { marks += TimelineMark(it.positionMs, it.title, chapter = it) }
+        bookmarks.sortedBy { it.positionMs }.forEachIndexed { index, b ->
+            marks += TimelineMark(b.positionMs, "Bookmark ${index + 1}", bookmark = b)
+        }
+        marks.sortedWith(compareBy<TimelineMark> { it.positionMs }.thenBy { if (it.isChapter) 0 else 1 })
+    }.state(emptyList())
+
+    /** The position a new chapter will be saved at while its sheet is open; null when closed. */
+    val chapterSheetAt = MutableStateFlow<Long?>(null)
 
     /**
      * What the Continue card shows. While the player holds an item the card shows that item
@@ -416,14 +450,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private suspend fun mediaItemFor(media: MediaEntity): MediaItem {
         val ids = labelRepo.labelIdsFor(media.uri)
         val names = ids.mapNotNull { labelRepo.byId(it)?.name }
-        val speech = MediaRepository.isSpeech(media, names, settings.value.layoutOverrides[media.uri])
-        return MediaItems.forMedia(media, ids, speech)
+        return queueItem(media, ids, names)
     }
 
     private fun mediaItemFor(item: LibraryItem): MediaItem {
         val names = labels.value.filter { it.id in item.labelIds }.map { it.name }
-        val speech = MediaRepository.isSpeech(item.media, names, settings.value.layoutOverrides[item.uri])
-        return MediaItems.forMedia(item.media, item.labelIds, speech)
+        return queueItem(item.media, item.labelIds, names)
+    }
+
+    /** The queue item with its 0.4.0 extras: resume (long voice notes) and voice note. */
+    private fun queueItem(media: MediaEntity, labelIds: List<Long>, labelNames: List<String>): MediaItem {
+        val override = settings.value.layoutOverrides[media.uri]
+        return MediaItems.forMedia(
+            media,
+            labelIds,
+            MediaRepository.isSpeech(media, labelNames, override),
+            resume = MediaRepository.resumes(media, labelNames, override),
+            voiceNote = MediaRepository.isVoiceNote(media),
+        )
     }
 
     /** Runs now when connected, or as soon as the controller connects. */
@@ -599,6 +643,64 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun deleteBookmark(bookmark: BookmarkEntity) {
         viewModelScope.launch { mediaRepo.deleteBookmark(bookmark) }
+    }
+
+    // 0.4.0: chapters and notes.
+
+    /** Long press on the bookmark chip: the sheet opens holding the position of the press. */
+    fun openChapterSheet() {
+        val p = _player.value
+        if (!p.hasItem) return
+        chapterSheetAt.value = p.positionMs
+    }
+
+    fun closeChapterSheet() {
+        chapterSheetAt.value = null
+    }
+
+    /** Saves the chapter at the position captured when the sheet opened. A blank title is refused. */
+    fun saveChapter(title: String): Boolean {
+        val at = chapterSheetAt.value ?: return false
+        val p = _player.value
+        val name = title.trim()
+        if (!p.hasItem || name.isBlank()) return false
+        viewModelScope.launch { mediaRepo.addChapter(p.mediaId, at, name) }
+        chapterSheetAt.value = null
+        return true
+    }
+
+    /** Long press on a row of the chapter list removes that chapter or bookmark. */
+    fun deleteMark(mark: TimelineMark) {
+        viewModelScope.launch {
+            mark.chapter?.let { mediaRepo.deleteChapter(it) }
+            mark.bookmark?.let { mediaRepo.deleteBookmark(it) }
+        }
+    }
+
+    /** "Export notes": title, speaker, date, then every chapter and bookmark as "47:12  Title". */
+    fun exportNotes(context: Context) {
+        val p = _player.value
+        if (!p.hasItem) return
+        val item = currentItem.value
+        val marks = timeline.value.map { NoteMark(it.positionMs, it.title) }
+        val title = p.title.ifBlank { item?.media?.title.orEmpty() }
+        val speaker = p.artist.ifBlank { item?.media?.artist.orEmpty() }
+        val date = item?.media?.dateAdded ?: 0L
+        viewModelScope.launch { NotesExport.share(context, title, speaker, date, marks) }
+    }
+
+    // 0.4.0: Sound.
+
+    fun setLevelOutVoices(on: Boolean) {
+        viewModelScope.launch { settingsRepo.setLevelOutVoices(on) }
+    }
+
+    fun setTrimSilences(on: Boolean) {
+        viewModelScope.launch { settingsRepo.setTrimSilences(on) }
+    }
+
+    fun setCrossfadeSeconds(seconds: Int) {
+        viewModelScope.launch { settingsRepo.setCrossfadeSeconds(seconds) }
     }
 
     fun toggleLayoutOverride() {
@@ -883,8 +985,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch { labelRepo.delete(label.id) }
     }
 
-    fun setNight(on: Boolean) {
-        viewModelScope.launch { settingsRepo.setNight(on) }
+    /** Appearance: "auto", "light" or "dark" for Home, Library and Settings. */
+    fun setAppearance(value: String) {
+        viewModelScope.launch { settingsRepo.setAppearance(value) }
     }
 
     fun setSkips(back: Int, forward: Int) {

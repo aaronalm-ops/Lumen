@@ -80,9 +80,61 @@ class MediaRepository(
         /** Relative paths the whole-phone scan leaves out, compared case-insensitively. */
         private val EXCLUDED_PREFIXES = listOf("Android/", "Ringtones/", "Notifications/", "Alarms/")
 
+        /**
+         * 0.4.0: the only places under Android/ the scan reads, compared case-insensitively:
+         * WhatsApp's voice notes and audio (Android 11 and later keep them in Android/media),
+         * for WhatsApp and WhatsApp Business. Everything else under Android/ stays excluded.
+         */
+        private val ALLOWED_ANDROID_PREFIXES = listOf(
+            "Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Voice Notes/",
+            "Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Audio/",
+            "Android/media/com.whatsapp.w4b/WhatsApp Business/Media/WhatsApp Business Voice Notes/",
+            "Android/media/com.whatsapp.w4b/WhatsApp Business/Media/WhatsApp Business Audio/",
+            "Android/media/com.whatsapp.w4b/WhatsApp Business/Media/WhatsApp Voice Notes/",
+            "Android/media/com.whatsapp.w4b/WhatsApp Business/Media/WhatsApp Audio/",
+        )
+
+        /** Path segments that mark a WhatsApp voice note, wherever the WhatsApp folder sits. */
+        private val VOICE_NOTE_SEGMENTS = listOf("WhatsApp Voice Notes/", "WhatsApp Business Voice Notes/")
+
+        /**
+         * The one Library folder every WhatsApp voice note is filed under, however many dated
+         * subfolders WhatsApp spreads them over (the way Drive files sit under `drive:<id>`). It
+         * keeps the `mediastore:` prefix, so the scan's bucket sync owns it like any other bucket.
+         */
+        const val VOICE_NOTES_FOLDER = MEDIASTORE_PREFIX + "whatsapp-voice-notes"
+        const val VOICE_NOTES_NAME = "WhatsApp voice notes"
+
+        /** A voice note longer than this resumes at its saved place, though it plays in the music layout. */
+        const val VOICE_NOTE_RESUME_MS = 3L * 60 * 1000
+
+        /** True when a MediaStore relative path lies where the scan may read it. */
+        fun scanAllowed(relativeDir: String): Boolean {
+            if (ALLOWED_ANDROID_PREFIXES.any { relativeDir.startsWith(it, ignoreCase = true) }) return true
+            return EXCLUDED_PREFIXES.none { relativeDir.startsWith(it, ignoreCase = true) }
+        }
+
+        fun isVoiceNoteDir(relativeDir: String): Boolean =
+            VOICE_NOTE_SEGMENTS.any { relativeDir.contains(it, ignoreCase = true) }
+
+        /** A WhatsApp voice note, from the phone scan or from a picked folder. */
+        fun isVoiceNote(media: MediaEntity): Boolean =
+            media.folderUri == VOICE_NOTES_FOLDER || isVoiceNoteDir(media.relPath)
+
+        /**
+         * Whether an item resumes at its saved position (minus 3 s) or starts at 0. Speech always
+         * resumes; so does a voice note over [VOICE_NOTE_RESUME_MS], even in the music layout.
+         */
+        fun resumes(media: MediaEntity, labelNames: List<String>, override: String?): Boolean =
+            isSpeech(media, labelNames, override) || (isVoiceNote(media) && media.durationMs > VOICE_NOTE_RESUME_MS)
+
         fun fingerprintOf(sizeBytes: Long, durationMs: Long, title: String): String = "$sizeBytes|$durationMs|$title"
 
-        /** Speech layout: per-item override, then the Sermons label, then the 20 minute rule. */
+        /**
+         * Speech layout: per-item override, then the Sermons label, then the 20 minute rule. The
+         * rule covers WhatsApp voice notes too: under 20 minutes they take the music layout
+         * (and resume by [resumes] when over 3 minutes).
+         */
         fun isSpeech(media: MediaEntity, labelNames: List<String>, override: String?): Boolean = when (override) {
             "speech" -> true
             "music" -> false
@@ -135,6 +187,20 @@ class MediaRepository(
     }
 
     suspend fun deleteBookmark(bookmark: BookmarkEntity) = dao.deleteBookmark(bookmark)
+
+    fun chapters(uri: String): Flow<List<ChapterEntity>> = dao.chaptersFlow(uri)
+
+    suspend fun addChapter(uri: String, positionMs: Long, title: String) {
+        dao.insertChapter(
+            ChapterEntity(mediaUri = uri, positionMs = positionMs.coerceAtLeast(0L), title = title, createdAt = System.currentTimeMillis()),
+        )
+    }
+
+    suspend fun deleteChapter(chapter: ChapterEntity) = dao.deleteChapter(chapter)
+
+    suspend fun bookmarksFor(uri: String): List<BookmarkEntity> = dao.bookmarksFor(uri)
+
+    suspend fun chaptersFor(uri: String): List<ChapterEntity> = dao.chaptersFor(uri)
 
     // Picked folders (SAF).
 
@@ -348,7 +414,14 @@ class MediaRepository(
         val relativeDir: String,
         val bucket: String,
         val video: Boolean,
-    )
+    ) {
+        val voiceNote: Boolean get() = isVoiceNoteDir(relativeDir)
+
+        /** Voice notes share one folder; every other row is filed under its own MediaStore bucket. */
+        val folderUri: String get() = if (voiceNote) VOICE_NOTES_FOLDER else MEDIASTORE_PREFIX + relativeDir
+
+        val folderName: String get() = if (voiceNote) VOICE_NOTES_NAME else bucket
+    }
 
     /**
      * Queries MediaStore's audio and video collections and brings the `mediastore:` rows in the
@@ -390,9 +463,11 @@ class MediaRepository(
                     if (processed % 50 == 0) _scanProgress.value = processed
                     seen += row.uri
                     val old = existing[row.uri]
-                    if (old != null && old.sizeBytes == row.size && old.modifiedAt == row.modifiedMs) continue
+                    // A row whose folder changed (a voice note filed before 0.4.0) is rewritten.
+                    if (old != null && old.sizeBytes == row.size && old.modifiedAt == row.modifiedMs && old.folderUri == row.folderUri) continue
                     try {
-                        val wantArt = !row.video && row.durationMs <= SPEECH_THRESHOLD_MS && artBudget > 0
+                        // Voice notes carry no art; they must not spend the art budget.
+                        val wantArt = !row.video && !row.voiceNote && row.durationMs <= SPEECH_THRESHOLD_MS && artBudget > 0
                         if (wantArt) artBudget--
                         batch += entityFor(row, old, readArt = wantArt)
                         if (old == null) added++ else updated++
@@ -489,7 +564,7 @@ class MediaRepository(
                 val id = c.getLong(idCol)
                 val name = c.getString(nameCol)?.takeIf { it.isNotBlank() } ?: continue
                 val relativeDir = c.getString(relCol).orEmpty()
-                if (EXCLUDED_PREFIXES.any { relativeDir.startsWith(it, ignoreCase = true) }) {
+                if (!scanAllowed(relativeDir)) {
                     excluded++
                     continue
                 }
@@ -535,7 +610,7 @@ class MediaRepository(
                 if (duration <= 0L) {
                     duration = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
                 }
-                if (readArt || (!row.video && duration in 1..SPEECH_THRESHOLD_MS)) art = retriever.embeddedPicture
+                if (readArt || (!row.video && !row.voiceNote && duration in 1..SPEECH_THRESHOLD_MS)) art = retriever.embeddedPicture
             } catch (t: Throwable) {
                 RingLog.w("scan", "mediastore: metadata failed for ${row.name}: $t")
             } finally {
@@ -547,7 +622,8 @@ class MediaRepository(
             }
         }
         val fingerprint = fingerprintOf(row.size, duration, row.title)
-        var artPath: String? = if (looked) "" else null
+        // A voice note is marked "looked, none" so it is never read for art on play either.
+        var artPath: String? = if (looked || row.voiceNote) "" else null
         var tint: Int? = null
         if (art != null) {
             val cached = cacheArt(fingerprint, art)
@@ -559,7 +635,7 @@ class MediaRepository(
         val now = System.currentTimeMillis()
         return MediaEntity(
             uri = row.uri,
-            folderUri = MEDIASTORE_PREFIX + row.relativeDir,
+            folderUri = row.folderUri,
             title = row.title,
             artist = row.artist,
             durationMs = duration,
@@ -584,8 +660,8 @@ class MediaRepository(
         val byUri = existingFolders.associateBy { it.uri }
         val wanted = LinkedHashMap<String, String>()
         for (row in rows) {
-            val uri = MEDIASTORE_PREFIX + row.relativeDir
-            if (uri !in wanted) wanted[uri] = row.bucket
+            val uri = row.folderUri
+            if (uri !in wanted) wanted[uri] = row.folderName
         }
         val now = System.currentTimeMillis()
         for ((uri, name) in wanted) {

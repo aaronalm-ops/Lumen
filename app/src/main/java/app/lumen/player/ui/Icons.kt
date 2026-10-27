@@ -235,4 +235,13 @@ object LumenIcons {
             fill { moveTo(8f, 6.75f); arcTo(1.25f, 1.25f, 0f, true, true, 7.99f, 6.75f); close() }
         }
     }
+
+    /** Overflow: three filled dots, vertical, for the chapter list's menu. */
+    val More: ImageVector by lazy {
+        icon("more") {
+            for (y in listOf(5.5f, 12f, 18.5f)) {
+                fill { moveTo(10.5f, y); arcTo(1.5f, 1.5f, 0f, true, true, 13.5f, y); arcTo(1.5f, 1.5f, 0f, true, true, 10.5f, y); close() }
+            }
+        }
+    }
 }

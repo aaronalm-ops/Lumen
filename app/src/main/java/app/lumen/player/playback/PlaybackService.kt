@@ -43,6 +43,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
@@ -67,6 +69,10 @@ class PlaybackService : MediaLibraryService() {
         private const val DESTROY_SAVE_TIMEOUT_MS = 1_500L
         private const val SLEEP_FADE_MS = 20_000L
         private const val SLEEP_FADE_STEP_MS = 500L
+
+        /** Smooth transitions: volume step while a ramp runs, and the longest wait between checks. */
+        private const val FADE_STEP_MS = 50L
+        private const val FADE_IDLE_MAX_MS = 1_000L
 
         const val ROOT_ID = "root"
         const val CONTINUE_ID = "continue"
@@ -120,6 +126,42 @@ class PlaybackService : MediaLibraryService() {
     private var pendingResumeId: String? = null
     private val effects = AudioEffects()
     private var settings = Settings()
+
+    /**
+     * 0.4.0: whether the current item takes the speech layout. Drives "Level out voices" and
+     * "Trim silences", which act on speech only. Set from the item's extras at once on a
+     * transition and confirmed by [onNewItem] once the media row is resolved.
+     */
+    private val currentSpeech = MutableStateFlow(false)
+
+    // 0.4.0, Smooth transitions: a fade through between music items using player volume only.
+    // Never a second player, never on speech, voice notes, video or in Kids lock, never into
+    // speech or a remote item. Every pause, seek, skip and non-automatic transition puts the
+    // volume back at 1, and nothing here touches the volume while the sleep timer fades (sleep wins).
+    private var fadeJob: Job? = null
+    private var fadeInActive = false
+    private var fadeOutActive = false
+
+    /** Remaining time seen by the previous check; -1 when unknown (after a seek, pause or transition). */
+    private var lastRemainingMs = -1L
+
+    /** The current item may fade: local or Drive music, not a voice note or video, no Kids lock label. */
+    private var itemFadeEligible = false
+
+    /** Ids of labels with "Lock for kids", refreshed on every item; a queued item carrying one never fades. */
+    private var kidsLabelIds: Set<Long> = emptySet()
+
+    /** True while the sleep timer's own 20 s fade runs; the transition fades leave the volume alone. */
+    private var sleepFading = false
+
+    /** True while the sleep timer pauses the player itself, so that pause is not read as the user's. */
+    private var sleepFiring = false
+
+    /**
+     * The fade length in ms, 0 when Smooth transitions is off. Set by its own settings collector,
+     * so it is current before that collector restarts the fade loop.
+     */
+    private var fadeWindowMs: Long = 0L
 
     override fun onCreate() {
         super.onCreate()
@@ -208,13 +250,37 @@ class PlaybackService : MediaLibraryService() {
             }
         }
         scope.launch {
-            settingsRepo.settings
-                .map { it.eqPreset to EqPreset.gains(it.eqPreset, it.eqCustom) }
+            // Level out voices joins the preset here: it applies only while a speech item is current.
+            combine(
+                settingsRepo.settings
+                    .map { Triple(it.eqPreset, EqPreset.gains(it.eqPreset, it.eqCustom), it.levelOutVoices) }
+                    .distinctUntilChanged(),
+                currentSpeech,
+            ) { (preset, gains, levelOut), speech -> Triple(preset, gains, levelOut && speech) }
                 .distinctUntilChanged()
-                .collect { (preset, gains) ->
-                    RingLog.i("fx", "preset $preset gains=$gains")
-                    effects.apply(preset, gains)
+                .collect { (preset, gains, levelOut) ->
+                    RingLog.i("fx", "preset $preset gains=$gains levelOut=$levelOut")
+                    effects.apply(preset, gains, levelOut)
                 }
+        }
+        scope.launch {
+            // Trim silences: Media3's SilenceSkippingAudioProcessor, on speech items only.
+            combine(settingsRepo.settings.map { it.trimSilences }.distinctUntilChanged(), currentSpeech) { trim, speech -> trim && speech }
+                .distinctUntilChanged()
+                .collect { skip ->
+                    if (exo.skipSilenceEnabled != skip) {
+                        exo.setSkipSilenceEnabled(skip)
+                        RingLog.i("fx", "skip silence ${if (skip) "on" else "off"}")
+                    }
+                }
+        }
+        scope.launch {
+            settingsRepo.settings.map { it.crossfadeSeconds }.distinctUntilChanged().collect { seconds ->
+                fadeWindowMs = seconds * 1000L
+                RingLog.i("fade", "smooth transitions ${if (seconds > 0) "$seconds s" else "off"}")
+                resetFade("setting")
+                restartFade()
+            }
         }
         scope.launch {
             settingsRepo.settings.map { it.sleepEndAt }.distinctUntilChanged().collect { endAt -> scheduleSleep(endAt) }
@@ -232,6 +298,8 @@ class PlaybackService : MediaLibraryService() {
     private fun scheduleSleep(endAt: Long) {
         sleepJob?.cancel()
         sleepJob = null
+        sleepFading = false
+        sleepFiring = false
         // A timer replaced or cleared mid-fade must not leave the volume where the fade stopped.
         player.volume = 1f
         if (endAt <= 0L) return
@@ -246,16 +314,112 @@ class PlaybackService : MediaLibraryService() {
             val wait = fadeStart - System.currentTimeMillis()
             if (wait > 0) delay(wait)
             val steps = (SLEEP_FADE_MS / SLEEP_FADE_STEP_MS).toInt()
+            // Sleep wins: from here the transition fades leave the volume to this loop.
+            sleepFading = true
             for (i in 1..steps) {
                 if (!isActive) return@launch
                 player.volume = (1f - i.toFloat() / steps).coerceIn(0f, 1f)
                 delay(SLEEP_FADE_STEP_MS)
             }
+            sleepFiring = true
             player.pause()
+            sleepFiring = false
+            sleepFading = false
             player.volume = 1f
             RingLog.i("sleep", "timer fired, paused")
             settingsRepo.clearSleep()
         }
+    }
+
+    /** True for an item that streams: Drive or any http(s) uri. Never faded into. */
+    private fun isRemote(item: MediaItem): Boolean {
+        val uri = MediaItems.uriOf(item)
+        return uri.startsWith(DriveRepository.URI_PREFIX) || uri.startsWith("http://") || uri.startsWith("https://")
+    }
+
+    /** Whether the item after this one may be faded into: local music with no Kids lock label. */
+    private fun nextFadeEligible(): Boolean {
+        if (player.repeatMode == Player.REPEAT_MODE_ONE) return false
+        val index = player.nextMediaItemIndex
+        if (index == C.INDEX_UNSET || index >= player.mediaItemCount) return false
+        val next = player.getMediaItemAt(index)
+        // An item without the speech extra is unknown here, so it is treated as speech.
+        val speech = MediaItems.speechOrNull(next) ?: true
+        return !speech &&
+            !isRemote(next) &&
+            !MediaItems.isVideo(next) &&
+            !MediaItems.isVoiceNote(next) &&
+            MediaItems.labelIds(next).none { it in kidsLabelIds }
+    }
+
+    /**
+     * Ends any transition fade: flags cleared, the check loop stopped, and the volume back at 1
+     * unless the sleep timer is fading it (sleep wins; its own end puts the volume back).
+     */
+    private fun resetFade(reason: String) {
+        fadeJob?.cancel()
+        fadeJob = null
+        val wasFading = fadeInActive || fadeOutActive
+        fadeInActive = false
+        fadeOutActive = false
+        lastRemainingMs = -1L
+        if (!sleepFading && player.volume != 1f) player.volume = 1f
+        if (wasFading) RingLog.i("fade", "reset on $reason")
+    }
+
+    /** Starts the check loop when a fade could happen on this item; otherwise leaves things be. */
+    private fun restartFade() {
+        fadeJob?.cancel()
+        fadeJob = null
+        if (fadeWindowMs <= 0L || !itemFadeEligible || !player.isPlaying) return
+        fadeJob = scope.launch {
+            while (isActive && fadeWindowMs > 0L) {
+                delay(fadeTick())
+            }
+        }
+    }
+
+    /**
+     * One check of the fade through. Fade-in runs over the first N seconds after an automatic
+     * transition from a faded-out item; fade-out starts only when playback itself crosses into
+     * the last N seconds (a seek into them does not fade), and only when the next item may be
+     * faded into. Returns the wait before the next check: 50 ms inside a ramp, otherwise until
+     * the window opens, at most a second.
+     */
+    private fun fadeTick(): Long {
+        val window = fadeWindowMs
+        if (window <= 0L) return FADE_IDLE_MAX_MS
+        val position = player.currentPosition.coerceAtLeast(0L)
+        val duration = player.duration
+        var target = 1f
+        var wait = FADE_IDLE_MAX_MS
+        if (fadeInActive) {
+            if (position < window) {
+                target = minOf(target, position.toFloat() / window)
+                wait = FADE_STEP_MS
+            } else {
+                fadeInActive = false
+            }
+        }
+        if (duration != C.TIME_UNSET && duration > 0L) {
+            val remaining = (duration - position).coerceAtLeast(0L)
+            if (!fadeOutActive && remaining <= window && lastRemainingMs > window && nextFadeEligible()) {
+                fadeOutActive = true
+                RingLog.i("fade", "fading out over the last ${window / 1000} s")
+            }
+            lastRemainingMs = remaining
+            if (fadeOutActive) {
+                target = minOf(target, remaining.toFloat() / window)
+                wait = FADE_STEP_MS
+            } else if (remaining > window) {
+                wait = minOf(wait, (remaining - window).coerceAtLeast(FADE_STEP_MS))
+            }
+        }
+        if (!sleepFading) {
+            val volume = target.coerceIn(0f, 1f)
+            if (player.volume != volume) player.volume = volume
+        }
+        return wait
     }
 
     /**
@@ -399,6 +563,29 @@ class PlaybackService : MediaLibraryService() {
         }
     }
 
+    /**
+     * 0.4.0: whether the item resumes at its saved place. Speech always does; a WhatsApp voice
+     * note over three minutes does too, though it plays in the music layout (item extras first,
+     * then the media row, then the speech decision for an item outside the library).
+     */
+    private fun resumes(item: MediaItem, media: MediaEntity?, labelNames: List<String>, speech: Boolean): Boolean {
+        MediaItems.resumeOrNull(item)?.let { return it }
+        if (media != null) return MediaRepository.resumes(media, labelNames, settings.layoutOverrides[MediaItems.uriOf(item)])
+        return speech
+    }
+
+    /** A library row as a queue item, with its speech, resume and voice-note extras. */
+    private fun itemForMedia(media: MediaEntity, labelIds: List<Long>, labelNames: List<String>): MediaItem {
+        val override = settings.layoutOverrides[media.uri]
+        return MediaItems.forMedia(
+            media,
+            labelIds,
+            MediaRepository.isSpeech(media, labelNames, override),
+            resume = MediaRepository.resumes(media, labelNames, override),
+            voiceNote = MediaRepository.isVoiceNote(media),
+        )
+    }
+
     private fun presetFor(speech: Boolean, labelNames: List<String>): String = when {
         labelNames.any { it.equals(LabelRepository.KIDS, ignoreCase = true) } -> EqPreset.KIDS
         labelNames.any { it.equals(LabelRepository.WORSHIP, ignoreCase = true) } -> EqPreset.WORSHIP
@@ -412,16 +599,22 @@ class PlaybackService : MediaLibraryService() {
         // Set before the coroutine starts so no save can slip in between the transition and the
         // seek below. A cancelled earlier job only clears the flag for its own id.
         if (lookUpPosition) pendingResumeId = id
+        // 0.4.0: the speech-only sound options follow the item at once when its extras say what it is.
+        MediaItems.speechOrNull(item)?.let { currentSpeech.value = it }
         transitionJob = scope.launch {
             try {
                 val (media, labelNames) = resolveMedia(item)
                 if (player.currentMediaItem?.mediaId != id) return@launch
                 val speech = isSpeech(item, media, labelNames)
+                currentSpeech.value = speech
+                // 0.4.0, item 4: a long voice note resumes like speech in the music layout, so the
+                // saved-position lookup below keys on this rather than on the layout.
+                val resume = resumes(item, media, labelNames, speech)
                 player.setPlaybackSpeed(if (speech) settings.speed else 1.0f)
                 val preset = presetFor(speech, labelNames)
                 if (preset != settings.eqPreset) settingsRepo.setActivePreset(preset)
                 if (lookUpPosition) {
-                    val saved = if (speech) {
+                    val saved = if (resume) {
                         store.latestFor(MediaItems.uriOf(item), MediaItems.fingerprint(item) ?: media?.fingerprint)
                     } else {
                         null
@@ -437,17 +630,42 @@ class PlaybackService : MediaLibraryService() {
                         clearPending(id)
                         save("resume")
                     } else {
-                        // Music, or speech never played: the player is at 0 and nothing stored
-                        // can be lost. Write it so Continue points at this item.
+                        // Music, or a resuming item never played: the player is at 0 and nothing
+                        // stored can be lost. Write it so Continue points at this item.
                         clearPending(id)
                         save("transition")
                     }
                 }
+                // After the position work, so a speech item's resume seek never waits on it.
+                updateFadeEligibility(item, media, speech)
                 publishWidget()
             } finally {
                 clearPending(id)
             }
         }
+    }
+
+    /**
+     * Smooth transitions for the item just loaded. Not eligible: speech, a voice note, video, or
+     * any label with Lock for kids; then any fade-in carried over from the last item stops and
+     * the volume goes back to 1.
+     */
+    private suspend fun updateFadeEligibility(item: MediaItem, media: MediaEntity?, speech: Boolean) {
+        kidsLabelIds = try {
+            labelRepo.all().filter { it.lockKids }.map { it.id }.toSet()
+        } catch (t: Throwable) {
+            RingLog.w("fade", "label read failed: $t")
+            emptySet()
+        }
+        if (player.currentMediaItem?.mediaId != item.mediaId) return
+        val ids = MediaItems.labelIds(item).ifEmpty { labelRepo.labelIdsFor(MediaItems.uriOf(item)) }
+        if (player.currentMediaItem?.mediaId != item.mediaId) return
+        val voiceNote = MediaItems.isVoiceNote(item) || (media != null && MediaRepository.isVoiceNote(media))
+        itemFadeEligible = !speech && !voiceNote && !MediaItems.isVideo(item) && ids.none { it in kidsLabelIds }
+        if (!itemFadeEligible) {
+            if (fadeInActive || fadeOutActive) resetFade("ineligible item") else if (!sleepFading && player.volume != 1f) player.volume = 1f
+        }
+        restartFade()
     }
 
     /**
@@ -482,8 +700,29 @@ class PlaybackService : MediaLibraryService() {
     }
 
     private val playerListener = object : Player.Listener {
+        /**
+         * 0.4.0. Any pause puts a transition fade back to full volume. A pause the user asked for
+         * (play or pause in the app, the notification, the widget or a headset button) also
+         * cancels the sleep timer; a pause from audio focus loss (a call), becoming noisy or the
+         * timer itself does not.
+         */
+        override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+            if (playWhenReady) return
+            resetFade("pause")
+            if (reason == Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST && !sleepFiring && sleepJob != null) {
+                RingLog.i("sleep", "timer cancelled by a manual pause")
+                scope.launch { settingsRepo.clearSleep() }
+            }
+        }
+
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             RingLog.i("player", "isPlaying=$isPlaying")
+            // Buffering also stops isPlaying; the volume stays where the fade had it until play
+            // resumes or the user pauses (onPlayWhenReadyChanged above).
+            if (isPlaying) restartFade() else {
+                fadeJob?.cancel()
+                fadeJob = null
+            }
             if (isPlaying) {
                 startHeartbeat()
             } else {
@@ -499,6 +738,15 @@ class PlaybackService : MediaLibraryService() {
             newPosition: Player.PositionInfo,
             reason: Int,
         ) {
+            // 0.4.0: a seek, skip or removal ends any transition fade before anything else here.
+            if (reason == Player.DISCONTINUITY_REASON_SEEK ||
+                reason == Player.DISCONTINUITY_REASON_SEEK_ADJUSTMENT ||
+                reason == Player.DISCONTINUITY_REASON_SKIP ||
+                reason == Player.DISCONTINUITY_REASON_REMOVE
+            ) {
+                resetFade("seek")
+                restartFade()
+            }
             // Queue moved on (auto, next/previous, or a new queue set at the same index): keep
             // the old item's last position. A new queue gives every period a new uid, so the
             // index alone would miss the case where the replacement lands at the same index.
@@ -523,6 +771,15 @@ class PlaybackService : MediaLibraryService() {
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
             RingLog.i("player", "item transition reason=$reason id=${mediaItem?.mediaId}")
+            // 0.4.0: only an automatic transition out of a faded item fades in; every other
+            // transition (skip, new queue, repeat) starts the new item at full volume.
+            val fadedOut = fadeOutActive
+            fadeJob?.cancel()
+            fadeJob = null
+            fadeOutActive = false
+            lastRemainingMs = -1L
+            fadeInActive = reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO && fadedOut && fadeWindowMs > 0L && mediaItem != null
+            if (!fadeInActive && !sleepFading && player.volume != 1f) player.volume = 1f
             if (mediaItem == null) return
             when (reason) {
                 Player.MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED -> {
@@ -600,13 +857,15 @@ class PlaybackService : MediaLibraryService() {
             scope.launch {
                 // Speech resumes at saved minus 3 s; music starts at the top. An item without the
                 // speech extra and without a media row (a Phase 0 uri) resumes, as Phase 0 did.
-                val speech = MediaItems.speechOrNull(first) ?: run {
+                // 0.4.0, item 4: the resume extra decides first, so a voice note over three
+                // minutes resumes though it plays in the music layout.
+                val resume = MediaItems.resumeOrNull(first) ?: MediaItems.speechOrNull(first) ?: run {
                     val (media, names) = resolveMedia(first)
-                    if (media == null) true else MediaRepository.isSpeech(media, names, settings.layoutOverrides[uri])
+                    if (media == null) true else MediaRepository.resumes(media, names, settings.layoutOverrides[uri])
                 }
-                val saved = if (speech) store.latestFor(uri, MediaItems.fingerprint(first)) else null
+                val saved = if (resume) store.latestFor(uri, MediaItems.fingerprint(first)) else null
                 val position = if (saved == null) C.TIME_UNSET else PositionStore.resumePosition(saved.positionMs)
-                RingLog.i("session", "setMediaItems uri=$uri speech=$speech resumeAt=$position")
+                RingLog.i("session", "setMediaItems uri=$uri resume=$resume resumeAt=$position")
                 future.set(MediaSession.MediaItemsWithStartPosition(resolved, index, position))
             }
             return future
@@ -633,7 +892,7 @@ class PlaybackService : MediaLibraryService() {
                 val item = if (media != null) {
                     val ids = labelRepo.labelIdsFor(media.uri)
                     val names = ids.mapNotNull { labelRepo.byId(it)?.name }
-                    MediaItems.forMedia(media, ids, MediaRepository.isSpeech(media, names, settings.layoutOverrides[media.uri]))
+                    itemForMedia(media, ids, names)
                 } else {
                     val uri = Uri.parse(last.uri)
                     MediaItem.Builder()
@@ -713,7 +972,7 @@ class PlaybackService : MediaLibraryService() {
         private suspend fun itemFor(media: MediaEntity): MediaItem {
             val ids = labelRepo.labelIdsFor(media.uri)
             val names = ids.mapNotNull { labelRepo.byId(it)?.name }
-            return MediaItems.forMedia(media, ids, MediaRepository.isSpeech(media, names, settings.layoutOverrides[media.uri]))
+            return itemForMedia(media, ids, names)
         }
 
         private suspend fun childrenOf(parentId: String): List<MediaItem> = when {

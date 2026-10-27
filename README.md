@@ -1,12 +1,13 @@
-# Lumen (Phase 1b, Google Drive and backup)
+# Lumen (0.4.0, Phase 2: clearer sermons, chapters, foldables)
 
 Lumen is a player for long spoken-word recordings and the music that sits beside them. Phase 0
 (v0.1.x) answered one question on one device: does a Media3 playback service survive One UI on a
 Galaxy S23 Ultra well enough that the listener never loses their place? It did. Phase 1a builds
 the first real product on that service: a library of chosen folders, labels, the two Now Playing
 layouts, an equaliser, a widget, an Android Auto tree and app shortcuts. Phase 1b (v0.3.x) adds
-the Google Drive source, offline copies, backup and restore, and the brand. YouTube Music is a
-later phase.
+the Google Drive source, offline copies, backup and restore, and the brand. 0.4.0 bundles the
+Phase 2 items: Appearance, Clarity for sermons, chapters and notes, WhatsApp voice notes, Smooth
+transitions, foldables and large screens (see "0.4.0" below). YouTube Music is a later phase.
 
 Application id `com.aaronalmeida.lumen` (Kotlin package `app.lumen.player`; the id changed in 0.2.1 because `app.lumen.player` was already taken in the Android Developer Console). minSdk 29, targetSdk 36, compileSdk 37 (Compose 1.12 and later
 require compileSdk 37). Light Home, Library and Settings; true black Now Playing. Design system:
@@ -28,7 +29,8 @@ amber only for a held place in a paused sermon and the LUMEN mark's core).
    folder appears in the Library under its bucket display name with a phone icon), `rel_path` is
    `RELATIVE_PATH + DISPLAY_NAME` and the fingerprint is `size|duration|title` as before. Rows
    under `Android/`, `Ringtones/`, `Notifications/` and `Alarms/` and anything under 3 seconds are
-   left out. Rows are written in batches of 100; rows whose MediaStore ids are gone are removed by
+   left out, except WhatsApp's voice notes and audio under `Android/media` (0.4.0). Rows are
+   written in batches of 100; rows whose MediaStore ids are gone are removed by
    id, never by wiping, and picked-folder rows are never touched by a phone scan (nor the other
    way round). Embedded art is the slow part, so the scan reads it only for the newest 200 music
    files; every other row gets it the first time it is loaded in the player (`art_path` null
@@ -98,8 +100,9 @@ amber only for a held place in a paused sermon and the LUMEN mark's core).
     application id).
 12. **Settings.** Folders (Scan whole phone with its last scan time and count, then Add a
     folder), Equaliser (preset chips plus five band sliders, editable for Custom),
-    Skip intervals (back 5 to 30 s, forward 10 to 60 s; the notification icons follow), Night
-    (black Home and Library), Diagnostics, About (version, update check, GitHub).
+    Sound (0.4.0), Skip intervals (back 5 to 30 s, forward 10 to 60 s; the notification icons
+    follow), Appearance (0.4.0: Automatic, Light or Dark; it replaced Night), Diagnostics, About
+    (version, update check, GitHub).
 13. **Kept from Phase 0.** The service is the only player; the UI drives it through a
     MediaController. Positions are written on pause, seek, transition, focus loss, destroy and
     every 30 s, to Room and `positions.jsonl`. Resumption through the system (media button, card,
@@ -231,8 +234,8 @@ connected and the last Drive copy is older than 7 days. (`data/backup/BackupMana
   `androidx.core:core-splashscreen:1.2.0`, `Theme.Lumen.Splash`) and at the top of Settings.
 - Maker credit: the owner's own Instinct mark, `aaron_instinct.xml` (charcoal body, cyan
   `#28D9E8` wedge) on light surfaces and `aaron_instinct_reverse.xml` (off-white body, cyan
-  wedge) on black. The amber variants (`aaron_instinct_lumen.xml`,
-  `aaron_instinct_lumen_reverse.xml`) remain in res but are no longer drawn. Shown at 20 dp above "by Aaron Almeida" (Inter 13 sp, secondary,
+  wedge) on black. The amber variant `aaron_instinct_lumen_reverse.xml` remains in res but is
+  not drawn; `aaron_instinct_lumen.xml` was unreferenced and was removed in 0.4.0. Shown at 20 dp above "by Aaron Almeida" (Inter 13 sp, secondary,
   centred, 24 dp padding) at the bottom of Settings and nowhere else.
 - Launcher icon: still the Resume arc. `mipmap-anydpi-v26/ic_launcher.xml` now points its
   foreground at `drawable/ic_launcher_fg.xml`, a layer-list holding the arc vector. **To ship
@@ -276,7 +279,8 @@ Lumen's own backup files, and the Limited Use statement).
 
 ## Data
 
-Room database `lumen.db`, version 3. `MIGRATION_2_3` runs
+Room database `lumen.db`, version 4. `MIGRATION_3_4` (0.4.0) creates the `chapters` table and
+its index and nothing else (SQL in the 0.4.0 section). `MIGRATION_2_3` runs
 `ALTER TABLE media ADD COLUMN offline_path TEXT` and nothing else; `progress` and `kv` are
 untouched. Version 2 (0.2.1) added queries only, no schema change. The Phase 0
 `progress` and `kv` tables are unchanged and `MIGRATION_1_2` only creates `folders`, `media`,
@@ -314,6 +318,14 @@ Google Sign-In classes, which Lumen never used, and keeps the Identity Authoriza
 listed as the stable release), `androidx.media3:media3-datasource:1.11.1` and
 `androidx.media3:media3-database:1.11.1` (already transitive through media3-exoplayer; named so
 `SimpleCache` and `StandaloneDatabaseProvider` are pinned to the Phase 0 Media3 version).
+
+0.4.0 dependencies, verified on 2026-10-27:
+`androidx.window:window:1.5.1` and `androidx.window:window-core:1.5.1`
+(developer.android.com/jetpack/androidx/versions/stable-channel lists "Window Version 1.5.1",
+19 November 2025, as the latest stable; developer.android.com/jetpack/androidx/releases/window
+for the WindowSizeClass, WindowInfoTracker and WindowMetricsCalculator notes). Compose Material3
+Adaptive 1.3.0 was considered and not used: 1.3.0 deprecates `currentWindowAdaptiveInfo` in
+favour of a V2, and androidx.window alone gives the width class and the fold.
 
 Locally: `./gradlew assembleRelease` (needs network for the first run).
 
@@ -369,6 +381,117 @@ listing `drive.readonly` and `drive.file`, and the phone on Wi-Fi to begin with.
 | 12 | Reinstall, scan the phone, Restore | Positions and labels come back by uri; a file reached only under another uri comes back by fingerprint |
 | 13 | Leave the app alone for 8 days, open it | A new dated backup appears in the Drive Lumen folder (weekly automatic) |
 | 14 | Disconnect in the Drive card | Drive rows and kept copies gone, positions and labels still there, "Choose folder" again |
+
+## 0.4.0
+
+One release for the Phase 2 items. The Phase 0 promise is unchanged: a saved position is never
+written over with 0, and speech resumes at the saved position minus 3 s. `PositionStore` is not
+touched. In `PlaybackService` the transition guard (`pendingResumeId`, `save`, the "left item"
+save) is not touched; the one change to the resume path is item 4 (below): `onNewItem` and
+`onSetMediaItems` decide whether to look up the saved position with `resumes` instead of
+`speech`, because a long voice note resumes while playing in the music layout.
+
+1. **Appearance.** Settings, Appearance: Automatic, Light, Dark (kv `appearance`). Automatic
+   follows the phone's dark theme (`isSystemInDarkTheme`, read from the configuration's uiMode)
+   and recomposes when it changes. A phone with the 0.3 Night toggle on gets `appearance=dark`
+   written once on start; until then the parser reads `night=1` as Dark too. Now Playing stays
+   black in every mode. `values-night/themes.xml` makes the start-up window black at night so
+   Automatic does not flash the light ground.
+2. **Clarity for sermons.** Settings, Sound, and the "Clarity" chip menu on the speech Now
+   Playing, with two switches. *Level out voices* (kv `level_out`): the Speech preset already
+   compresses (MBC -24 dB, 3:1, +4 dB), so on a speech item the band goes to -30 dB, 3.5:1,
+   release 200 ms, makeup +6 dB, and the limiter from -2 to -3 dB; never on music, and disabled
+   with the Equaliser fallback engine (no compressor there). *Trim silences* (kv
+   `trim_silences`): `ExoPlayer.setSkipSilenceEnabled(true)` (Media3's
+   SilenceSkippingAudioProcessor) only while a speech item is current; music never. **No
+   "Trimmed" counter:** Media3 1.11.1 reports a skip only as
+   `Player.DISCONTINUITY_REASON_SILENCE_SKIP`, and its old position is the app thread's last
+   published position, not the position before the skip (`ExoPlayerImpl.getPreviousPositionInfo`),
+   so the skipped amount cannot be read; `onSkipSilenceEnabledChanged` carries only the switch.
+   Per the brief, the counter is omitted.
+3. **Chapters and notes.** Long press the Mark chip on the speech Now Playing: a sheet in the
+   Label sheet's style with a title field; the chapter is saved at the position of the press to
+   the new `chapters` table. The Chapters list shows chapters and bookmarks together by time
+   (tap seeks, long press removes, the row the playhead is in has the ink dot and an ink
+   timecode). Its overflow has "Export notes": a plain-text file in `cacheDir/notes` (title,
+   speaker, date the file was added, then "47:12  Title" lines) shared through the FileProvider
+   (`notes/` path) with ACTION_SEND. Chapters are in the backup JSON (`chapters`: uri,
+   fingerprint, position_ms, title, created_at) and merge on restore by uri, position and title.
+
+   `MIGRATION_3_4`:
+
+   ```sql
+   CREATE TABLE IF NOT EXISTS `chapters` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `media_uri` TEXT NOT NULL, `position_ms` INTEGER NOT NULL, `title` TEXT NOT NULL, `created_at` INTEGER NOT NULL);
+   CREATE INDEX IF NOT EXISTS `index_chapters_media_uri` ON `chapters` (`media_uri`);
+   ```
+4. **WhatsApp voice notes and audio.** The phone scan still leaves out `Android/`, except
+   `Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Voice Notes/` and `.../WhatsApp Audio/`,
+   and the WhatsApp Business equivalents under `Android/media/com.whatsapp.w4b/WhatsApp Business/Media/`
+   (both the "WhatsApp Business Voice Notes" and "WhatsApp Voice Notes" spellings). Every voice
+   note, whatever dated subfolder WhatsApp put it in, is filed under one Library folder,
+   `mediastore:whatsapp-voice-notes`, named "WhatsApp voice notes", always listed newest first;
+   WhatsApp Audio keeps its own buckets. Voice notes skip the art read. Under 20 minutes a
+   voice note plays in the music layout (the 20 minute rule, unchanged for everything else);
+   over 3 minutes it resumes at its saved place minus 3 s like speech
+   (`MediaRepository.resumes`, carried on the queue item as `lumen.resume`).
+5. **Smooth transitions.** Settings, Sound: Off, 2, 4 or 6 s (kv `crossfade_s`, default Off).
+   A fade through, not an overlap, so it is labelled "Smooth transitions": the volume ramps down
+   over the last N seconds of a music item and up over the first N seconds of the next, with
+   `player.volume`, from a coroutine that checks the position every 50 ms inside a ramp and
+   otherwise sleeps until the window opens (at most 1 s). Only music; never speech, a voice
+   note, video, an item with a Lock for kids label, repeat one, or when the next item is speech,
+   a voice note or remote (Drive, http). The fade-out starts only when playback crosses into the
+   window, so a seek into the last seconds plays at full volume. Every pause, seek, skip,
+   non-automatic transition, change of the setting and ineligible item sets the volume back to
+   1. While the sleep timer fades, the transition fade leaves the volume alone (sleep wins).
+6. **Foldables and large screens.** `androidx.window`: from 600 dp of window width
+   (`WindowSizeClass.BREAKPOINTS_V1`, `isWidthAtLeastBreakpoint(WIDTH_DP_MEDIUM_LOWER_BOUND)`,
+   from `WindowMetricsCalculator`) the app shows two panes as in the mockup's foldable frame: a
+   Home and Library rail and the Library side (Home, Library, Settings) on the left in the
+   Appearance colours, a hairline, and Now Playing on the right, always black and always shown
+   (no close chevron there). A half-opened fold with a horizontal hinge (`WindowInfoTracker`,
+   `FoldingFeature.State.HALF_OPENED`, `Orientation.HORIZONTAL`) splits Now Playing at the
+   hinge: title, art and scrubber above, chips, transport and chapters below. Phones keep one
+   pane. Kids lock always takes the whole window.
+7. **Small fixes.** A manual pause (app, notification, widget, headset:
+   `PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST`) cancels the sleep timer; audio focus loss (a
+   call), becoming noisy and the timer's own pause do not. The Continue card's playing time is
+   in the ink on light. `aaron_instinct_lumen.xml` was unreferenced and is removed.
+
+### 0.4.0 sheet
+
+Needs a sermon over 20 minutes, a few music files (two in a row with no labels), WhatsApp with a
+voice note over 3 minutes and one under, and, for item 6, a Galaxy Z Fold or a resizable
+emulator (Pixel Fold, or a tablet).
+
+| Item | What to do | Pass when |
+|---|---|---|
+| 1 | Install over 0.3.x with Night on; open Settings | Appearance shows Dark selected; Home is black |
+| 1 | Pick Automatic, switch the phone's dark theme on and off from quick settings | Home, Library and Settings follow at once; Now Playing is black throughout |
+| 1 | Pick Light with the phone dark, then Dark with the phone light | Each sticks; reopening the app keeps it |
+| 2 | Play a sermon, open the Clarity chip, switch Level out voices on | Quiet passages come up, loud ones do not get louder; the chip turns active; Settings, Sound shows it on |
+| 2 | Switch Trim silences on during a sermon with pauses | Pauses shorten; the position stays right after pause and resume (saved minus 3 s) |
+| 2 | Play music with both on | No trimming and no extra compression on music (the log shows `skip silence off` and `levelOut=false`) |
+| 3 | Long press Mark at some point in a sermon | The sheet opens with that time; type a title, Save; the Chapters list shows it among the bookmarks by time; tap seeks to it |
+| 3 | Long press a chapter row | It is removed |
+| 3 | Chapters overflow, Export notes, share to Notes or Gmail | A text file: title, speaker, date, then "47:12  Title" lines in time order |
+| 3 | Back up, reinstall, scan, Restore | Chapters return with "N chapters" in the restore line |
+| 4 | Rescan the phone | Library shows one folder "WhatsApp voice notes", newest first even with the Name sort; nothing else from Android/ appears; WhatsApp Audio appears as its own folder |
+| 4 | Play a voice note over 3 minutes to the middle, play something else, come back | Music layout; it resumes at saved minus 3 s |
+| 4 | Play a voice note under 3 minutes, leave, come back | It starts at 0 |
+| 5 | Smooth transitions 4 s, play two music files in a row | The first fades out over its last 4 s, the second fades in over its first 4 s |
+| 5 | Pause, seek or skip in the middle of a fade | Volume is back to full at once and stays there |
+| 5 | Music followed by a sermon, a Drive file or a voice note; or a Kids label | No fade |
+| 5 | Sleep timer 15 min ending during a fade | The sleep fade wins; after it pauses and you press play, the volume is full |
+| 6 | Unfold a Fold (or resize an emulator past 600 dp) | Rail and Library on the left, Now Playing black on the right; tapping a row plays it on the right; Back moves within the left side only |
+| 6 | Half fold the Fold in landscape (tabletop) with Now Playing showing | Title, art and scrubber above the hinge; chips and transport below; nothing on the hinge |
+| 6 | Fold it shut (cover screen) | The phone layout, as before |
+| 7 | Set the sleep timer, pause in the app | The Sleep chip goes back to "Sleep" |
+| 7 | Set the sleep timer, take a call | The timer keeps running |
+| 7 | Home on light while playing | The Continue card's playing time is in the deep cyan ink |
+
+Positions under test throughout: every resume is at the saved position minus 3 s, and a seek,
+fade or trim never writes 0 over a saved position.
 
 ## Licence
 

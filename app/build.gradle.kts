@@ -119,6 +119,11 @@ dependencies {
     implementation(libs.palette.ktx)
     implementation(libs.documentfile)
 
+    // 0.4.0: foldables and large screens. WindowInfoTracker (tabletop hinge), WindowMetricsCalculator
+    // and WindowSizeClass (two panes from 600 dp).
+    implementation(libs.androidx.window)
+    implementation(libs.androidx.window.core)
+
     // room-ktx was merged into room-runtime in 2.7.0 and is an empty artifact since then.
     implementation(libs.room.runtime)
     ksp(libs.room.compiler)

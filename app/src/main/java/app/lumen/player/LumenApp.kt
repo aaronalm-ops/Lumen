@@ -57,6 +57,8 @@ class LumenApp : Application() {
         RingLog.i("app", "process start, version ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
         appScope.launch {
             try {
+                // 0.4.0: the old Night toggle becomes Appearance "Dark" (once; a no-op after).
+                settings.migrateNightToAppearance()
                 labels.seedDefaults()
                 media.rescanAll()
                 // The whole-phone index is refreshed in the background when it is stale, and

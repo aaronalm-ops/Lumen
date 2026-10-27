@@ -14,6 +14,11 @@ import kotlin.math.roundToInt
  * bands, one MBC band used as a gentle compressor for Speech, limiter on); if the device refuses
  * it, android.media.audiofx.Equalizer with its nearest bands; if that fails too, nothing, and the
  * Settings screen hides the EQ section (engine "none").
+ *
+ * 0.4.0, "Level out voices": on a speech item the MBC band takes [levelledMbcBand] (threshold
+ * -24 to -30 dB, ratio 3 to 3.5, makeup +4 to +6 dB) and the limiter drops from -2 to -3 dB to
+ * catch the extra gain, so quiet and loud speakers land closer together. It needs the
+ * DynamicsProcessing engine; with the Equalizer fallback there is no compressor to adjust.
  */
 class AudioEffects {
 
@@ -38,6 +43,7 @@ class AudioEffects {
 
     private var lastPreset: String = EqPreset.FLAT
     private var lastGains: List<Float> = EqPreset.gains(EqPreset.FLAT, emptyList())
+    private var lastLevelOut: Boolean = false
 
     /** Creates the effects on [newSessionId]; re-applies the last preset. Returns the engine. */
     fun bind(newSessionId: Int): String {
@@ -48,7 +54,7 @@ class AudioEffects {
         engine = createDynamicsProcessing(newSessionId) ?: createEqualizer(newSessionId) ?: ENGINE_NONE
         createLoudness(newSessionId)
         RingLog.i("fx", "bound to session $newSessionId engine=$engine")
-        apply(lastPreset, lastGains)
+        apply(lastPreset, lastGains, lastLevelOut)
         return engine
     }
 
@@ -70,7 +76,7 @@ class AudioEffects {
             effect.setPreEqBandAllChannelsTo(band, DynamicsProcessing.EqBand(true, cutoffHz[band], 0f))
         }
         effect.setMbcBandAllChannelsTo(0, idleMbcBand())
-        effect.setLimiterAllChannelsTo(DynamicsProcessing.Limiter(true, true, 0, 1f, 60f, 10f, -2f, 0f))
+        effect.setLimiterAllChannelsTo(standardLimiter())
         effect.setEnabled(true)
         dp = effect
         ENGINE_DP
@@ -105,10 +111,27 @@ class AudioEffects {
     /** Speech: threshold -24 dB, ratio 3, attack 10 ms, release 150 ms, post gain +4 dB. */
     private fun speechMbcBand() = DynamicsProcessing.MbcBand(true, 20000f, 10f, 150f, 3f, -24f, 6f, -90f, 1f, 0f, 4f)
 
-    /** Applies the five band gains (dB) with the effect's own setters, so changes do not click. */
-    fun apply(preset: String, gains: List<Float>) {
+    /**
+     * Level out voices: the Speech band pushed a step further. Threshold -30 dB, ratio 3.5,
+     * attack 10 ms, release 200 ms, makeup +6 dB.
+     */
+    private fun levelledMbcBand() = DynamicsProcessing.MbcBand(true, 20000f, 10f, 200f, 3.5f, -30f, 6f, -90f, 1f, 0f, 6f)
+
+    /** Limiter: linked, attack 1 ms, release 60 ms, ratio 10, threshold -2 dB. */
+    private fun standardLimiter() = DynamicsProcessing.Limiter(true, true, 0, 1f, 60f, 10f, -2f, 0f)
+
+    /** The same limiter at -3 dB, under the levelled band's extra makeup gain. */
+    private fun levelledLimiter() = DynamicsProcessing.Limiter(true, true, 0, 1f, 60f, 10f, -3f, 0f)
+
+    /**
+     * Applies the five band gains (dB) with the effect's own setters, so changes do not click.
+     * [levelOut] is true only for a speech item with "Level out voices" on; the service never
+     * passes it for music.
+     */
+    fun apply(preset: String, gains: List<Float>, levelOut: Boolean = false) {
         lastPreset = preset
         lastGains = gains
+        lastLevelOut = levelOut
         val g = if (gains.size == 5) gains else listOf(0f, 0f, 0f, 0f, 0f)
         val speech = preset == EqPreset.SPEECH
         dp?.let { effect ->
@@ -116,7 +139,13 @@ class AudioEffects {
                 for (band in cutoffHz.indices) {
                     effect.setPreEqBandAllChannelsTo(band, DynamicsProcessing.EqBand(true, cutoffHz[band], g[band].coerceIn(-12f, 12f)))
                 }
-                effect.setMbcBandAllChannelsTo(0, if (speech) speechMbcBand() else idleMbcBand())
+                val band = when {
+                    levelOut -> levelledMbcBand()
+                    speech -> speechMbcBand()
+                    else -> idleMbcBand()
+                }
+                effect.setMbcBandAllChannelsTo(0, band)
+                effect.setLimiterAllChannelsTo(if (levelOut) levelledLimiter() else standardLimiter())
             } catch (t: Throwable) {
                 RingLog.w("fx", "DynamicsProcessing apply failed: $t")
             }

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 0.4.0, Appearance Automatic (the default): with the phone in dark theme the start-up
+         window is black, so a dark Home does not open over a flash of the light ground. Compose
+         switches the window background to the screen's base once it draws (LumenRoot SystemBars).
+         Theme.Lumen.Splash in values/themes.xml hands over to this style at night. -->
+    <style name="Theme.Lumen" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/black</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:colorPrimary">@color/black</item>
+        <item name="android:colorAccent">@color/cyan</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+</resources>

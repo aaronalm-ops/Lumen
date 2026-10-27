@@ -338,12 +338,15 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
                 if (screen == Screen.DriveBrowser) vm.driveBrowserBack() else vm.screen.value = Screen.Home
             }
         } else {
-            val showingBlack = nowPlayingOpen || appearanceDark
+            // Kids lock shows Now Playing (its lock screen) at once: the effect above opens it a
+            // frame later, and leaving two panes for Kids lock must not flash Home in between.
+            val showNowPlaying = nowPlayingOpen || kidsLocked
+            val showingBlack = showNowPlaying || appearanceDark
             LumenTheme(dark = showingBlack) {
                 val c = Lumen.colours
                 SystemBars(light = !showingBlack, background = c.base)
                 Box(Modifier.fillMaxSize().background(c.base)) {
-                    if (nowPlayingOpen) {
+                    if (showNowPlaying) {
                         nowPlaying(false)
                     } else {
                         Column(Modifier.fillMaxSize()) {
@@ -476,10 +479,18 @@ private fun rememberWideWindow(activity: Activity?): Boolean {
     val configuration = LocalConfiguration.current
     val density = LocalDensity.current.density
     return remember(activity, configuration.screenWidthDp, configuration.screenHeightDp, configuration.orientation, density) {
+        // A device whose window library misbehaves falls back to the configuration's size.
+        val bounds = activity?.let {
+            try {
+                WindowMetricsCalculator.getOrCreate().computeCurrentWindowMetrics(it).bounds
+            } catch (t: Throwable) {
+                RingLog.w("ui", "window metrics unavailable: $t")
+                null
+            }
+        }
         val widthDp: Float
         val heightDp: Float
-        if (activity != null) {
-            val bounds = WindowMetricsCalculator.getOrCreate().computeCurrentWindowMetrics(activity).bounds
+        if (bounds != null && density > 0f) {
             widthDp = bounds.width() / density
             heightDp = bounds.height() / density
         } else {

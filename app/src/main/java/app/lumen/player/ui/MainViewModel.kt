@@ -264,6 +264,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val chapterSheetAt = MutableStateFlow<Long?>(null)
 
     /**
+     * The item the open chapter sheet belongs to, taken with [chapterSheetAt]. A sermon can end
+     * and the queue move on while the title is typed; the chapter still goes on the item it was
+     * opened over, not on the next one at the old item's position.
+     */
+    private var chapterSheetUri: String? = null
+
+    /**
      * What the Continue card shows. While the player holds an item the card shows that item
      * (null when it is not in the library, in which case the card reads the player directly);
      * only an empty player falls back to the most recent row. Resume then acts on what is shown.
@@ -650,22 +657,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** Long press on the bookmark chip: the sheet opens holding the position of the press. */
     fun openChapterSheet() {
         val p = _player.value
-        if (!p.hasItem) return
+        if (!p.hasItem || p.mediaId.isBlank()) return
+        chapterSheetUri = p.mediaId
         chapterSheetAt.value = p.positionMs
     }
 
     fun closeChapterSheet() {
         chapterSheetAt.value = null
+        chapterSheetUri = null
     }
 
-    /** Saves the chapter at the position captured when the sheet opened. A blank title is refused. */
+    /** Saves the chapter at the position and on the item captured when the sheet opened. A blank title is refused. */
     fun saveChapter(title: String): Boolean {
         val at = chapterSheetAt.value ?: return false
-        val p = _player.value
+        val uri = chapterSheetUri ?: return false
         val name = title.trim()
-        if (!p.hasItem || name.isBlank()) return false
-        viewModelScope.launch { mediaRepo.addChapter(p.mediaId, at, name) }
+        if (name.isBlank()) return false
+        viewModelScope.launch { mediaRepo.addChapter(uri, at, name) }
         chapterSheetAt.value = null
+        chapterSheetUri = null
         return true
     }
 

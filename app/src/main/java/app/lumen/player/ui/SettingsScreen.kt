@@ -557,7 +557,9 @@ private fun SoundBody(settings: Settings, actions: SettingsActions) {
         Slider(
             value = draft,
             onValueChange = { draft = it },
-            onValueChangeFinished = { actions.setCrossfadeSeconds(shown) },
+            // Read from the draft when the drag ends: a quick tap can finish before a recomposition
+            // has updated [shown], which would save the previous choice.
+            onValueChangeFinished = { actions.setCrossfadeSeconds(choices.minByOrNull { kotlin.math.abs(it - draft) } ?: 0) },
             valueRange = 0f..choices.last().toFloat(),
             steps = choices.size - 2,
             colors = colours,

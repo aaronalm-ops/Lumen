@@ -337,19 +337,25 @@ class PlaybackService : MediaLibraryService() {
         return uri.startsWith(DriveRepository.URI_PREFIX) || uri.startsWith("http://") || uri.startsWith("https://")
     }
 
+    /**
+     * Whether the item's own extras say it may fade: music (an item without the speech extra is
+     * unknown, so it is treated as speech), not a voice note or video, no Kids lock label.
+     */
+    private fun fadeEligibleByExtras(item: MediaItem): Boolean =
+        MediaItems.speechOrNull(item) == false &&
+            !MediaItems.isVideo(item) &&
+            !MediaItems.isVoiceNote(item) &&
+            MediaItems.labelIds(item).none { it in kidsLabelIds }
+
     /** Whether the item after this one may be faded into: local music with no Kids lock label. */
     private fun nextFadeEligible(): Boolean {
         if (player.repeatMode == Player.REPEAT_MODE_ONE) return false
         val index = player.nextMediaItemIndex
         if (index == C.INDEX_UNSET || index >= player.mediaItemCount) return false
+        // A one-item queue on repeat all starts the same item again (reason REPEAT, no fade-in).
+        if (index == player.currentMediaItemIndex) return false
         val next = player.getMediaItemAt(index)
-        // An item without the speech extra is unknown here, so it is treated as speech.
-        val speech = MediaItems.speechOrNull(next) ?: true
-        return !speech &&
-            !isRemote(next) &&
-            !MediaItems.isVideo(next) &&
-            !MediaItems.isVoiceNote(next) &&
-            MediaItems.labelIds(next).none { it in kidsLabelIds }
+        return !isRemote(next) && fadeEligibleByExtras(next)
     }
 
     /**
@@ -400,6 +406,12 @@ class PlaybackService : MediaLibraryService() {
             } else {
                 fadeInActive = false
             }
+        }
+        // The queue or repeat mode changed under a running fade-out (the next item removed,
+        // repeat one switched on): there is nothing to fade into, so the volume comes back up.
+        if (fadeOutActive && !nextFadeEligible()) {
+            fadeOutActive = false
+            RingLog.i("fade", "fade-out dropped: next item no longer eligible")
         }
         if (duration != C.TIME_UNSET && duration > 0L) {
             val remaining = (duration - position).coerceAtLeast(0L)
@@ -566,12 +578,15 @@ class PlaybackService : MediaLibraryService() {
     /**
      * 0.4.0: whether the item resumes at its saved place. Speech always does; a WhatsApp voice
      * note over three minutes does too, though it plays in the music layout (item extras first,
-     * then the media row, then the speech decision for an item outside the library).
+     * then the media row, then the rule for an item outside the library).
      */
-    private fun resumes(item: MediaItem, media: MediaEntity?, labelNames: List<String>, speech: Boolean): Boolean {
+    private fun resumes(item: MediaItem, media: MediaEntity?, labelNames: List<String>): Boolean {
         MediaItems.resumeOrNull(item)?.let { return it }
         if (media != null) return MediaRepository.resumes(media, labelNames, settings.layoutOverrides[MediaItems.uriOf(item)])
-        return speech
+        // An item outside the library with no extras ("Open with", a Phase 0 uri) resumes, as in
+        // onSetMediaItems. Its duration is often still unknown here, so the speech guess would read
+        // it as music and the "transition" save below would write 0 over its stored position.
+        return MediaItems.speechOrNull(item) ?: true
     }
 
     /** A library row as a queue item, with its speech, resume and voice-note extras. */
@@ -609,7 +624,7 @@ class PlaybackService : MediaLibraryService() {
                 currentSpeech.value = speech
                 // 0.4.0, item 4: a long voice note resumes like speech in the music layout, so the
                 // saved-position lookup below keys on this rather than on the layout.
-                val resume = resumes(item, media, labelNames, speech)
+                val resume = resumes(item, media, labelNames)
                 player.setPlaybackSpeed(if (speech) settings.speed else 1.0f)
                 val preset = presetFor(speech, labelNames)
                 if (preset != settings.eqPreset) settingsRepo.setActivePreset(preset)
@@ -661,7 +676,11 @@ class PlaybackService : MediaLibraryService() {
         val ids = MediaItems.labelIds(item).ifEmpty { labelRepo.labelIdsFor(MediaItems.uriOf(item)) }
         if (player.currentMediaItem?.mediaId != item.mediaId) return
         val voiceNote = MediaItems.isVoiceNote(item) || (media != null && MediaRepository.isVoiceNote(media))
-        itemFadeEligible = !speech && !voiceNote && !MediaItems.isVideo(item) && ids.none { it in kidsLabelIds }
+        // An item outside the library without extras ("Open with") is unknown: its duration is
+        // often not read yet, so "not speech" means nothing and it never fades.
+        val known = media != null || MediaItems.speechOrNull(item) != null
+        val video = MediaItems.isVideo(item) || media?.isVideo == true
+        itemFadeEligible = known && !speech && !voiceNote && !video && ids.none { it in kidsLabelIds }
         if (!itemFadeEligible) {
             if (fadeInActive || fadeOutActive) resetFade("ineligible item") else if (!sleepFading && player.volume != 1f) player.volume = 1f
         }
@@ -709,7 +728,7 @@ class PlaybackService : MediaLibraryService() {
         override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
             if (playWhenReady) return
             resetFade("pause")
-            if (reason == Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST && !sleepFiring && sleepJob != null) {
+            if (reason == Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST && !sleepFiring && sleepJob?.isActive == true) {
                 RingLog.i("sleep", "timer cancelled by a manual pause")
                 scope.launch { settingsRepo.clearSleep() }
             }
@@ -778,8 +797,15 @@ class PlaybackService : MediaLibraryService() {
             fadeJob = null
             fadeOutActive = false
             lastRemainingMs = -1L
-            fadeInActive = reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO && fadedOut && fadeWindowMs > 0L && mediaItem != null
+            // Until onNewItem confirms it, the new item may fade only on what its extras say, so a
+            // speech item never runs the check loop on the last item's eligibility.
+            itemFadeEligible = mediaItem != null && fadeEligibleByExtras(mediaItem)
+            fadeInActive = reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO && fadedOut && fadeWindowMs > 0L && itemFadeEligible
             if (!fadeInActive && !sleepFading && player.volume != 1f) player.volume = 1f
+            // The fade-in starts now from the near-silent end of the fade-out. isPlaying does not
+            // change across an automatic transition, so nothing else would restart the loop before
+            // onNewItem's lookups finish (and a failed lookup would leave the volume near 0).
+            if (fadeInActive) restartFade()
             if (mediaItem == null) return
             when (reason) {
                 Player.MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED -> {
@@ -800,7 +826,11 @@ class PlaybackService : MediaLibraryService() {
                 publishWidget()
                 learnDriveDuration()
             }
-            if (playbackState == Player.STATE_ENDED) save("ended")
+            if (playbackState == Player.STATE_ENDED) {
+                // The queue ran out (or its next item went away) during a fade-out: back to 1.
+                resetFade("ended")
+                save("ended")
+            }
         }
 
         override fun onAudioSessionIdChanged(audioSessionId: Int) {

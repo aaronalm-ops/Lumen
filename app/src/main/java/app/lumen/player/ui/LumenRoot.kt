@@ -199,6 +199,7 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
         setTrimSilences = vm::setTrimSilences,
         openYouTubeMusic = vm::openYouTubeMusic,
         openNotes = { currentItem?.let { vm.openNotesFor(it) } },
+        retry = vm::retryPlayback,
     )
 
     val nowPlaying: @Composable (Boolean) -> Unit = { paned ->
@@ -411,7 +412,11 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
                                 MiniBar(
                                     title = r?.title ?: player.title,
                                     time = formatTime(positionMs),
-                                    meta = if (r != null) "$remaining · YouTube Music" else "$remaining · ${speedLabel(player.speed)}",
+                                    meta = when {
+                                        player.error != null -> player.error ?: ""
+                                        r != null -> "$remaining · YouTube Music"
+                                        else -> "$remaining · ${speedLabel(player.speed)}"
+                                    },
                                     isPlaying = r?.isPlaying ?: player.isPlaying,
                                     onOpen = { vm.nowPlayingOpen.value = true },
                                     onPlayPause = vm::playPause,
@@ -485,6 +490,11 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
                         vm.writeNotes(notesFor)
                     },
                     onPlayAt = { ms -> vm.playAt(notesFor, ms) },
+                    onSetUp = {
+                        vm.closeNotes()
+                        vm.nowPlayingOpen.value = false
+                        vm.screen.value = Screen.Settings
+                    },
                 )
             }
         }
@@ -579,9 +589,12 @@ private fun rememberWideWindow(activity: Activity?): Boolean {
             widthDp = configuration.screenWidthDp.toFloat()
             heightDp = configuration.screenHeightDp.toFloat()
         }
-        WindowSizeClass.BREAKPOINTS_V1
-            .computeWindowSizeClass(widthDp, heightDp)
-            .isWidthAtLeastBreakpoint(WindowSizeClass.WIDTH_DP_MEDIUM_LOWER_BOUND)
+        // 0.6.1 (red team round 2): a phone turned sideways is wide but short. Two panes need
+        // height too (an unfolded foldable has both), so a landscape phone keeps one pane and a
+        // video can take the whole screen.
+        val sizeClass = WindowSizeClass.BREAKPOINTS_V1.computeWindowSizeClass(widthDp, heightDp)
+        sizeClass.isWidthAtLeastBreakpoint(WindowSizeClass.WIDTH_DP_MEDIUM_LOWER_BOUND) &&
+            sizeClass.isHeightAtLeastBreakpoint(WindowSizeClass.HEIGHT_DP_MEDIUM_LOWER_BOUND)
     }
 }
 

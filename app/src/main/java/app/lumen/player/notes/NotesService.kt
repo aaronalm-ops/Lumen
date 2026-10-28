@@ -88,6 +88,12 @@ class NotesService : Service() {
         return START_NOT_STICKY
     }
 
+    /** Android 15 and later: the daily allowance for this kind of job ran out. */
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        RingLog.w("notes", "the system ended the notes job (time limit)")
+        stopSelf()
+    }
+
     override fun onDestroy() {
         // Anything still queued when the service goes cannot carry on; say so on its row.
         val left = synchronized(pending) { pending.toList() }
@@ -101,7 +107,28 @@ class NotesService : Service() {
         super.onDestroy()
     }
 
+    /**
+     * 0.6.1 (red team round 2): a foreground service does not keep the CPU or Wi-Fi awake, so a
+     * long upload stalled once the screen locked. Both are held for the job, with a ceiling.
+     */
     private suspend fun run(uri: String) {
+        val power = getSystemService(android.os.PowerManager::class.java)
+        val wake = power?.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "Lumen:notes")
+        @Suppress("DEPRECATION")
+        val wifi = (applicationContext.getSystemService(Context.WIFI_SERVICE) as? android.net.wifi.WifiManager)
+            ?.createWifiLock(android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF, "Lumen:notes")
+        try {
+            wake?.acquire(JOB_CEILING_MS)
+            wifi?.setReferenceCounted(false)
+            wifi?.acquire()
+            runJob(uri)
+        } finally {
+            try { if (wifi?.isHeld == true) wifi.release() } catch (_: Throwable) {}
+            try { if (wake?.isHeld == true) wake.release() } catch (_: Throwable) {}
+        }
+    }
+
+    private suspend fun runJob(uri: String) {
         val app = LumenApp.from(this)
         val dao = app.notesRepo.dao
         val started = System.currentTimeMillis()
@@ -134,7 +161,7 @@ class NotesService : Service() {
                 step("Google is preparing the recording")
                 client.waitUntilActive(file)
                 step("Transcribing. This takes a few minutes")
-                transcribe(client, file) { n -> runBlocking { step("Transcribing. $n lines so far") } }
+                transcribe(client, file, media.durationMs) { n -> runBlocking { step("Transcribing. $n lines so far") } }
             } finally {
                 client.delete(file)
             }
@@ -180,7 +207,7 @@ class NotesService : Service() {
      * The timed transcript. A reply that stops at the output limit is carried on from its last
      * line, up to [MAX_ROUNDS] calls; lines at or before the last time already held are dropped.
      */
-    private fun transcribe(client: GeminiClient, file: GeminiClient.UploadedFile, onLines: (Int) -> Unit): List<Pair<Long, String>> {
+    private fun transcribe(client: GeminiClient, file: GeminiClient.UploadedFile, durationMs: Long, onLines: (Int) -> Unit): List<Pair<Long, String>> {
         val out = ArrayList<Pair<Long, String>>()
         var after: String? = null
         var lastMs = -1L
@@ -201,7 +228,11 @@ class NotesService : Service() {
             if (lines.isNotEmpty()) lastMs = lines.last().first
             onLines(out.size)
             RingLog.i("notes", "transcript round $round: ${lines.size} lines, finish ${reply.finishReason}")
-            if (reply.finishReason != "MAX_TOKENS" || lines.isEmpty()) break
+            if (lines.isEmpty()) break
+            // 0.6.1: also carry on when the reply stopped early but the recording runs on more
+            // than two minutes past the last line, so the end of a sermon is never dropped.
+            val short = durationMs > 0 && lastMs < durationMs - SHORT_BY_MS
+            if (reply.finishReason != "MAX_TOKENS" && !short) break
             after = stamp(lastMs)
         }
         return out
@@ -258,10 +289,14 @@ class NotesService : Service() {
         t is GeminiClient.GeminiException && (t.code == 400 && t.message.orEmpty().contains("key", ignoreCase = true)) ->
             "Google refused the Gemini key. Check it in Settings"
         t is GeminiClient.GeminiException && (t.code == 401 || t.code == 403) -> "Google refused the Gemini key. Check it in Settings"
-        t is GeminiClient.GeminiException && t.code == 429 -> "Google's free limit is used up for now. Try again later"
+        t is GeminiClient.GeminiException && t.code == 429 -> "Google's limit for this key is used up for now. Try again later"
         t is GeminiClient.GeminiException && t.code >= 500 -> "Google is busy. Try again in a few minutes"
         t is GeminiClient.GeminiException -> "Google said: ${t.message.orEmpty().take(160)}"
-        t is java.net.UnknownHostException || t is java.net.SocketTimeoutException -> "The connection dropped. Try again on Wi-Fi"
+        t is java.net.SocketTimeoutException -> "Google took too long to answer. Try again in a few minutes"
+        t is java.net.UnknownHostException || t is javax.net.ssl.SSLException || t is java.net.ConnectException ||
+            t is java.net.SocketException -> "The connection dropped. Try again on Wi-Fi"
+        t is IOException && t.message.orEmpty().let { it.contains(" 401") || it.contains(" 403") || it.contains("authError") } ->
+            "Drive would not send this file. Sign in to Drive again in Settings"
         t is IOException && !t.message.isNullOrBlank() -> t.message!!
         else -> "Something went wrong (${t.javaClass.simpleName}). Try again"
     }
@@ -294,7 +329,12 @@ class NotesService : Service() {
     private fun goForeground(text: String) {
         channel()
         val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC else 0
-        ServiceCompat.startForeground(this, NOTIFICATION_ID, build(text), type)
+        try {
+            ServiceCompat.startForeground(this, NOTIFICATION_ID, build(text), type)
+        } catch (t: Throwable) {
+            // Past the daily allowance Android refuses; the job is marked and the service ends.
+            RingLog.e("notes", "could not run in the foreground", t)
+        }
     }
 
     private fun notify(text: String) {
@@ -313,6 +353,8 @@ class NotesService : Service() {
         private const val CHANNEL = "notes"
         private const val NOTIFICATION_ID = 4107
         private const val MAX_ROUNDS = 6
+        private const val SHORT_BY_MS = 120_000L
+        private const val JOB_CEILING_MS = 60 * 60_000L
 
         fun isPermissionNeeded(context: Context): Boolean =
             Build.VERSION.SDK_INT >= 33 &&

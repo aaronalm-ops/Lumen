@@ -143,8 +143,23 @@ class MediaRepository(
             "speech" -> true
             "music" -> false
             else -> labelNames.any { it.equals(LabelRepository.SERMONS, ignoreCase = true) } ||
-                media.durationMs > SPEECH_THRESHOLD_MS
+                media.durationMs > SPEECH_THRESHOLD_MS ||
+                looksLikeSpeechBySize(media)
         }
+
+        /**
+         * 0.6.1 (red team round 2, P0): a Drive row has no duration until its first play. A large
+         * compressed audio file (over [SPEECH_SIZE_BYTES]) is a talk, not a song, so it resumes and
+         * takes the sermon layout from the very first play. Lossless files are left out.
+         */
+        fun looksLikeSpeechBySize(media: MediaEntity): Boolean {
+            if (media.durationMs > 0 || media.isVideo || media.sizeBytes <= SPEECH_SIZE_BYTES) return false
+            val mime = media.mime.lowercase()
+            val ext = media.relPath.substringAfterLast('.', "").lowercase()
+            return !(mime.contains("flac") || mime.contains("wav") || ext == "flac" || ext == "wav")
+        }
+
+        const val SPEECH_SIZE_BYTES = 40L * 1024 * 1024
 
         fun titleFromName(name: String): String = name.substringBeforeLast('.').ifBlank { name }
 

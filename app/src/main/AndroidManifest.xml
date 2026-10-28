@@ -7,6 +7,9 @@
     <!-- 0.6.0: sermon notes run as a short data sync while the recording uploads and Gemini writes.
          Notifications are asked for only when the owner first taps Write notes. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- 0.6.1: the player's network wake mode and the notes job keep the CPU and Wi-Fi awake
+         with the screen off. A normal permission: nothing is asked. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Phase 1b: Drive streaming and downloads check for a validated, unmetered network. -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -47,6 +50,7 @@
              in onCreate hands over to Theme.Lumen. -->
         <activity
             android:name=".MainActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
             android:exported="true"
             android:launchMode="singleTask"
             android:theme="@style/Theme.Lumen.Splash">

@@ -26,7 +26,9 @@ class LumenCastConverter(private val server: CastMediaServer) : MediaItemConvert
 
     override fun toMediaQueueItem(mediaItem: MediaItem): MediaQueueItem {
         val original = MediaItems.uriOf(mediaItem)
-        val mime = mediaItem.localConfiguration?.mimeType
+        // 0.6.1: the receiver needs a type. Items built outside the library (Continue after a
+        // restart, Open with) carry none, so it is worked out from the file name.
+        val mime = mediaItem.localConfiguration?.mimeType?.takeIf { it.isNotBlank() } ?: guessMime(original, MediaItems.isVideo(mediaItem))
         val url = server.urlFor(original, mime, MediaItems.sizeBytes(mediaItem))
         if (url == null) RingLog.w("cast", "no address to serve $original from; the receiver will fail to load it")
         val metadata = mediaItem.mediaMetadata.buildUpon()
@@ -42,6 +44,16 @@ class LumenCastConverter(private val server: CastMediaServer) : MediaItemConvert
             .setMediaMetadata(metadata.build())
             .build()
         return delegate.toMediaQueueItem(forReceiver)
+    }
+
+    private fun guessMime(uri: String, video: Boolean): String {
+        val ext = Uri.parse(uri).lastPathSegment.orEmpty().substringAfterLast('.', "").lowercase()
+        android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext)?.let { return it }
+        return when (ext) {
+            "m4a", "aac" -> "audio/mp4"
+            "opus", "ogg" -> "audio/ogg"
+            else -> if (video) "video/mp4" else "audio/mpeg"
+        }
     }
 
     /**

@@ -79,6 +79,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 
@@ -116,7 +117,28 @@ data class PlayerState(
     val ended: Boolean = false,
     /** 0.5.0: the session plays on a Cast receiver; sound settings stay on the phone. */
     val casting: Boolean = false,
+    /** 0.6.1: why the current item cannot play, in plain words; null when it plays. */
+    val error: String? = null,
 )
+
+/** 0.6.1 (red team round 2): a playback failure as one line the owner can act on. */
+fun describePlaybackError(e: androidx.media3.common.PlaybackException, uri: String): String = when (e.errorCode) {
+    androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
+    androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT ->
+        if (uri.startsWith("drive://")) "No connection. This file plays from Drive; Keep offline lets it play anywhere" else "No connection"
+    androidx.media3.common.PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND -> "This file has been moved or deleted"
+    androidx.media3.common.PlaybackException.ERROR_CODE_IO_NO_PERMISSION ->
+        "Lumen can no longer open this file. Open it again from the app it came from"
+    androidx.media3.common.PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS,
+    androidx.media3.common.PlaybackException.ERROR_CODE_IO_INVALID_HTTP_CONTENT_TYPE ->
+        "Drive would not send this file. Try again, or sign in to Drive again in Settings"
+    androidx.media3.common.PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED,
+    androidx.media3.common.PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED,
+    androidx.media3.common.PlaybackException.ERROR_CODE_DECODER_INIT_FAILED,
+    androidx.media3.common.PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED ->
+        "This file's format cannot be played on this phone"
+    else -> "This file could not be played"
+}
 
 /**
  * 0.5.0: Now Playing's remote mode, while the current Lumen item is a YouTube Music link. With
@@ -565,7 +587,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             repeat = c.repeatMode,
             ended = c.playbackState == Player.STATE_ENDED,
             casting = c.deviceInfo.playbackType == DeviceInfo.PLAYBACK_TYPE_REMOTE,
+            error = c.playerError?.let { e -> describePlaybackError(e, item?.let { MediaItems.uriOf(it) } ?: "") },
         )
+    }
+
+    /** 0.6.1: Try again after a playback error. */
+    fun retryPlayback() {
+        withController { c ->
+            c.prepare()
+            c.play()
+        }
     }
 
     private fun startTicker() {
@@ -677,25 +708,32 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * when there is one, so the saved position, labels and speech layout apply; otherwise the
      * sender's uri plays directly (its position is still saved under that uri).
      */
-    fun openExternal(uri: Uri, displayName: String, sizeBytes: Long, mime: String) {
+    fun openExternal(uri: Uri, displayName: String, sizeBytes: Long, mime: String, persisted: Boolean = false) {
         viewModelScope.launch {
             val base = displayName.substringBeforeLast('.')
-            val match = items.value.firstOrNull { li ->
-                li.uri == uri.toString() ||
-                    (sizeBytes > 0 && li.media.sizeBytes == sizeBytes &&
-                        (li.media.title.equals(base, ignoreCase = true) || li.media.relPath.endsWith(displayName, ignoreCase = true)))
-            } ?: items.value.firstOrNull { li -> sizeBytes > 0 && li.media.sizeBytes == sizeBytes }
-            if (match != null) {
-                RingLog.i("ui", "open with: matched library row ${match.media.title}")
+            // 0.6.1 (red team round 2): matched in the database, which is ready on a cold start
+            // when the screen list is not; by uri, or by size together with the name. Size alone
+            // is never enough (two different recordings can share a byte count).
+            val rows = withContext(Dispatchers.IO) { mediaRepo.all() }
+            val row = rows.firstOrNull { it.uri == uri.toString() }
+                ?: rows.firstOrNull { m ->
+                    sizeBytes > 0 && m.sizeBytes == sizeBytes &&
+                        (m.title.equals(base, ignoreCase = true) || m.relPath.endsWith(displayName, ignoreCase = true))
+                }
+            if (row != null) {
+                RingLog.i("ui", "open with: matched library row ${row.title}")
+                val match = items.value.firstOrNull { it.uri == row.uri }
+                    ?: LibraryItem(media = row, labelIds = labelRepo.labelIdsFor(row.uri), copies = 1, positionMs = 0L, lastPlayedAt = 0L, folderName = "")
                 play(match)
                 return@launch
             }
+            val extras = android.os.Bundle().apply { putBoolean(MediaItems.EXTRA_ONE_OFF, !persisted) }
             val item = MediaItem.Builder()
                 .setMediaId(uri.toString())
                 .setUri(uri)
                 .setMimeType(mime.takeIf { it.isNotBlank() })
                 .setRequestMetadata(MediaItem.RequestMetadata.Builder().setMediaUri(uri).build())
-                .setMediaMetadata(androidx.media3.common.MediaMetadata.Builder().setTitle(base).build())
+                .setMediaMetadata(androidx.media3.common.MediaMetadata.Builder().setTitle(base).setExtras(extras).build())
                 .build()
             kidsUnlocked.value = false
             withController { c ->
@@ -792,7 +830,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun next() {
-        if (remoteLink() != null) {
+        // 0.6.1: without control of YouTube Music, Next moves Lumen's own queue on.
+        if (remoteLink() != null && ytmAccess.value) {
             ytm.next()
             return
         }
@@ -800,7 +839,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun previous() {
-        if (remoteLink() != null) {
+        if (remoteLink() != null && ytmAccess.value) {
             ytm.previous()
             return
         }

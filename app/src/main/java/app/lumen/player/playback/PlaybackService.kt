@@ -155,7 +155,11 @@ class PlaybackService : MediaLibraryService() {
     private lateinit var labelRepo: LabelRepository
     private lateinit var settingsRepo: SettingsRepository
     private var session: MediaLibrarySession? = null
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val scope = CoroutineScope(
+        SupervisorJob() + Dispatchers.Main.immediate +
+            // 0.6.1: a failed lookup (Room, a bad uri) is logged instead of taking the app down.
+            kotlinx.coroutines.CoroutineExceptionHandler { _, t -> RingLog.e("service", "background work failed", t) },
+    )
     private var heartbeat: Job? = null
     private var sleepJob: Job? = null
     private var transitionJob: Job? = null
@@ -228,7 +232,9 @@ class PlaybackService : MediaLibraryService() {
             .setMediaSourceFactory(DefaultMediaSourceFactory(this).setDataSourceFactory(lumenDataSourceFactory(this)))
             .setAudioAttributes(audioAttributes, true)
             .setHandleAudioBecomingNoisy(true)
-            .setWakeMode(C.WAKE_MODE_LOCAL)
+            // 0.6.1: network wake mode holds a Wi-Fi lock too, so a Drive stream keeps going with
+            // the screen off (Samsung's Wi-Fi power saving otherwise drops it).
+            .setWakeMode(C.WAKE_MODE_NETWORK)
             .setSeekBackIncrementMs(10_000)
             .setSeekForwardIncrementMs(30_000)
             .build()
@@ -293,10 +299,20 @@ class PlaybackService : MediaLibraryService() {
                 if (s.skipBackSeconds != appliedBack || s.skipForwardSeconds != appliedForward) {
                     appliedBack = s.skipBackSeconds
                     appliedForward = s.skipForwardSeconds
-                    session?.setMediaButtonPreferences(mediaButtonPreferences(appliedBack, appliedForward))
                     RingLog.i("service", "skip intervals back=$appliedBack forward=$appliedForward")
                 }
             }
+        }
+        scope.launch {
+            // 0.6.1: lock screen, notification, widget and car buttons follow the item. A sermon
+            // gets back and forward by the skip lengths; a song gets the system's previous and
+            // next, so a playlist can be skipped from the lock screen.
+            combine(settingsRepo.settings, currentSpeech) { s, speech -> Triple(s.skipBackSeconds, s.skipForwardSeconds, speech) }
+                .distinctUntilChanged()
+                .collect { (back, forward, speech) ->
+                    session?.setMediaButtonPreferences(if (speech) mediaButtonPreferences(back, forward) else emptyList())
+                    RingLog.i("service", "buttons for ${if (speech) "speech" else "music"}")
+                }
         }
         scope.launch {
             // Level out voices joins the preset here: it applies only while a speech item is current.
@@ -485,6 +501,27 @@ class PlaybackService : MediaLibraryService() {
         return wait
     }
 
+    private var appliedContentType = C.AUDIO_CONTENT_TYPE_SPEECH
+
+    /**
+     * 0.6.1: speech pauses for a notification sound; music and video lower their volume and carry
+     * on, as other players do. Only changed when the kind of item changes.
+     */
+    private fun applyAudioAttributes(speech: Boolean, item: MediaItem) {
+        val type = when {
+            MediaItems.isVideo(item) -> C.AUDIO_CONTENT_TYPE_MOVIE
+            speech -> C.AUDIO_CONTENT_TYPE_SPEECH
+            else -> C.AUDIO_CONTENT_TYPE_MUSIC
+        }
+        if (type == appliedContentType) return
+        appliedContentType = type
+        try {
+            exo.setAudioAttributes(AudioAttributes.Builder().setContentType(type).setUsage(C.USAGE_MEDIA).build(), true)
+        } catch (t: Throwable) {
+            RingLog.w("service", "audio attributes not changed: $t")
+        }
+    }
+
     /**
      * Seek back and seek forward take the two slots the system would otherwise give to previous
      * and next, on the notification, the lock screen, Bluetooth displays and Android Auto.
@@ -528,10 +565,11 @@ class PlaybackService : MediaLibraryService() {
             ?: item.mediaMetadata.title?.toString()
             ?: Uri.parse(uri).lastPathSegment
             ?: uri
-        return Snapshot(uri, title, maxOf(0L, player.currentPosition), duration)
+        val oneOff = item.mediaMetadata.extras?.getBoolean(MediaItems.EXTRA_ONE_OFF, false) ?: false
+        return Snapshot(uri, title, maxOf(0L, player.currentPosition), duration, oneOff)
     }
 
-    private data class Snapshot(val uri: String, val title: String, val positionMs: Long, val durationMs: Long)
+    private data class Snapshot(val uri: String, val title: String, val positionMs: Long, val durationMs: Long, val oneOff: Boolean = false)
 
     /** True while the current item's resume position is still being looked up. */
     private fun resumePending(): Boolean {
@@ -559,7 +597,7 @@ class PlaybackService : MediaLibraryService() {
             return
         }
         val s = currentSnapshot() ?: return
-        store.save(s.uri, s.title, s.positionMs, s.durationMs, reason)
+        store.save(s.uri, s.title, s.positionMs, s.durationMs, reason, remember = !s.oneOff)
     }
 
     private fun saveBlocking(reason: String) {
@@ -574,7 +612,7 @@ class PlaybackService : MediaLibraryService() {
         val s = currentSnapshot() ?: return
         runBlocking {
             withTimeoutOrNull(DESTROY_SAVE_TIMEOUT_MS) {
-                store.saveNow(s.uri, s.title, s.positionMs, s.durationMs, reason)
+                store.saveNow(s.uri, s.title, s.positionMs, s.durationMs, reason, remember = !s.oneOff)
             }
         }
     }
@@ -629,10 +667,12 @@ class PlaybackService : MediaLibraryService() {
     }
 
     private fun isSpeech(item: MediaItem, media: MediaEntity?, labelNames: List<String>): Boolean {
-        MediaItems.speechOrNull(item)?.let { return it }
         val uri = MediaItems.uriOf(item)
         val override = settings.layoutOverrides[uri]
+        // 0.6.1: the fresh library row decides first (its duration may have been learnt since the
+        // queue was built); the queue item's extras only stand in when there is no row.
         if (media != null) return MediaRepository.isSpeech(media, labelNames, override)
+        MediaItems.speechOrNull(item)?.let { return it }
         val duration = item.mediaMetadata.durationMs ?: player.duration.let { if (it == C.TIME_UNSET) 0L else it }
         return when (override) {
             "speech" -> true
@@ -647,8 +687,8 @@ class PlaybackService : MediaLibraryService() {
      * then the media row, then the rule for an item outside the library).
      */
     private fun resumes(item: MediaItem, media: MediaEntity?, labelNames: List<String>): Boolean {
-        MediaItems.resumeOrNull(item)?.let { return it }
         if (media != null) return MediaRepository.resumes(media, labelNames, settings.layoutOverrides[MediaItems.uriOf(item)])
+        MediaItems.resumeOrNull(item)?.let { return it }
         // An item outside the library with no extras ("Open with", a Phase 0 uri) resumes, as in
         // onSetMediaItems. Its duration is often still unknown here, so the speech guess would read
         // it as music and the "transition" save below would write 0 over its stored position.
@@ -688,6 +728,7 @@ class PlaybackService : MediaLibraryService() {
                 if (player.currentMediaItem?.mediaId != id) return@launch
                 val speech = isSpeech(item, media, labelNames)
                 currentSpeech.value = speech
+                applyAudioAttributes(speech, item)
                 // 0.4.0, item 4: a long voice note resumes like speech in the music layout, so the
                 // saved-position lookup below keys on this rather than on the layout.
                 val resume = resumes(item, media, labelNames)
@@ -703,7 +744,7 @@ class PlaybackService : MediaLibraryService() {
                     }
                     if (player.currentMediaItem?.mediaId != id) return@launch
                     if (saved != null) {
-                        val target = PositionStore.resumePosition(saved.positionMs)
+                        val target = PositionStore.resumePosition(saved)
                         RingLog.i("session", "transition resume $id at $target")
                         // The seek's own discontinuity save is skipped while the flag is set; the
                         // "resume" save below records the item as current without moving its
@@ -1135,7 +1176,7 @@ class PlaybackService : MediaLibraryService() {
                     if (media == null) true else MediaRepository.resumes(media, names, settings.layoutOverrides[uri])
                 }
                 val saved = if (resume) store.latestFor(uri, MediaItems.fingerprint(first)) else null
-                val position = if (saved == null) C.TIME_UNSET else PositionStore.resumePosition(saved.positionMs)
+                val position = if (saved == null) C.TIME_UNSET else PositionStore.resumePosition(saved)
                 RingLog.i("session", "setMediaItems uri=$uri resume=$resume resumeAt=$position")
                 future.set(MediaSession.MediaItemsWithStartPosition(resolved, index, position))
             }
@@ -1180,7 +1221,7 @@ class PlaybackService : MediaLibraryService() {
                         )
                         .build()
                 }
-                val position = PositionStore.resumePosition(last.positionMs)
+                val position = PositionStore.resumePosition(last)
                 RingLog.i("session", "resumption forPlayback=$isForPlayback uri=${last.uri} at=$position")
                 future.set(MediaSession.MediaItemsWithStartPosition(listOf(item), 0, position))
             }

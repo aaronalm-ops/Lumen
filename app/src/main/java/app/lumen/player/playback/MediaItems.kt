@@ -25,6 +25,12 @@ object MediaItems {
     /** 0.5.0: the file size from the library row, for the Cast file server's Content-Length. */
     const val EXTRA_SIZE_BYTES = "lumen.sizeBytes"
 
+    /**
+     * 0.6.1: a file opened from another app with a one-off permission. Its place is saved, but it
+     * never becomes the item Lumen resumes, since the permission is gone after a restart.
+     */
+    const val EXTRA_ONE_OFF = "lumen.oneOff"
+
     fun forMedia(
         media: MediaEntity,
         labelIds: List<Long>,

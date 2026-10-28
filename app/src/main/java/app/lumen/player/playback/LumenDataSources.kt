@@ -126,6 +126,7 @@ class DriveDataSource(private val context: Context) : DataSource {
 
     companion object {
         private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        private const val OFFLINE_TOKEN = "offline"
     }
 
     private val app = LumenApp.from(context)
@@ -153,6 +154,12 @@ class DriveDataSource(private val context: Context) : DataSource {
             return file.open(dataSpec.buildUpon().setUri(Uri.fromFile(offline)).build())
         }
 
+        // 0.6.1 (red team round 2): offline, the cache answers alone. No token is asked for (Play
+        // Services cannot give one without a connection) and no "sign in again" is raised; a span
+        // that was never cached fails as a connection error, which Now Playing explains.
+        if (!app.connectivity.isOnline()) {
+            return openWithToken(dataSpec, fileId, OFFLINE_TOKEN)
+        }
         val token = app.drive.auth.tokenBlocking() ?: run {
             scope.launch { app.drive.onAuthFailure(401) }
             throw IOException("Sign in to Drive again")
@@ -210,7 +217,7 @@ class DriveDataSource(private val context: Context) : DataSource {
         } catch (e: HttpDataSource.InvalidResponseCodeException) {
             // The cache served the first span and Drive refused the next one. The player will
             // surface the error; drop the token so the retry asks Play Services for a fresh one.
-            if (e.responseCode == 401 || e.responseCode == 403) {
+            if ((e.responseCode == 401 || e.responseCode == 403) && currentToken != OFFLINE_TOKEN) {
                 RingLog.w("drive", "${e.responseCode} while reading, token dropped")
                 if (e.responseCode == 401) app.drive.auth.invalidate(currentToken)
                 scope.launch { app.drive.onAuthFailure(e.responseCode) }

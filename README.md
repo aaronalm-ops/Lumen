@@ -630,6 +630,22 @@ The Library opens on a row of section chips under the title: All, Phone, Drive, 
 4. Tap YouTube Music and Suno: either the files or a card saying how to fill the section.
 5. Close and reopen Lumen: the Library opens on the last section chosen.
 
+## 0.6.1 (red team round 2 fixes; report in RED-TEAM-ROUND-2.md)
+
+- Position: one speech rule everywhere, including a large audio file whose length is not known yet (a Drive sermon before its first play), so it resumes and takes the sermon layout from the start. The service decides from the fresh library row. A load-time save near 0:00 never replaces a place more than 30 s in.
+- A finished item (last 30 s or 97 percent) starts again at 0 instead of replaying its last 3 seconds.
+- Saves land one at a time in the order asked for.
+- Playback errors show on Now Playing and the mini bar in plain words, with Try again.
+- Drive: network wake mode (Wi-Fi lock) with the WAKE_LOCK permission declared; offline, the cache plays without a token and no "sign in again" is raised.
+- Open with: matched in the database (ready on a cold start), by uri or size plus name; a file with a one-off permission is never made the resume target.
+- Lock screen, notification and car: sermons keep back/forward by the skip lengths; songs get previous and next.
+- Music and video duck for notification sounds; sermons pause.
+- YouTube Music without control: Next moves Lumen's queue; "Next in Lumen" button.
+- Cast: a missing file type is worked out from the name.
+- Video: screen stays on while a video plays; a long video keeps its picture in the sermon layout; rotation no longer restarts the screen; a landscape phone keeps one pane.
+- Notes: wake and Wi-Fi locks during the job; carries on until the transcript reaches the end; clearer errors; "Set up notes" goes to Settings; the time limit on Android 15 and later is handled.
+- Now Playing: chips wrap instead of scrolling sideways; Notes comes first; music gets a Sleep chip. The full redesign follows in 0.7.0.
+
 ## 0.6.0
 
 ### Installs again

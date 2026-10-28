@@ -37,6 +37,22 @@ class PositionStore(context: Context, private val dao: ProgressDao) {
         fun resumePosition(savedMs: Long): Long = maxOf(0L, savedMs - RESUME_REWIND_MS)
 
         /**
+         * 0.6.1: where a saved item starts. Within the last [FINISHED_TAIL_MS] (or 97 percent) it
+         * counts as finished and starts again at 0; otherwise saved minus the rewind.
+         */
+        fun resumePosition(saved: ProgressEntity): Long =
+            if (isFinished(saved.positionMs, saved.durationMs)) 0L else resumePosition(saved.positionMs)
+
+        fun isFinished(positionMs: Long, durationMs: Long): Boolean =
+            durationMs > 0 && (positionMs >= durationMs - FINISHED_TAIL_MS || positionMs >= durationMs * 97 / 100)
+
+        const val FINISHED_TAIL_MS = 30_000L
+
+        /** A load-time save near the start never replaces a place further in than this. */
+        private const val GUARD_FLOOR_MS = 30_000L
+        private const val GUARD_START_MS = 5_000L
+
+        /**
          * Saves made right after an item is loaded or resumed. The player then sits at the saved
          * position minus the rewind, and writing that back would move the stored position 3 s
          * earlier on every launch or transition without a second of playback.
@@ -45,7 +61,10 @@ class PositionStore(context: Context, private val dao: ProgressDao) {
     }
 
     private val backupFile = File(context.filesDir, "positions.jsonl")
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    // 0.6.1: one save at a time, in the order asked for, so "left item" never lands after the next
+    // item's first save and points Continue at the wrong file.
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO.limitedParallelism(1))
 
     /**
      * Saves are fire-and-forget from player callbacks, so two can be in flight at once (an item
@@ -59,12 +78,12 @@ class PositionStore(context: Context, private val dao: ProgressDao) {
     val lastSaved: StateFlow<String> = _lastSaved
 
     /** Fire-and-forget write used from player callbacks. */
-    fun save(uri: String, title: String, positionMs: Long, durationMs: Long, reason: String) {
-        scope.launch { saveNow(uri, title, positionMs, durationMs, reason) }
+    fun save(uri: String, title: String, positionMs: Long, durationMs: Long, reason: String, remember: Boolean = true) {
+        scope.launch { saveNow(uri, title, positionMs, durationMs, reason, remember) }
     }
 
     /** Blocking-capable write used from Service.onDestroy. */
-    suspend fun saveNow(uri: String, title: String, positionMs: Long, durationMs: Long, reason: String): Unit = writeLock.withLock {
+    suspend fun saveNow(uri: String, title: String, positionMs: Long, durationMs: Long, reason: String, remember: Boolean = true): Unit = writeLock.withLock {
         val now = System.currentTimeMillis()
         var effectiveDuration = durationMs
         if (durationMs <= 0) {
@@ -99,6 +118,14 @@ class PositionStore(context: Context, private val dao: ProgressDao) {
             if (prior != null && prior.positionMs > positionMs && prior.positionMs - positionMs <= RESUME_REWIND_MS) {
                 effectivePosition = prior.positionMs
             }
+            // 0.6.1 (red team round 2, P0): an item loaded at the very start, whatever the reason,
+            // never wipes a place well into it. Real listening saves under its own reasons.
+            if (prior != null && positionMs <= GUARD_START_MS && prior.positionMs > GUARD_FLOOR_MS &&
+                !isFinished(prior.positionMs, prior.durationMs)
+            ) {
+                RingLog.i("store", "kept ${prior.positionMs} over a load-time $positionMs for $uri ($reason)")
+                effectivePosition = prior.positionMs
+            }
         }
         val entity = ProgressEntity(
             key = key,
@@ -110,7 +137,8 @@ class PositionStore(context: Context, private val dao: ProgressDao) {
         )
         try {
             dao.upsert(entity)
-            dao.putKv(KvEntity(KEY_LAST_ITEM, entity.key))
+            // 0.6.1: [remember] false for a one-off "Open with" file, which cannot be reopened later.
+            if (remember) dao.putKv(KvEntity(KEY_LAST_ITEM, entity.key))
             appendBackup(entity, reason)
             val stamp = synchronized(clock) { clock.format(Date(now)) }
             _lastSaved.value = "${formatTime(effectivePosition)} at $stamp ($reason)"

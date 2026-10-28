@@ -18,6 +18,8 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
@@ -118,6 +120,8 @@ class NowPlayingActions(
     val openYouTubeMusic: () -> Unit,
     /** 0.6.0: the notes and transcript of the item playing. */
     val openNotes: () -> Unit = {},
+    /** 0.6.1: Try again after a playback error. */
+    val retry: () -> Unit = {},
 )
 
 /** The tabletop split, in this screen's own coordinates: the height above the hinge and the hinge itself. */
@@ -215,9 +219,11 @@ fun NowPlayingScreen(
                     .padding(horizontal = Gutter),
             ) {
                 Header(labels, if (remote != null) false else speech, item, paned, actions, showCast = showCast, casting = player.casting)
+                // 0.6.1: a file that cannot play says why, with one way out.
+                player.error?.let { message -> PlaybackErrorLine(message, actions.retry) }
                 when {
                     remote != null -> RemoteLayout(remote, player, labels, actions)
-                    speech -> SpeechLayout(player, item, settings, timeline, noInterruptions, downloadProgress, actions, notesState, notesAvailable)
+                    speech -> SpeechLayout(player, controller, item, settings, timeline, noInterruptions, downloadProgress, actions, notesState, notesAvailable)
                     else -> MusicLayout(player, controller, item, labels, settings, audioOnly, downloadProgress, actions)
                 }
             }
@@ -432,6 +438,7 @@ private fun SpeechTransport(player: PlayerState, settings: Settings, actions: No
 @Composable
 private fun SpeechLayout(
     player: PlayerState,
+    controller: MediaController?,
     item: LibraryItem?,
     settings: Settings,
     timeline: List<TimelineMark>,
@@ -441,6 +448,12 @@ private fun SpeechLayout(
     notesState: String?,
     notesAvailable: Boolean,
 ) {
+    // 0.6.1: a long video (a recorded service) keeps its picture in the sermon layout.
+    if (player.isVideo && controller != null) {
+        Spacer(Modifier.height(4.dp))
+        VideoSurface(controller, Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(CardRadius)))
+        Spacer(Modifier.height(12.dp))
+    }
     SpeechTitle(player, actions)
     Spacer(Modifier.height(12.dp))
     ChipRow(player, item, settings, noInterruptions, timeline.any { it.bookmark != null }, downloadProgress, actions, notesState, notesAvailable)
@@ -532,6 +545,7 @@ private fun ChapterList(player: PlayerState, timeline: List<TimelineMark>, actio
     Text("Tap to seek, long press to remove", style = Lumen.type.bodyS, color = c.text3, modifier = Modifier.padding(top = 6.dp))
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun ChipRow(
     player: PlayerState,
@@ -547,7 +561,20 @@ private fun ChipRow(
     val c = Lumen.colours
     val view = LocalView.current
     val sleepLeft = if (settings.sleepActive) ((settings.sleepEndAt - System.currentTimeMillis()) / 60_000L + 1).coerceAtLeast(1) else 0L
-    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    // 0.6.1: the chips wrap onto a second line instead of running off the screen.
+    FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        // 0.6.0: notes and transcript. Active once written; "Writing" while the job runs.
+        if (notesAvailable) {
+            StatusChip(
+                text = when (notesState) {
+                    "working" -> "Writing"
+                    else -> "Notes"
+                },
+                icon = LumenIcons.Notes,
+                active = notesState == "done",
+                onClick = actions.openNotes,
+            )
+        }
         // 0.5.0: speed stays on the phone, so the chip is disabled while casting.
         StatusChip(text = speedLabel(player.speed), active = player.speed != 1.0f, enabled = !player.casting, onClick = {
             view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
@@ -585,18 +612,6 @@ private fun ChipRow(
             },
         )
         OfflineChip(item, downloadProgress, actions.toggleOffline)
-        // 0.6.0: notes and transcript. Active once written; "Writing" while the job runs.
-        if (notesAvailable) {
-            StatusChip(
-                text = when (notesState) {
-                    "working" -> "Writing"
-                    else -> "Notes"
-                },
-                icon = LumenIcons.Notes,
-                active = notesState == "done",
-                onClick = actions.openNotes,
-            )
-        }
     }
     if (downloadProgress != null) ProgressLine(fraction = downloadProgress, thickness = 1.dp, modifier = Modifier.padding(top = 4.dp))
     if (player.casting) CastingNote()
@@ -707,6 +722,7 @@ private fun MusicTitle(player: PlayerState, actions: NowPlayingActions) {
 }
 
 /** Label chips, the preset chip and the Drive chip, with the download line under them. */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun MusicChips(
     item: LibraryItem?,
@@ -716,9 +732,18 @@ private fun MusicChips(
     actions: NowPlayingActions,
     casting: Boolean = false,
 ) {
-    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    // 0.6.1: the chips wrap onto a second line instead of running off the screen.
+    FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         labels.take(2).forEach { LabelChip(name = it.name, hue = it.hue, onClick = actions.openLabelSheet) }
         StatusChip(text = settings.eqPreset, active = settings.eqPreset != "Flat", enabled = settings.eqEngine != "none", onClick = actions.cyclePreset)
+        // 0.6.1 (red team round 2): music gets the sleep timer too, for bedtime songs.
+        val sleepLeft = if (settings.sleepActive) ((settings.sleepEndAt - System.currentTimeMillis()) / 60_000L + 1).coerceAtLeast(1) else 0L
+        StatusChip(
+            text = if (sleepLeft > 0) "$sleepLeft min" else "Sleep",
+            icon = LumenIcons.Moon,
+            active = sleepLeft > 0,
+            onClick = actions.cycleSleep,
+        )
         OfflineChip(item, downloadProgress, actions.toggleOffline)
     }
     if (downloadProgress != null) ProgressLine(fraction = downloadProgress, thickness = 1.dp, modifier = Modifier.padding(top = 4.dp))
@@ -805,6 +830,7 @@ private fun MusicLayout(
  * Music's session appears, one line and "Open YouTube Music" take the place of the controls, and
  * the Lumen queue does not move on by itself.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun RemoteLayout(remote: RemoteUi, player: PlayerState, labels: List<LabelEntity>, actions: NowPlayingActions) {
     val c = Lumen.colours
@@ -817,7 +843,8 @@ private fun RemoteLayout(remote: RemoteUi, player: PlayerState, labels: List<Lab
         Text(remote.artist, style = Lumen.type.bodyS, color = c.text2, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
     Spacer(Modifier.height(8.dp))
-    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    // 0.6.1: the chips wrap onto a second line instead of running off the screen.
+    FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         StatusChip(text = YtmLink.SOURCE_LABEL, onClick = actions.openYouTubeMusic)
         labels.take(2).forEach { LabelChip(name = it.name, hue = it.hue, onClick = actions.openLabelSheet) }
         StatusChip(text = "EQ", enabled = false, onClick = {})
@@ -838,7 +865,7 @@ private fun RemoteLayout(remote: RemoteUi, player: PlayerState, labels: List<Lab
         }
     } else {
         Spacer(Modifier.height(8.dp))
-        Text("Open YouTube Music to control playback", style = Lumen.type.body, color = c.text2)
+        Text("Plays in YouTube Music. Pause and skip it there", style = Lumen.type.body, color = c.text2)
         if (!remote.access && RemoteController.CONTROL_ENABLED) {
             Text(
                 "Allow Lumen to control YouTube Music in Settings to see it here and move on to the next item",
@@ -849,6 +876,11 @@ private fun RemoteLayout(remote: RemoteUi, player: PlayerState, labels: List<Lab
         }
         Spacer(Modifier.height(16.dp))
         PrimaryPill("Open YouTube Music", icon = LumenIcons.Play, onClick = actions.openYouTubeMusic)
+        // 0.6.1: the Lumen queue carries on from here, so a YouTube Music song is never a dead end.
+        if (player.nextTitle != null) {
+            Spacer(Modifier.height(10.dp))
+            SecondaryPill("Next in Lumen", icon = LumenIcons.SkipNext, onClick = actions.next)
+        }
     }
     UpNext(player)
     Spacer(Modifier.height(16.dp))
@@ -945,6 +977,18 @@ private fun UpNext(player: PlayerState) {
 @androidx.annotation.OptIn(UnstableApi::class)
 @Composable
 private fun VideoSurface(controller: MediaController, modifier: Modifier) {
+    // 0.6.1: the screen stays on while a video plays (the picture itself holds it, so nothing
+    // else on the screen has to know), and sleeps again when it pauses.
+    val viewRef = remember { arrayOfNulls<PlayerView>(1) }
+    DisposableEffect(controller) {
+        val listener = object : Player.Listener {
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                viewRef[0]?.keepScreenOn = isPlaying
+            }
+        }
+        controller.addListener(listener)
+        onDispose { controller.removeListener(listener) }
+    }
     AndroidView(
         modifier = modifier,
         factory = { context ->
@@ -953,10 +997,16 @@ private fun VideoSurface(controller: MediaController, modifier: Modifier) {
                 resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
                 setShutterBackgroundColor(android.graphics.Color.BLACK)
                 player = controller
+                keepScreenOn = controller.isPlaying
+                viewRef[0] = this
             }
         },
         update = { view -> if (view.player !== controller) view.player = controller },
-        onRelease = { view -> view.player = null },
+        onRelease = { view ->
+            view.keepScreenOn = false
+            view.player = null
+            viewRef[0] = null
+        },
     )
 }
 
@@ -1071,5 +1121,17 @@ private fun KidsPad(size: androidx.compose.ui.unit.Dp, icon: androidx.compose.ui
         contentAlignment = Alignment.Center,
     ) {
         Icon(icon, contentDescription = description, tint = if (filled) c.onAccentFill else c.text, modifier = Modifier.size(32.dp))
+    }
+}
+
+/** 0.6.1: why the current file cannot play, and Try again. */
+@Composable
+private fun PlaybackErrorLine(message: String, onRetry: () -> Unit) {
+    val c = Lumen.colours
+    ListCard(modifier = Modifier.padding(bottom = 10.dp)) {
+        Row(Modifier.padding(start = 14.dp, end = 4.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(message, style = Lumen.type.bodyS, color = c.text, modifier = Modifier.weight(1f))
+            TextAction("Try again", onClick = onRetry)
+        }
     }
 }

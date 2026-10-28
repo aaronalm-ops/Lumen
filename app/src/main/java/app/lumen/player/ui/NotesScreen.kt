@@ -72,6 +72,8 @@ fun NotesScreen(
     onClose: () -> Unit,
     onWrite: () -> Unit,
     onPlayAt: (Long) -> Unit,
+    /** 0.6.1: straight to Settings when the Gemini key is missing. */
+    onSetUp: () -> Unit = {},
 ) {
     val c = Lumen.colours
     BackHandler(onBack = onClose)
@@ -111,7 +113,7 @@ fun NotesScreen(
             if (tab == 1 && segments.isNotEmpty()) {
                 TranscriptView(segments, query, playingMs, onQuery = { query = it }, onPlayAt = onPlayAt)
             } else {
-                NotesView(item, notes, parsed, blocker, onWrite, onPlayAt)
+                NotesView(item, notes, parsed, blocker, onWrite, onPlayAt, onSetUp)
             }
         }
     }
@@ -158,8 +160,10 @@ private fun NotesView(
     blocker: String?,
     onWrite: () -> Unit,
     onPlayAt: (Long) -> Unit,
+    onSetUp: () -> Unit,
 ) {
     val c = Lumen.colours
+    val needsKey = blocker?.contains("Gemini key") == true
     LazyColumn(
         modifier = Modifier.fillMaxSize().widthIn(max = 720.dp),
         contentPadding = PaddingValues(start = Gutter, end = Gutter, top = 8.dp, bottom = 32.dp),
@@ -175,9 +179,9 @@ private fun NotesView(
                     failed -> EmptyState(
                         title = "Notes were not written",
                         body = notes?.step.orEmpty(),
-                        action = "Try again",
-                        onAction = onWrite,
-                        actionEnabled = blocker == null,
+                        action = if (needsKey) "Set up notes" else "Try again",
+                        onAction = if (needsKey) onSetUp else onWrite,
+                        actionEnabled = blocker == null || needsKey,
                         notice = if (blocker != null) ({ Text(blocker, style = Lumen.type.bodyS, color = c.text2) }) else null,
                     )
                     else -> EmptyState(
@@ -185,9 +189,9 @@ private fun NotesView(
                         body = "On Wi-Fi, Lumen sends the recording to Google's Gemini for a timed transcript, then writes " +
                             "notes from the transcript holding only what was said: every point, scripture, story, " +
                             "quote and announcement, each with its time. It takes a few minutes.",
-                        action = "Write notes",
-                        onAction = onWrite,
-                        actionEnabled = blocker == null,
+                        action = if (needsKey) "Set up notes" else "Write notes",
+                        onAction = if (needsKey) onSetUp else onWrite,
+                        actionEnabled = blocker == null || needsKey,
                         notice = if (blocker != null) ({ Text(blocker, style = Lumen.type.bodyS, color = c.text2) }) else null,
                     )
                 }

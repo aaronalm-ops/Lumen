@@ -214,13 +214,15 @@ class MainActivity : ComponentActivity() {
             RingLog.w("ui", "open with: query failed: $t")
         }
         if (name == null) name = uri.lastPathSegment?.substringAfterLast('/')
-        try {
+        val persisted = try {
             contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            true
         } catch (_: Throwable) {
             // Most senders grant a one-off permission only; the library match covers resume.
+            uri.scheme == "file"
         }
         RingLog.i("ui", "open with: $name ($size bytes) type=${intent.type}")
-        vm.openExternal(uri, name ?: "Untitled", size, intent.type ?: contentResolver.getType(uri) ?: "")
+        vm.openExternal(uri, name ?: "Untitled", size, intent.type ?: contentResolver.getType(uri) ?: "", persisted)
         intent.action = Intent.ACTION_MAIN
     }
 

@@ -147,6 +147,9 @@ class SettingsRepository(private val dao: ProgressDao) {
 
         val speeds = listOf(1.0f, 1.25f, 1.5f, 1.75f, 2.0f)
         val sleepChoices = listOf(0, 15, 30, 45, 60)
+
+        /** 0.7.0: the sleep sheet's list (minutes); the end of the recording is offered beside it. */
+        val sleepSheetChoices = listOf(15, 30, 45, 60, 90, 120)
         val crossfadeChoices = listOf(0, 2, 4, 6)
 
         fun parse(entries: List<KvEntity>): Settings {
@@ -211,6 +214,12 @@ class SettingsRepository(private val dao: ProgressDao) {
         val end = if (minutes <= 0) 0L else System.currentTimeMillis() + minutes * 60_000L
         put(KEY_SLEEP_MINUTES, minutes.toString())
         put(KEY_SLEEP_END_AT, end.toString())
+    }
+
+    /** 0.7.0: "End of this recording": the timer runs to a moment, shown as "End" (minutes -1). */
+    suspend fun setSleepUntil(endAt: Long) {
+        put(KEY_SLEEP_MINUTES, "-1")
+        put(KEY_SLEEP_END_AT, endAt.toString())
     }
 
     suspend fun clearSleep() {

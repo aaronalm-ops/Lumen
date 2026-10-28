@@ -236,6 +236,41 @@ object LumenIcons {
         }
     }
 
+    /** 0.7.0: speed, a dial with its needle. */
+    val Speed: ImageVector by lazy {
+        icon("speed") {
+            stroke { moveTo(4f, 17f); arcTo(8f, 8f, 0f, true, true, 20f, 17f) }
+            stroke { moveTo(12f, 15f); lineTo(16f, 9.5f) }
+        }
+    }
+
+    /** 0.7.0: sound, four level bars. */
+    val Sound: ImageVector by lazy {
+        icon("sound") {
+            stroke { moveTo(5f, 19f); lineTo(5f, 10f) }
+            stroke { moveTo(10f, 19f); lineTo(10f, 5f) }
+            stroke { moveTo(15f, 19f); lineTo(15f, 12f) }
+            stroke { moveTo(20f, 19f); lineTo(20f, 15f) }
+        }
+    }
+
+    /** 0.7.0: the queue, three lines with the last one short. */
+    val Queue: ImageVector by lazy {
+        icon("queue") {
+            stroke { moveTo(4f, 6f); lineTo(20f, 6f) }
+            stroke { moveTo(4f, 12f); lineTo(20f, 12f) }
+            stroke { moveTo(4f, 18f); lineTo(13f, 18f) }
+        }
+    }
+
+    /** 0.7.0: open full screen, two corners. */
+    val Expand: ImageVector by lazy {
+        icon("expand") {
+            stroke { moveTo(14f, 4f); lineTo(20f, 4f); lineTo(20f, 10f) }
+            stroke { moveTo(10f, 20f); lineTo(4f, 20f); lineTo(4f, 14f) }
+        }
+    }
+
     /** 0.6.0: notes, a page with three lines of text. */
     val Notes: ImageVector by lazy {
         icon("notes") {

@@ -630,6 +630,16 @@ The Library opens on a row of section chips under the title: All, Phone, Drive, 
 4. Tap YouTube Music and Suno: either the files or a card saying how to fill the section.
 5. Close and reopen Lumen: the Library opens on the last section chosen.
 
+## 0.7.0 (Now Playing redesign; Aaron, 2026-10-28: Option B for sermons, Option A for music)
+
+- Nothing scrolls sideways and nothing needs a long press. The hint lines are gone.
+- Sermon: title, scrubber, back 10, play, forward 30, then four tiles (Speed, Sleep, Mark, More), then the companion panel filling the rest of the screen with Notes, Chapters and Transcript. Notes opens on the section now playing (amber time); the transcript follows the line now playing until the listener scrolls ("Follow along" brings it back). On a short screen (a phone on its side) the panel becomes Notes and Chapters buttons.
+- Music: art at 82 percent width, title, scrubber, transport, then five tiles (Sleep, Labels, Sound, Queue, More), then what plays next.
+- Speed, Sleep, Sound and Queue open a list showing every choice (Sleep adds "End of this recording" and 90 and 120 minutes). More holds Sound and the two clarity switches (sermons), Speed (music), Labels, New chapter here, Keep offline, Audio only (video), Notes full screen, Show as music or sermon, Share chapter list.
+- Mark saves the moment and shows "Marked 47:12 · Name it"; naming turns it into a chapter. Each chapter row has a menu with Name it and Remove; Remove offers Undo.
+- The eyebrow says Sermon instead of Speech. Notes opened from Now Playing stay on black.
+- Library sections wrap instead of running off screen. Home's pill reads "Open player" while playing.
+
 ## 0.6.1 (red team round 2 fixes; report in RED-TEAM-ROUND-2.md)
 
 - Position: one speech rule everywhere, including a large audio file whose length is not known yet (a Drive sermon before its first play), so it resumes and takes the sermon layout from the start. The service decides from the fresh library row. A load-time save near 0:00 never replaces a place more than 30 s in.

@@ -398,15 +398,15 @@ private fun driveFolderRows(items: List<LibraryItem>): List<DriveFolderRow> {
 }
 
 /** The chips under the title: one per section, each with its count. */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 private fun SourceRow(selected: LibrarySource, counts: Map<LibrarySource, Int>, sunoHue: Int?, onSource: (LibrarySource) -> Unit) {
-    Row(
+    // 0.7.0 (red team round 2): the sections wrap onto a second line; none hide off screen.
+    androidx.compose.foundation.layout.FlowRow(
         modifier = Modifier
             .fillMaxWidth()
-            .horizontalScroll(rememberScrollState())
             .padding(horizontal = Gutter - 4.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
-        verticalAlignment = Alignment.CenterVertically,
     ) {
         LibrarySource.entries.forEach { s ->
             SourceChip(

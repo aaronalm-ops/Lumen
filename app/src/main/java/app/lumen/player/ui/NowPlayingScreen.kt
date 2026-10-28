@@ -17,6 +17,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -122,6 +123,21 @@ class NowPlayingActions(
     val openNotes: () -> Unit = {},
     /** 0.6.1: Try again after a playback error. */
     val retry: () -> Unit = {},
+    // 0.7.0: the redesign's actions.
+    val markNow: () -> Unit = {},
+    val nameMark: (Long) -> Unit = {},
+    val nameBookmark: (TimelineMark) -> Unit = {},
+    val removeMark: (TimelineMark) -> Unit = {},
+    val undoRemove: () -> Unit = {},
+    val newChapter: () -> Unit = {},
+    val writeNotes: () -> Unit = {},
+    val setUpNotes: () -> Unit = {},
+    val setSpeed: (Float) -> Unit = {},
+    val setSleepMinutes: (Int) -> Unit = {},
+    val sleepAtEnd: () -> Unit = {},
+    val setPreset: (String) -> Unit = {},
+    val queue: () -> List<QueueEntry> = { emptyList() },
+    val jumpToQueue: (Int) -> Unit = {},
 )
 
 /** The tabletop split, in this screen's own coordinates: the height above the hinge and the hinge itself. */
@@ -162,10 +178,8 @@ fun NowPlayingScreen(
     castAvailable: Boolean = false,
     /** 0.5.0: the current item is a YouTube Music link; Now Playing shows and drives YouTube Music. */
     remote: RemoteUi? = null,
-    /** 0.6.0: "working", "done", "failed" or null for the item playing's notes. */
-    notesState: String? = null,
-    /** 0.6.0: whether this item can have notes (audio on the phone or in Drive). */
-    notesAvailable: Boolean = false,
+    /** 0.7.0: notes, transcript and the mark feedback for the sermon panel. */
+    extras: SermonExtras = SermonExtras(),
 ) {
     val c = Lumen.colours
     BackHandler(enabled = !paned) { if (!kidsLocked) actions.close() }
@@ -207,9 +221,12 @@ fun NowPlayingScreen(
                 screenHeight = bounds.height
             },
     ) {
+        var sheet by remember { mutableStateOf<NowSheet?>(null) }
+        val openSheet: (NowSheet) -> Unit = { sheet = it }
         when {
-            split != null && remote == null -> TabletopLayout(split, player, controller, item, labels, settings, speech, noInterruptions, timeline, downloadProgress, actions, paned, showCast, notesState, notesAvailable)
+            split != null && remote == null -> TabletopLayout(split, player, controller, item, labels, settings, speech, timeline, actions, paned, showCast, extras, openSheet)
             player.isVideo && landscape && controller != null && remote == null -> VideoSurface(controller, Modifier.fillMaxSize().background(c.base))
+            remote == null && speech -> SermonScreen(player, controller, item, labels, settings, timeline, actions, paned, showCast, extras, openSheet)
             else -> Column(
                 Modifier
                     .fillMaxSize()
@@ -218,14 +235,75 @@ fun NowPlayingScreen(
                     .verticalScroll(rememberScrollState())
                     .padding(horizontal = Gutter),
             ) {
-                Header(labels, if (remote != null) false else speech, item, paned, actions, showCast = showCast, casting = player.casting)
+                Header(labels, false, item, paned, actions, showCast = showCast, casting = player.casting)
                 // 0.6.1: a file that cannot play says why, with one way out.
                 player.error?.let { message -> PlaybackErrorLine(message, actions.retry) }
-                when {
-                    remote != null -> RemoteLayout(remote, player, labels, actions)
-                    speech -> SpeechLayout(player, controller, item, settings, timeline, noInterruptions, downloadProgress, actions, notesState, notesAvailable)
-                    else -> MusicLayout(player, controller, item, labels, settings, audioOnly, downloadProgress, actions)
-                }
+                if (remote != null) RemoteLayout(remote, player, labels, actions)
+                else MusicLayout(player, controller, item, settings, downloadProgress, actions, openSheet)
+            }
+        }
+        sheet?.let { current ->
+            NowPlayingSheet(current, speech && remote == null, player, item, settings, extras, downloadProgress, audioOnly, actions) { sheet = it }
+        }
+    }
+}
+
+/**
+ * 0.7.0, Option B: the sermon screen. Title, scrubber and transport at the top, then Speed, Sleep,
+ * Mark and More, then the companion panel (Notes, Chapters, Transcript) filling the rest. On a
+ * screen too short for the panel (a phone on its side) everything scrolls and the panel becomes
+ * two buttons.
+ */
+@Composable
+private fun SermonScreen(
+    player: PlayerState,
+    controller: MediaController?,
+    item: LibraryItem?,
+    labels: List<LabelEntity>,
+    settings: Settings,
+    timeline: List<TimelineMark>,
+    actions: NowPlayingActions,
+    paned: Boolean,
+    showCast: Boolean,
+    extras: SermonExtras,
+    openSheet: (NowSheet) -> Unit,
+) {
+    BoxWithConstraints(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
+        val roomy = maxHeight >= 600.dp
+        val column = if (roomy) Modifier.fillMaxSize() else Modifier.fillMaxSize().verticalScroll(rememberScrollState())
+        var showChapters by remember { mutableStateOf(false) }
+        Column(column.padding(horizontal = Gutter)) {
+            Header(labels, true, item, paned, actions, showCast = showCast, casting = player.casting)
+            player.error?.let { message -> PlaybackErrorLine(message, actions.retry) }
+            if (player.isVideo && controller != null) {
+                VideoSurface(controller, Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(CardRadius)))
+                Spacer(Modifier.height(10.dp))
+            }
+            SpeechTitle(player, compact = player.isVideo || !roomy)
+            Spacer(Modifier.height(if (roomy) 18.dp else 10.dp))
+            // Paused on a speech item, Lumen is holding the place: the head turns to the ember.
+            Scrubber(
+                positionMs = player.positionMs,
+                durationMs = player.durationMs,
+                enabled = player.hasItem,
+                thin = false,
+                holdingPlace = player.hasItem && !player.isPlaying,
+                onSeek = actions.seekTo,
+            )
+            Spacer(Modifier.height(if (roomy) 18.dp else 10.dp))
+            SpeechTransport(player, settings, actions)
+            Spacer(Modifier.height(if (roomy) 18.dp else 12.dp))
+            SermonActions(player, settings, actions, openSheet)
+            MarkFeedback(extras, actions)
+            if (player.casting) CastingNote()
+            Spacer(Modifier.height(12.dp))
+            if (roomy) {
+                SermonPanel(item, player, timeline, extras, actions, Modifier.weight(1f).padding(bottom = 12.dp))
+            } else {
+                CompanionLinks(extras, timeline, actions, onChapters = { showChapters = !showChapters })
+                if (showChapters) Box(Modifier.fillMaxWidth().height(320.dp).padding(top = 8.dp)) { ChaptersTab(player, timeline, actions) }
+                if (player.nextTitle != null) UpNext(player)
+                Spacer(Modifier.height(16.dp))
             }
         }
     }
@@ -252,7 +330,7 @@ private fun Header(
         if (showCast) Spacer(Modifier.size(TouchTarget))
         Spacer(Modifier.weight(1f))
         val labelName = labels.firstOrNull()?.name
-        val eyebrow = listOfNotNull(labelName, if (speech) "Speech" else "Music").joinToString(" · ")
+        val eyebrow = listOfNotNull(labelName, if (speech) "Sermon" else "Music").joinToString(" · ")
         Text(eyebrow.uppercase(), style = Lumen.type.label, color = c.text2)
         Spacer(Modifier.weight(1f))
         if (showCast) CastButton(casting)
@@ -285,8 +363,9 @@ private fun CastingNote() {
 }
 
 /**
- * Tabletop: the part above the hinge holds the header, title, art (music) and scrubber; the part
- * below holds the chips, transport and, for speech, the chapter list. Nothing crosses the hinge.
+ * Tabletop: the part above the hinge holds the header, title, art or picture, and scrubber; the
+ * part below holds the transport, the action row and, for a sermon, Notes and Chapters as buttons.
+ * Nothing crosses the hinge.
  */
 @androidx.annotation.OptIn(UnstableApi::class)
 @Composable
@@ -298,15 +377,14 @@ private fun TabletopLayout(
     labels: List<LabelEntity>,
     settings: Settings,
     speech: Boolean,
-    noInterruptions: Boolean,
     timeline: List<TimelineMark>,
-    downloadProgress: Float?,
     actions: NowPlayingActions,
     paned: Boolean,
     showCast: Boolean,
-    notesState: String?,
-    notesAvailable: Boolean,
+    extras: SermonExtras,
+    openSheet: (NowSheet) -> Unit,
 ) {
+    var showChapters by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize()) {
         Column(
             Modifier
@@ -316,22 +394,17 @@ private fun TabletopLayout(
                 .padding(horizontal = Gutter),
         ) {
             Header(labels, speech, item, paned, actions, showCast = showCast, casting = player.casting)
-            if (speech) {
-                SpeechTitle(player, actions)
+            if (player.isVideo && controller != null) {
+                // A video takes the full width above the hinge.
+                VideoSurface(controller, Modifier.fillMaxWidth().weight(1f).clip(RoundedCornerShape(CardRadius)))
+            } else if (speech) {
+                SpeechTitle(player)
                 Spacer(Modifier.weight(1f))
             } else {
                 Row(Modifier.fillMaxWidth().weight(1f).padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    val square = Modifier.fillMaxHeight().aspectRatio(1f, matchHeightConstraintsFirst = true)
-                    if (player.isVideo && controller != null) {
-                        VideoSurface(
-                            controller,
-                            Modifier.fillMaxHeight().aspectRatio(16f / 9f, matchHeightConstraintsFirst = true).clip(RoundedCornerShape(CardRadius)),
-                        )
-                    } else {
-                        ArtBlock(item, player.title, square)
-                    }
+                    ArtBlock(item, player.title, Modifier.fillMaxHeight().aspectRatio(1f, matchHeightConstraintsFirst = true))
                     Spacer(Modifier.width(16.dp))
-                    Column(Modifier.weight(1f)) { MusicTitle(player, actions) }
+                    Column(Modifier.weight(1f)) { MusicTitle(player) }
                 }
             }
             Scrubber(
@@ -356,15 +429,17 @@ private fun TabletopLayout(
         ) {
             Spacer(Modifier.height(8.dp))
             if (speech) {
-                ChipRow(player, item, settings, noInterruptions, timeline.any { it.bookmark != null }, downloadProgress, actions, notesState, notesAvailable)
-                Spacer(Modifier.height(12.dp))
                 SpeechTransport(player, settings, actions)
-                ChapterList(player, timeline, actions)
-                if (player.nextTitle != null) UpNext(player)
-            } else {
-                MusicChips(item, labels, settings, downloadProgress, actions, player.casting)
                 Spacer(Modifier.height(12.dp))
+                SermonActions(player, settings, actions, openSheet)
+                MarkFeedback(extras, actions)
+                Spacer(Modifier.height(8.dp))
+                CompanionLinks(extras, timeline, actions, onChapters = { showChapters = !showChapters })
+                if (showChapters) Box(Modifier.fillMaxWidth().height(320.dp).padding(top = 8.dp)) { ChaptersTab(player, timeline, actions) }
+            } else {
                 MusicTransport(player, actions)
+                Spacer(Modifier.height(12.dp))
+                MusicActions(player, settings, actions, openSheet)
                 UpNext(player)
             }
             Spacer(Modifier.height(16.dp))
@@ -372,48 +447,18 @@ private fun TabletopLayout(
     }
 }
 
-/**
- * The overflow chip for a Drive item: "Keep offline" (tray glyph), "Kept" with the tick once the
- * copy exists (tap removes it), and the 1 dp line under the chip row while it downloads.
- */
-@Composable
-private fun OfflineChip(item: LibraryItem?, downloadProgress: Float?, onToggle: () -> Unit) {
-    val media = item?.media ?: return
-    if (!media.isDrive) return
-    val kept = media.offlinePath != null
-    StatusChip(
-        text = when {
-            downloadProgress != null -> "Saving"
-            kept -> "Kept"
-            else -> "Keep offline"
-        },
-        icon = if (kept) LumenIcons.Downloaded else LumenIcons.Download,
-        active = kept,
-        enabled = downloadProgress == null,
-        onClick = onToggle,
-    )
-}
 
-/** The speech title (32 sp, long press switches layouts) and the speaker. */
-@OptIn(ExperimentalFoundationApi::class)
+/** The sermon title and the speaker. 0.7.0: no hidden long press; "Show as music" is in More. */
 @Composable
-private fun SpeechTitle(player: PlayerState, actions: NowPlayingActions) {
+private fun SpeechTitle(player: PlayerState, compact: Boolean = false) {
     val c = Lumen.colours
-    val view = LocalView.current
-    Spacer(Modifier.height(8.dp))
+    Spacer(Modifier.height(if (compact) 2.dp else 8.dp))
     Text(
         player.title.ifBlank { "Nothing loaded" },
-        style = Lumen.type.displayL,
+        style = if (compact) Lumen.type.displayS else Lumen.type.displayL,
         color = c.text,
         maxLines = 2,
         overflow = TextOverflow.Ellipsis,
-        modifier = Modifier.combinedClickable(
-            onClick = {},
-            onLongClick = {
-                view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-                actions.toggleLayout()
-            },
-        ),
     )
     if (player.artist.isNotBlank()) {
         Spacer(Modifier.height(6.dp))
@@ -435,285 +480,21 @@ private fun SpeechTransport(player: PlayerState, settings: Settings, actions: No
     }
 }
 
-@Composable
-private fun SpeechLayout(
-    player: PlayerState,
-    controller: MediaController?,
-    item: LibraryItem?,
-    settings: Settings,
-    timeline: List<TimelineMark>,
-    noInterruptions: Boolean,
-    downloadProgress: Float?,
-    actions: NowPlayingActions,
-    notesState: String?,
-    notesAvailable: Boolean,
-) {
-    // 0.6.1: a long video (a recorded service) keeps its picture in the sermon layout.
-    if (player.isVideo && controller != null) {
-        Spacer(Modifier.height(4.dp))
-        VideoSurface(controller, Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(CardRadius)))
-        Spacer(Modifier.height(12.dp))
-    }
-    SpeechTitle(player, actions)
-    Spacer(Modifier.height(12.dp))
-    ChipRow(player, item, settings, noInterruptions, timeline.any { it.bookmark != null }, downloadProgress, actions, notesState, notesAvailable)
-    Spacer(Modifier.height(16.dp))
-    // Paused on a speech item, Lumen is holding the place: the head turns to the ember.
-    Scrubber(
-        positionMs = player.positionMs,
-        durationMs = player.durationMs,
-        enabled = player.hasItem,
-        thin = false,
-        holdingPlace = player.hasItem && !player.isPlaying,
-        onSeek = actions.seekTo,
-    )
-    Spacer(Modifier.height(24.dp))
-    SpeechTransport(player, settings, actions)
-    ChapterList(player, timeline, actions)
-    if (player.nextTitle != null) UpNext(player)
-    Spacer(Modifier.height(24.dp))
-}
 
-/**
- * 0.4.0: typed chapters and bookmarks together by time. Tap seeks, long press removes. The row
- * the playhead is in carries the 6 dp ink dot and an ink timecode; nothing animates when it moves
- * on. The overflow holds "Export notes".
- */
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-private fun ChapterList(player: PlayerState, timeline: List<TimelineMark>, actions: NowPlayingActions) {
-    val c = Lumen.colours
-    if (timeline.isEmpty()) return
-    var menu by remember { mutableStateOf(false) }
-    val current = timeline.indexOfLast { it.positionMs <= player.positionMs }
-    Spacer(Modifier.height(20.dp))
-    SectionLabel(
-        "Chapters",
-        count = timeline.size.toString(),
-        trailing = {
-            Box {
-                IconTap(LumenIcons.More, "More for chapters", c.text2, size = 20.dp) { menu = true }
-                DropdownMenu(
-                    expanded = menu,
-                    onDismissRequest = { menu = false },
-                    shape = RoundedCornerShape(CardRadius),
-                    containerColor = c.elevated,
-                    tonalElevation = 0.dp,
-                    shadowElevation = 0.dp,
-                    border = BorderStroke(1.dp, c.line),
-                ) {
-                    DropdownMenuItem(
-                        text = { Text("Export notes", style = Lumen.type.body, color = c.text) },
-                        onClick = {
-                            menu = false
-                            actions.exportNotes()
-                        },
-                    )
-                }
-            }
-        },
-    )
-    timeline.forEachIndexed { index, mark ->
-        val isCurrent = index == current
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .height(TouchTarget)
-                .combinedClickable(onClick = { actions.seekTo(mark.positionMs) }, onLongClick = { actions.deleteMark(mark) }),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Box(Modifier.size(16.dp), contentAlignment = Alignment.Center) {
-                when {
-                    isCurrent -> Box(Modifier.size(6.dp).background(c.accentInk, CircleShape))
-                    mark.bookmark != null -> Icon(LumenIcons.BookmarkFilled, contentDescription = null, tint = c.text2, modifier = Modifier.size(16.dp))
-                }
-            }
-            Spacer(Modifier.width(10.dp))
-            Text(
-                mark.title,
-                style = if (mark.isChapter) Lumen.type.body else Lumen.type.bodyS,
-                color = if (mark.isChapter) c.text else c.text2,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f),
-            )
-            Spacer(Modifier.width(8.dp))
-            Text(formatTime(mark.positionMs), style = Lumen.type.timeS, color = if (isCurrent) c.accentInk else c.text2)
-        }
-        if (index < timeline.lastIndex) HorizontalDivider(color = c.line, thickness = 1.dp)
-    }
-    Text("Tap to seek, long press to remove", style = Lumen.type.bodyS, color = c.text3, modifier = Modifier.padding(top = 6.dp))
-}
 
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun ChipRow(
-    player: PlayerState,
-    item: LibraryItem?,
-    settings: Settings,
-    noInterruptions: Boolean,
-    hasBookmarks: Boolean,
-    downloadProgress: Float?,
-    actions: NowPlayingActions,
-    notesState: String?,
-    notesAvailable: Boolean,
-) {
-    val c = Lumen.colours
-    val view = LocalView.current
-    val sleepLeft = if (settings.sleepActive) ((settings.sleepEndAt - System.currentTimeMillis()) / 60_000L + 1).coerceAtLeast(1) else 0L
-    // 0.6.1: the chips wrap onto a second line instead of running off the screen.
-    FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        // 0.6.0: notes and transcript. Active once written; "Writing" while the job runs.
-        if (notesAvailable) {
-            StatusChip(
-                text = when (notesState) {
-                    "working" -> "Writing"
-                    else -> "Notes"
-                },
-                icon = LumenIcons.Notes,
-                active = notesState == "done",
-                onClick = actions.openNotes,
-            )
-        }
-        // 0.5.0: speed stays on the phone, so the chip is disabled while casting.
-        StatusChip(text = speedLabel(player.speed), active = player.speed != 1.0f, enabled = !player.casting, onClick = {
-            view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-            actions.cycleSpeed()
-        })
-        StatusChip(
-            text = settings.eqPreset,
-            active = settings.eqPreset != "Flat",
-            enabled = settings.eqEngine != "none",
-            onClick = actions.cyclePreset,
-        )
-        ClarityChip(settings, actions)
-        if (!noInterruptions) {
-            StatusChip(
-                text = if (sleepLeft > 0) "$sleepLeft min" else "Sleep",
-                icon = LumenIcons.Moon,
-                active = sleepLeft > 0,
-                onClick = {
-                    view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
-                    actions.cycleSleep()
-                },
-            )
-        }
-        StatusChip(
-            text = "Mark",
-            icon = if (hasBookmarks) LumenIcons.BookmarkFilled else LumenIcons.Bookmark,
-            enabled = player.hasItem,
-            onLongClick = {
-                view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-                actions.openChapterSheet()
-            },
-            onClick = {
-                view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
-                actions.addBookmark()
-            },
-        )
-        OfflineChip(item, downloadProgress, actions.toggleOffline)
-    }
-    if (downloadProgress != null) ProgressLine(fraction = downloadProgress, thickness = 1.dp, modifier = Modifier.padding(top = 4.dp))
-    if (player.casting) CastingNote()
-    Text(
-        "Long press Mark for a chapter, the title to switch layouts",
-        style = Lumen.type.bodyS,
-        color = c.text3,
-        modifier = Modifier.padding(top = 2.dp),
-    )
-}
 
-/**
- * 0.4.0: "Clarity", the speech sound options as a chip menu: Level out voices and Trim silences,
- * the same two switches as Settings, Sound. Active (ice on black) while either is on. Level out
- * needs the DynamicsProcessing engine, so it is disabled on the Equaliser fallback.
- */
-@Composable
-private fun ClarityChip(settings: Settings, actions: NowPlayingActions) {
-    val c = Lumen.colours
-    var open by remember { mutableStateOf(false) }
-    val levelOutAvailable = settings.eqEngine != "eq" && settings.eqEngine != "none"
-    Box {
-        StatusChip(
-            text = "Clarity",
-            active = (settings.levelOutVoices && levelOutAvailable) || settings.trimSilences,
-            onClick = { open = true },
-        )
-        DropdownMenu(
-            expanded = open,
-            onDismissRequest = { open = false },
-            shape = RoundedCornerShape(CardRadius),
-            containerColor = c.elevated,
-            // No shadows on black (DESIGN.md section 4): height is the surface step and the line.
-            tonalElevation = 0.dp,
-            shadowElevation = 0.dp,
-            border = BorderStroke(1.dp, c.line),
-        ) {
-            MenuToggle(
-                title = "Level out voices",
-                explanation = if (levelOutAvailable) "Brings quiet and loud speakers closer" else "Needs an equaliser this phone does not offer",
-                checked = settings.levelOutVoices && levelOutAvailable,
-                enabled = levelOutAvailable,
-                onChange = actions.setLevelOutVoices,
-            )
-            MenuToggle(
-                title = "Trim silences",
-                explanation = "Skips long pauses in speech",
-                checked = settings.trimSilences,
-                enabled = true,
-                onChange = actions.setTrimSilences,
-            )
-        }
-    }
-}
 
-/** One switch row inside a chip menu: title, one line, and the label sheet's tick box. */
-@Composable
-private fun MenuToggle(title: String, explanation: String, checked: Boolean, enabled: Boolean, onChange: (Boolean) -> Unit) {
-    val c = Lumen.colours
-    DropdownMenuItem(
-        text = {
-            Column(Modifier.padding(vertical = 6.dp)) {
-                Text(title, style = Lumen.type.body, color = if (enabled) c.text else c.text3)
-                Text(explanation, style = Lumen.type.bodyS, color = c.text2)
-            }
-        },
-        trailingIcon = {
-            Box(
-                Modifier
-                    .size(24.dp)
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(if (checked) c.accentFill else c.surface)
-                    .border(1.dp, if (checked) c.accentFill else c.switchOffEdge, RoundedCornerShape(6.dp)),
-                contentAlignment = Alignment.Center,
-            ) {
-                if (checked) Icon(LumenIcons.Check, contentDescription = null, tint = c.onAccentFill, modifier = Modifier.size(16.dp))
-            }
-        },
-        enabled = enabled,
-        onClick = { onChange(!checked) },
-    )
-}
 
-/** The music title (22 sp, long press switches layouts) and the artist. */
-@OptIn(ExperimentalFoundationApi::class)
+/** The music title and the artist. 0.7.0: no hidden long press; "Show as sermon" is in More. */
 @Composable
-private fun MusicTitle(player: PlayerState, actions: NowPlayingActions) {
+private fun MusicTitle(player: PlayerState) {
     val c = Lumen.colours
-    val view = LocalView.current
     Text(
         player.title.ifBlank { "Nothing loaded" },
         style = Lumen.type.displayS,
         color = c.text,
         maxLines = 2,
         overflow = TextOverflow.Ellipsis,
-        modifier = Modifier.combinedClickable(
-            onClick = {},
-            onLongClick = {
-                view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-                actions.toggleLayout()
-            },
-        ),
     )
     if (player.artist.isNotBlank()) {
         Spacer(Modifier.height(4.dp))
@@ -721,34 +502,6 @@ private fun MusicTitle(player: PlayerState, actions: NowPlayingActions) {
     }
 }
 
-/** Label chips, the preset chip and the Drive chip, with the download line under them. */
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun MusicChips(
-    item: LibraryItem?,
-    labels: List<LabelEntity>,
-    settings: Settings,
-    downloadProgress: Float?,
-    actions: NowPlayingActions,
-    casting: Boolean = false,
-) {
-    // 0.6.1: the chips wrap onto a second line instead of running off the screen.
-    FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        labels.take(2).forEach { LabelChip(name = it.name, hue = it.hue, onClick = actions.openLabelSheet) }
-        StatusChip(text = settings.eqPreset, active = settings.eqPreset != "Flat", enabled = settings.eqEngine != "none", onClick = actions.cyclePreset)
-        // 0.6.1 (red team round 2): music gets the sleep timer too, for bedtime songs.
-        val sleepLeft = if (settings.sleepActive) ((settings.sleepEndAt - System.currentTimeMillis()) / 60_000L + 1).coerceAtLeast(1) else 0L
-        StatusChip(
-            text = if (sleepLeft > 0) "$sleepLeft min" else "Sleep",
-            icon = LumenIcons.Moon,
-            active = sleepLeft > 0,
-            onClick = actions.cycleSleep,
-        )
-        OfflineChip(item, downloadProgress, actions.toggleOffline)
-    }
-    if (downloadProgress != null) ProgressLine(fraction = downloadProgress, thickness = 1.dp, modifier = Modifier.padding(top = 4.dp))
-    if (casting) CastingNote()
-}
 
 /** Shuffle, previous, the 72 dp play button, next, repeat. */
 @Composable
@@ -780,19 +533,22 @@ private fun MusicTransport(player: PlayerState, actions: NowPlayingActions) {
     }
 }
 
+/**
+ * 0.7.0, Option A: art (or the picture), title, scrubber, transport, then Sleep, Labels, Sound,
+ * Queue and More in one row, and what plays next.
+ */
 @androidx.annotation.OptIn(UnstableApi::class)
 @Composable
 private fun MusicLayout(
     player: PlayerState,
     controller: MediaController?,
     item: LibraryItem?,
-    labels: List<LabelEntity>,
     settings: Settings,
-    audioOnly: Boolean,
     downloadProgress: Float?,
     actions: NowPlayingActions,
+    openSheet: (NowSheet) -> Unit,
 ) {
-    Spacer(Modifier.height(10.dp))
+    Spacer(Modifier.height(6.dp))
     if (player.isVideo && controller != null) {
         VideoSurface(
             controller,
@@ -801,24 +557,22 @@ private fun MusicLayout(
                 .aspectRatio(16f / 9f)
                 .clip(RoundedCornerShape(CardRadius)),
         )
-        Spacer(Modifier.height(10.dp))
-        ToggleRow(
-            title = "Audio only when you leave",
-            explanation = "Keeps the sound going and drops the picture while the screen is away",
-            checked = audioOnly,
-            onChange = actions.setAudioOnly,
-        )
     } else {
-        ArtBlock(item, player.title)
+        // The art keeps a margin so the controls stay within reach.
+        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+            ArtBlock(item, player.title, Modifier.fillMaxWidth(0.82f).aspectRatio(1f))
+        }
     }
     Spacer(Modifier.height(16.dp))
-    MusicTitle(player, actions)
-    Spacer(Modifier.height(8.dp))
-    MusicChips(item, labels, settings, downloadProgress, actions, player.casting)
-    Spacer(Modifier.height(8.dp))
+    MusicTitle(player)
+    if (downloadProgress != null) ProgressLine(fraction = downloadProgress, thickness = 1.dp, modifier = Modifier.padding(top = 6.dp))
+    Spacer(Modifier.height(10.dp))
     Scrubber(positionMs = player.positionMs, durationMs = player.durationMs, enabled = player.hasItem, thin = true, onSeek = actions.seekTo)
-    Spacer(Modifier.height(16.dp))
+    Spacer(Modifier.height(14.dp))
     MusicTransport(player, actions)
+    Spacer(Modifier.height(16.dp))
+    MusicActions(player, settings, actions, openSheet)
+    if (player.casting) CastingNote()
     UpNext(player)
     Spacer(Modifier.height(16.dp))
 }

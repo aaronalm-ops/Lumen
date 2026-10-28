@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
@@ -151,9 +152,13 @@ private fun TimeTap(ms: Long, onPlayAt: (Long) -> Unit, here: Boolean = false) {
     )
 }
 
+/**
+ * The notes as a list. 0.7.0: also the Notes tab of Now Playing's sermon panel ([compact]: no
+ * title block, tighter padding), where [hereMs] marks the section now playing with the amber time.
+ */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun NotesView(
+internal fun NotesView(
     item: LibraryItem,
     notes: NotesEntity?,
     parsed: SermonNotes?,
@@ -161,13 +166,17 @@ private fun NotesView(
     onWrite: () -> Unit,
     onPlayAt: (Long) -> Unit,
     onSetUp: () -> Unit,
+    hereMs: Long? = null,
+    compact: Boolean = false,
 ) {
     val c = Lumen.colours
     val needsKey = blocker?.contains("Gemini key") == true
+    val hereSection = if (hereMs == null || parsed == null) -1 else parsed.sections.indexOfLast { it.ms in 0..hereMs }
     LazyColumn(
         modifier = Modifier.fillMaxSize().widthIn(max = 720.dp),
-        contentPadding = PaddingValues(start = Gutter, end = Gutter, top = 8.dp, bottom = 32.dp),
-        verticalArrangement = Arrangement.spacedBy(18.dp),
+        contentPadding = if (compact) PaddingValues(start = 14.dp, end = 10.dp, top = 6.dp, bottom = 20.dp)
+        else PaddingValues(start = Gutter, end = Gutter, top = 8.dp, bottom = 32.dp),
+        verticalArrangement = Arrangement.spacedBy(if (compact) 14.dp else 18.dp),
     ) {
         val working = notes?.status == NotesRepository.STATUS_WORKING
         val failed = notes?.status == NotesRepository.STATUS_FAILED
@@ -202,7 +211,7 @@ private fun NotesView(
         if (working) item { StatusCard("Writing the notes again", notes?.step.orEmpty()) }
         if (failed) item { StatusCard("The last try did not finish", notes?.step.orEmpty()) }
 
-        item {
+        if (!compact) item {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text(parsed.title.ifBlank { item.media.title }, style = Lumen.type.displayS, color = c.text)
                 val meta = buildList {
@@ -223,7 +232,7 @@ private fun NotesView(
                 }
             }
         }
-        items(parsed.sections) { section ->
+        itemsIndexed(parsed.sections) { index, section ->
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
@@ -232,7 +241,7 @@ private fun NotesView(
                         color = c.text,
                         modifier = Modifier.weight(1f),
                     )
-                    TimeTap(section.ms, onPlayAt)
+                    TimeTap(section.ms, onPlayAt, here = index == hereSection)
                 }
                 if (section.scriptures.isNotEmpty()) {
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -326,13 +335,20 @@ private fun StatusCard(title: String, body: String) {
     }
 }
 
+/**
+ * The transcript, searchable. 0.7.0: also the Transcript tab of Now Playing's sermon panel, where
+ * [follow] keeps the line now playing in view until the listener scrolls away ("Follow along"
+ * brings it back) and the search field is left out.
+ */
 @Composable
-private fun TranscriptView(
+internal fun TranscriptView(
     segments: List<SegmentEntity>,
     query: String,
     playingMs: Long?,
     onQuery: (String) -> Unit,
     onPlayAt: (Long) -> Unit,
+    follow: Boolean = false,
+    showSearch: Boolean = true,
 ) {
     val c = Lumen.colours
     val q = query.trim()
@@ -340,31 +356,58 @@ private fun TranscriptView(
     val nowIndex = playingMs?.let { ms -> segments.indexOfLast { it.startMs <= ms } } ?: -1
     val nowId = segments.getOrNull(nowIndex)?.id
     val listState = rememberLazyListState()
+    val header = 1
+    var following by remember { mutableStateOf(follow) }
+    var autoAt by remember { mutableStateOf(0L) }
     // Opens at the line now playing, when this item is the one playing and nothing is searched.
     LaunchedEffect(segments.size) {
-        if (q.isEmpty() && nowIndex > 2) listState.scrollToItem((nowIndex - 2).coerceAtLeast(0) + 1)
+        if (q.isEmpty() && nowIndex > 2) listState.scrollToItem((nowIndex - 2).coerceAtLeast(0) + header)
+    }
+    if (follow) {
+        LaunchedEffect(nowIndex, following) {
+            if (following && q.isEmpty() && nowIndex >= 0) {
+                autoAt = System.currentTimeMillis()
+                listState.animateScrollToItem((nowIndex - 1).coerceAtLeast(0) + header)
+            }
+        }
+        LaunchedEffect(listState.isScrollInProgress) {
+            if (listState.isScrollInProgress && System.currentTimeMillis() - autoAt > 1_500) following = false
+        }
     }
     LazyColumn(
         state = listState,
         modifier = Modifier.fillMaxSize().widthIn(max = 720.dp),
-        contentPadding = PaddingValues(start = Gutter, end = Gutter, top = 8.dp, bottom = 32.dp),
+        contentPadding = if (showSearch) PaddingValues(start = Gutter, end = Gutter, top = 8.dp, bottom = 32.dp)
+        else PaddingValues(start = 8.dp, end = 10.dp, top = 4.dp, bottom = 20.dp),
     ) {
         item {
-            SearchField(value = query, placeholder = "Search what was said", onChange = onQuery)
-            Text(
-                if (q.length >= 2) "${shown.size} lines with \"$q\"" else "${segments.size} lines. Tap a time to play from it",
-                style = Lumen.type.bodyS,
-                color = c.text3,
-                modifier = Modifier.padding(top = 8.dp, bottom = 4.dp),
-            )
+            if (showSearch) {
+                SearchField(value = query, placeholder = "Search what was said", onChange = onQuery)
+                Text(
+                    if (q.length >= 2) "${shown.size} lines with \"$q\"" else "${segments.size} lines. Tap a time to play from it",
+                    style = Lumen.type.bodyS,
+                    color = c.text3,
+                    modifier = Modifier.padding(top = 8.dp, bottom = 4.dp),
+                )
+            } else if (follow && !following) {
+                TextAction("Follow along", onClick = { following = true })
+            } else {
+                Spacer(Modifier.height(1.dp))
+            }
         }
         items(shown, key = { it.id }) { seg ->
+            val here = seg.id == nowId
             Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.Top) {
-                Box(Modifier.width(72.dp)) { TimeTap(seg.startMs, onPlayAt, here = seg.id == nowId) }
+                Box(Modifier.width(72.dp)) { TimeTap(seg.startMs, onPlayAt, here = here) }
                 Text(
                     highlight(seg.text, q, c.accentInk),
                     style = Lumen.type.body,
-                    color = if (seg.text.startsWith("[")) c.text3 else c.text,
+                    color = when {
+                        here -> c.text
+                        seg.text.startsWith("[") -> c.text3
+                        follow -> c.text2
+                        else -> c.text
+                    },
                     modifier = Modifier.weight(1f).padding(top = 5.dp),
                 )
             }

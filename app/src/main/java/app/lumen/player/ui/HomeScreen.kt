@@ -214,9 +214,11 @@ private fun ContinueCard(item: LibraryItem?, speech: Boolean, player: PlayerStat
                 Text(if (duration > 0) formatTime(duration) else "--:--", style = Lumen.type.timeS, color = c.text2)
             }
             Spacer(Modifier.height(16.dp))
+            // 0.7.0 (red team round 2): while it plays, the pill says what it does (opens the player)
+            // instead of showing a pause icon that does not pause.
             PrimaryPill(
-                text = if (live && player.isPlaying) "Playing" else "Resume",
-                icon = if (live && player.isPlaying) LumenIcons.Pause else LumenIcons.Play,
+                text = if (live && player.isPlaying) "Open player" else "Resume",
+                icon = if (live && player.isPlaying) null else LumenIcons.Play,
                 onClick = onResume,
             )
         }

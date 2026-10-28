@@ -148,6 +148,10 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
     val openSegments by vm.openSegments.collectAsState()
     val notesByUri by vm.notesByUri.collectAsState()
     val notesQuery by vm.notesQuery.collectAsState()
+    val nowNotes by vm.nowNotes.collectAsState()
+    val nowSegments by vm.nowSegments.collectAsState()
+    val justMarked by vm.justMarked.collectAsState()
+    val lastRemoved by vm.lastRemoved.collectAsState()
     val geminiKeyHint by vm.geminiKeyHint.collectAsState()
     val transcriptHits by vm.transcriptHits.collectAsState()
 
@@ -200,6 +204,28 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
         openYouTubeMusic = vm::openYouTubeMusic,
         openNotes = { currentItem?.let { vm.openNotesFor(it) } },
         retry = vm::retryPlayback,
+        markNow = vm::markNow,
+        nameMark = vm::nameMark,
+        nameBookmark = vm::nameBookmark,
+        removeMark = vm::removeMark,
+        undoRemove = vm::undoRemove,
+        newChapter = vm::newChapterHere,
+        writeNotes = {
+            currentItem?.let {
+                actions.requestNotifications()
+                vm.writeNotes(it)
+            }
+        },
+        setUpNotes = {
+            vm.nowPlayingOpen.value = false
+            vm.screen.value = Screen.Settings
+        },
+        setSpeed = vm::setSpeed,
+        setSleepMinutes = vm::setSleepMinutes,
+        sleepAtEnd = vm::sleepAtEnd,
+        setPreset = vm::setPreset,
+        queue = vm::queueSnapshot,
+        jumpToQueue = vm::jumpToQueue,
     )
 
     val nowPlaying: @Composable (Boolean) -> Unit = { paned ->
@@ -220,8 +246,14 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
             hingeInWindow = hinge,
             castAvailable = castAvailable,
             remote = remote,
-            notesState = currentItem?.let { notesByUri[it.uri]?.status },
-            notesAvailable = currentItem?.let { !it.media.isYtm && !it.media.isVideo } ?: false,
+            extras = SermonExtras(
+                notes = nowNotes,
+                segments = nowSegments,
+                notesBlocker = currentItem?.let { vm.notesBlocker(it) },
+                notesAvailable = currentItem?.let { !it.media.isYtm && !it.media.isVideo } ?: false,
+                justMarked = justMarked,
+                lastRemoved = lastRemoved,
+            ),
         )
     }
 
@@ -474,9 +506,11 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
         // 0.6.0: a recording's notes and transcript, over everything, in the chosen appearance.
         val notesFor = notesItem
         if (notesFor != null && !kidsLocked) {
-            LumenTheme(dark = appearanceDark) {
+            // 0.7.0: opened from Now Playing it stays on black, as the red team asked.
+            val notesDark = appearanceDark || nowPlayingOpen || twoPane
+            LumenTheme(dark = notesDark) {
                 val c = Lumen.colours
-                SystemBars(light = !appearanceDark, background = c.base)
+                SystemBars(light = !notesDark, background = c.base)
                 NotesScreen(
                     item = notesFor,
                     notes = openNotes,

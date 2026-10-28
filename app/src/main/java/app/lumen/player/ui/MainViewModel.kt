@@ -171,6 +171,9 @@ data class TimelineMark(
     val isChapter: Boolean get() = chapter != null
 }
 
+/** 0.7.0: one row of the Queue sheet. */
+data class QueueEntry(val index: Int, val title: String, val current: Boolean)
+
 /** 0.6.0: a line said in a transcribed recording that matches the Library search. */
 data class TranscriptHit(val item: LibraryItem, val ms: Long, val text: String)
 
@@ -908,6 +911,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun closeChapterSheet() {
+        renamingBookmarkAt = null
         chapterSheetAt.value = null
         chapterSheetUri = null
     }
@@ -918,7 +922,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val uri = chapterSheetUri ?: return false
         val name = title.trim()
         if (name.isBlank()) return false
-        viewModelScope.launch { mediaRepo.addChapter(uri, at, name) }
+        val renaming = renamingBookmarkAt
+        renamingBookmarkAt = null
+        viewModelScope.launch {
+            mediaRepo.addChapter(uri, at, name)
+            // 0.7.0: a named bookmark becomes the chapter; the plain bookmark goes.
+            if (renaming != null) mediaRepo.bookmarksFor(uri).filter { it.positionMs == renaming }.forEach { mediaRepo.deleteBookmark(it) }
+        }
         chapterSheetAt.value = null
         chapterSheetUri = null
         return true
@@ -1435,6 +1445,116 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 c.play()
             }
             RingLog.i("notes", "play ${item.media.title} from $target")
+        }
+    }
+
+
+    // 0.7.0: Now Playing redesign (Aaron, 2026-10-28: B for sermons, A for music).
+
+    /** The notes and transcript of the item playing, for the sermon companion panel. */
+    val nowNotes: StateFlow<NotesEntity?> = currentItem.map { it?.uri }.distinctUntilChanged().flatMapLatest { uri ->
+        if (uri == null) flowOf(null) else notesRepo.notes(uri)
+    }.state(null)
+
+    val nowSegments: StateFlow<List<SegmentEntity>> = currentItem.map { it?.uri }.distinctUntilChanged().flatMapLatest { uri ->
+        if (uri == null) flowOf(emptyList()) else notesRepo.segments(uri)
+    }.state(emptyList())
+
+    fun setSpeed(speed: Float) {
+        if (_player.value.casting) return
+        withController { it.setPlaybackSpeed(speed) }
+        viewModelScope.launch { settingsRepo.setSpeed(speed) }
+    }
+
+    fun setSleepMinutes(minutes: Int) {
+        viewModelScope.launch { settingsRepo.setSleep(minutes) }
+    }
+
+    /** Sleep at the end of the item playing, at the current speed. */
+    fun sleepAtEnd() {
+        val p = _player.value
+        if (!p.hasItem || p.durationMs <= 0) return
+        val left = ((p.durationMs - p.positionMs).coerceAtLeast(0L) / p.speed.coerceAtLeast(0.5f)).toLong()
+        viewModelScope.launch { settingsRepo.setSleepUntil(System.currentTimeMillis() + left + 2_000L) }
+    }
+
+    /** The moment just marked, for "Marked 47:12 · Name it"; cleared after a few seconds. */
+    val justMarked = MutableStateFlow<Long?>(null)
+    private var markJob: Job? = null
+
+    fun markNow() {
+        val p = _player.value
+        if (!p.hasItem) return
+        val at = p.positionMs
+        viewModelScope.launch { mediaRepo.addBookmark(p.mediaId, at) }
+        justMarked.value = at
+        markJob?.cancel()
+        markJob = viewModelScope.launch {
+            delay(6_000)
+            justMarked.value = null
+        }
+    }
+
+    /** "Name it": the chapter sheet at the marked moment; the plain bookmark gives way to the chapter. */
+    private var renamingBookmarkAt: Long? = null
+
+    fun nameMark(at: Long) {
+        val p = _player.value
+        if (!p.hasItem) return
+        renamingBookmarkAt = at
+        chapterSheetUri = p.mediaId
+        chapterSheetAt.value = at
+        justMarked.value = null
+    }
+
+    fun nameBookmark(mark: TimelineMark) {
+        val b = mark.bookmark ?: return
+        renamingBookmarkAt = b.positionMs
+        chapterSheetUri = b.mediaUri
+        chapterSheetAt.value = b.positionMs
+    }
+
+    /** A removed chapter or bookmark, offered back as "Removed · Undo" for a few seconds. */
+    val lastRemoved = MutableStateFlow<TimelineMark?>(null)
+    private var removedJob: Job? = null
+
+    fun removeMark(mark: TimelineMark) {
+        deleteMark(mark)
+        lastRemoved.value = mark
+        removedJob?.cancel()
+        removedJob = viewModelScope.launch {
+            delay(6_000)
+            lastRemoved.value = null
+        }
+    }
+
+    fun undoRemove() {
+        val mark = lastRemoved.value ?: return
+        lastRemoved.value = null
+        viewModelScope.launch {
+            mark.chapter?.let { mediaRepo.addChapter(it.mediaUri, it.positionMs, it.title) }
+            mark.bookmark?.let { mediaRepo.addBookmark(it.mediaUri, it.positionMs) }
+        }
+    }
+
+    /** "New chapter here" from the More sheet. */
+    fun newChapterHere() = openChapterSheet()
+
+    /** The queue as it stands, for the Queue sheet. */
+    fun queueSnapshot(): List<QueueEntry> {
+        val c = _controller.value ?: return emptyList()
+        return (0 until c.mediaItemCount).map { i ->
+            val item = c.getMediaItemAt(i)
+            QueueEntry(i, item.mediaMetadata.title?.toString()?.ifBlank { null } ?: item.mediaId.substringAfterLast('/'), i == c.currentMediaItemIndex)
+        }
+    }
+
+    fun jumpToQueue(index: Int) {
+        withController { c ->
+            if (index in 0 until c.mediaItemCount) {
+                c.seekToDefaultPosition(index)
+                c.play()
+            }
         }
     }
 

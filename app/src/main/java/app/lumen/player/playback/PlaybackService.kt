@@ -162,6 +162,9 @@ class PlaybackService : MediaLibraryService() {
     )
     private var heartbeat: Job? = null
     private var sleepJob: Job? = null
+
+    /** 0.7.0: the sleep timer is set to the end of the recording playing. */
+    private var sleepAtEnd = false
     private var transitionJob: Job? = null
 
     /**
@@ -348,7 +351,23 @@ class PlaybackService : MediaLibraryService() {
             }
         }
         scope.launch {
-            settingsRepo.settings.map { it.sleepEndAt }.distinctUntilChanged().collect { endAt -> scheduleSleep(endAt) }
+            settingsRepo.settings.map { it.sleepEndAt to it.sleepMinutes }.distinctUntilChanged().collect { (endAt, minutes) ->
+                // 0.7.0: "End of this recording" pauses when the item ends, wherever the playhead
+                // has been moved meanwhile; no clock and no fade.
+                if (minutes == -1) {
+                    sleepJob?.cancel()
+                    sleepJob = null
+                    sleepAtEnd = true
+                    exo.pauseAtEndOfMediaItems = true
+                    RingLog.i("sleep", "set to the end of this recording")
+                } else {
+                    if (sleepAtEnd) {
+                        sleepAtEnd = false
+                        exo.pauseAtEndOfMediaItems = false
+                    }
+                    scheduleSleep(endAt)
+                }
+            }
         }
     }
 
@@ -973,6 +992,13 @@ class PlaybackService : MediaLibraryService() {
         override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
             if (playWhenReady) return
             resetFade("pause")
+            if (reason == Player.PLAY_WHEN_READY_CHANGE_REASON_END_OF_MEDIA_ITEM && sleepAtEnd) {
+                RingLog.i("sleep", "end of the recording reached, paused")
+                sleepAtEnd = false
+                exo.pauseAtEndOfMediaItems = false
+                scope.launch { settingsRepo.clearSleep() }
+                return
+            }
             if (reason == Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST && !sleepFiring && sleepJob?.isActive == true) {
                 RingLog.i("sleep", "timer cancelled by a manual pause")
                 scope.launch { settingsRepo.clearSleep() }

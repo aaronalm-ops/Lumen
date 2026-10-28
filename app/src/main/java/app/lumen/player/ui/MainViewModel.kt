@@ -1475,11 +1475,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val p = _player.value
         if (!p.hasItem || p.durationMs <= 0) return
         val left = ((p.durationMs - p.positionMs).coerceAtLeast(0L) / p.speed.coerceAtLeast(0.5f)).toLong()
-        viewModelScope.launch { settingsRepo.setSleepUntil(System.currentTimeMillis() + left + 2_000L) }
+        // The service pauses at the item's end whatever the clock says; the time here only keeps the
+        // tile showing "End" until then, with room for back skips and buffering.
+        viewModelScope.launch { settingsRepo.setSleepUntil(System.currentTimeMillis() + left + 30 * 60_000L) }
     }
 
     /** The moment just marked, for "Marked 47:12 · Name it"; cleared after a few seconds. */
     val justMarked = MutableStateFlow<Long?>(null)
+    private var justMarkedUri: String? = null
     private var markJob: Job? = null
 
     fun markNow() {
@@ -1487,6 +1490,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (!p.hasItem) return
         val at = p.positionMs
         viewModelScope.launch { mediaRepo.addBookmark(p.mediaId, at) }
+        justMarkedUri = p.mediaId
         justMarked.value = at
         markJob?.cancel()
         markJob = viewModelScope.launch {
@@ -1499,10 +1503,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var renamingBookmarkAt: Long? = null
 
     fun nameMark(at: Long) {
-        val p = _player.value
-        if (!p.hasItem) return
+        val uri = justMarkedUri ?: _player.value.mediaId.takeIf { it.isNotBlank() } ?: return
         renamingBookmarkAt = at
-        chapterSheetUri = p.mediaId
+        chapterSheetUri = uri
         chapterSheetAt.value = at
         justMarked.value = null
     }

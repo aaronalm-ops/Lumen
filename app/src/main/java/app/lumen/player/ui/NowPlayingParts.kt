@@ -71,6 +71,8 @@ data class SermonExtras(
     val justMarked: Long? = null,
     /** A chapter or bookmark just removed, for "Removed · Undo". */
     val lastRemoved: TimelineMark? = null,
+    /** A "No interruptions" label is on the item: the sleep timer is not offered. */
+    val noInterruptions: Boolean = false,
 )
 
 enum class NowSheet { MORE, SPEED, SLEEP, SOUND, QUEUE }
@@ -130,11 +132,13 @@ fun sleepValue(settings: Settings): String? {
 
 /** Sermon: Speed, Sleep, Mark, More. */
 @Composable
-fun SermonActions(player: PlayerState, settings: Settings, actions: NowPlayingActions, onSheet: (NowSheet) -> Unit) {
+fun SermonActions(player: PlayerState, settings: Settings, actions: NowPlayingActions, onSheet: (NowSheet) -> Unit, hideSleep: Boolean = false) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         ActionTile(LumenIcons.Speed, "Speed", Modifier.weight(1f), value = speedValue(player.speed).takeIf { it != "Speed" },
             active = false, enabled = !player.casting) { onSheet(NowSheet.SPEED) }
-        ActionTile(LumenIcons.Moon, "Sleep", Modifier.weight(1f), value = sleepValue(settings), active = settings.sleepActive) { onSheet(NowSheet.SLEEP) }
+        if (!hideSleep) {
+            ActionTile(LumenIcons.Moon, "Sleep", Modifier.weight(1f), value = sleepValue(settings), active = settings.sleepActive) { onSheet(NowSheet.SLEEP) }
+        }
         ActionTile(LumenIcons.Bookmark, "Mark", Modifier.weight(1f), enabled = player.hasItem, onClick = actions.markNow)
         ActionTile(LumenIcons.More, "More", Modifier.weight(1f)) { onSheet(NowSheet.MORE) }
     }
@@ -142,9 +146,11 @@ fun SermonActions(player: PlayerState, settings: Settings, actions: NowPlayingAc
 
 /** Music: Sleep, Labels, Sound, Queue, More. */
 @Composable
-fun MusicActions(player: PlayerState, settings: Settings, actions: NowPlayingActions, onSheet: (NowSheet) -> Unit) {
+fun MusicActions(player: PlayerState, settings: Settings, actions: NowPlayingActions, onSheet: (NowSheet) -> Unit, hideSleep: Boolean = false) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        ActionTile(LumenIcons.Moon, "Sleep", Modifier.weight(1f), value = sleepValue(settings), active = settings.sleepActive) { onSheet(NowSheet.SLEEP) }
+        if (!hideSleep) {
+            ActionTile(LumenIcons.Moon, "Sleep", Modifier.weight(1f), value = sleepValue(settings), active = settings.sleepActive) { onSheet(NowSheet.SLEEP) }
+        }
         ActionTile(LumenIcons.Label, "Labels", Modifier.weight(1f), enabled = player.hasItem, onClick = actions.openLabelSheet)
         ActionTile(LumenIcons.Sound, "Sound", Modifier.weight(1f), value = settings.eqPreset, enabled = settings.eqEngine != "none") { onSheet(NowSheet.SOUND) }
         ActionTile(LumenIcons.Queue, "Queue", Modifier.weight(1f), enabled = player.queueSize > 1) { onSheet(NowSheet.QUEUE) }
@@ -379,10 +385,12 @@ fun NowPlayingSheet(
             }
         },
     ) {
+        // The Queue list can be thousands long, so it is lazy and the sheet does not scroll around it.
+        val scroll = if (sheet == NowSheet.QUEUE) Modifier else Modifier.verticalScroll(rememberScrollState())
         Column(
             Modifier
                 .fillMaxWidth()
-                .verticalScroll(rememberScrollState())
+                .then(scroll)
                 .padding(horizontal = Gutter)
                 .padding(top = 8.dp, bottom = 20.dp)
                 .navigationBarsPadding(),
@@ -434,10 +442,15 @@ fun NowPlayingSheet(
                     SheetTitle("Queue")
                     val entries = remember { actions.queue() }
                     if (entries.isEmpty()) Text("Nothing queued", style = Lumen.type.bodyS, color = c.text2)
-                    entries.forEach { e ->
-                        ChoiceRow(e.title, selected = e.current) {
-                            actions.jumpToQueue(e.index)
-                            onSheet(null)
+                    val listState = androidx.compose.foundation.lazy.rememberLazyListState(
+                        initialFirstVisibleItemIndex = (entries.indexOfFirst { it.current } - 2).coerceAtLeast(0),
+                    )
+                    LazyColumn(Modifier.fillMaxWidth().heightIn(max = 480.dp), state = listState) {
+                        itemsIndexed(entries, key = { _, e -> e.index }) { _, e ->
+                            ChoiceRow(e.title, selected = e.current) {
+                                actions.jumpToQueue(e.index)
+                                onSheet(null)
+                            }
                         }
                     }
                 }

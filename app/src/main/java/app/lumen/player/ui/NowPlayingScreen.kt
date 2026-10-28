@@ -239,7 +239,7 @@ fun NowPlayingScreen(
                 // 0.6.1: a file that cannot play says why, with one way out.
                 player.error?.let { message -> PlaybackErrorLine(message, actions.retry) }
                 if (remote != null) RemoteLayout(remote, player, labels, actions)
-                else MusicLayout(player, controller, item, settings, downloadProgress, actions, openSheet)
+                else MusicLayout(player, controller, item, settings, downloadProgress, actions, openSheet, noInterruptions)
             }
         }
         sheet?.let { current ->
@@ -269,7 +269,10 @@ private fun SermonScreen(
     openSheet: (NowSheet) -> Unit,
 ) {
     BoxWithConstraints(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
-        val roomy = maxHeight >= 600.dp
+        // The panel needs room; a video above it, or a large font, needs more before it fits.
+        val fontScale = LocalDensity.current.fontScale
+        val needed = (if (player.isVideo) 780.dp else 600.dp) + (if (fontScale > 1.15f) 90.dp else 0.dp)
+        val roomy = maxHeight >= needed
         val column = if (roomy) Modifier.fillMaxSize() else Modifier.fillMaxSize().verticalScroll(rememberScrollState())
         var showChapters by remember { mutableStateOf(false) }
         Column(column.padding(horizontal = Gutter)) {
@@ -293,7 +296,7 @@ private fun SermonScreen(
             Spacer(Modifier.height(if (roomy) 18.dp else 10.dp))
             SpeechTransport(player, settings, actions)
             Spacer(Modifier.height(if (roomy) 18.dp else 12.dp))
-            SermonActions(player, settings, actions, openSheet)
+            SermonActions(player, settings, actions, openSheet, hideSleep = extras.noInterruptions)
             MarkFeedback(extras, actions)
             if (player.casting) CastingNote()
             Spacer(Modifier.height(12.dp))
@@ -431,7 +434,7 @@ private fun TabletopLayout(
             if (speech) {
                 SpeechTransport(player, settings, actions)
                 Spacer(Modifier.height(12.dp))
-                SermonActions(player, settings, actions, openSheet)
+                SermonActions(player, settings, actions, openSheet, hideSleep = extras.noInterruptions)
                 MarkFeedback(extras, actions)
                 Spacer(Modifier.height(8.dp))
                 CompanionLinks(extras, timeline, actions, onChapters = { showChapters = !showChapters })
@@ -439,7 +442,7 @@ private fun TabletopLayout(
             } else {
                 MusicTransport(player, actions)
                 Spacer(Modifier.height(12.dp))
-                MusicActions(player, settings, actions, openSheet)
+                MusicActions(player, settings, actions, openSheet, hideSleep = extras.noInterruptions)
                 UpNext(player)
             }
             Spacer(Modifier.height(16.dp))
@@ -547,6 +550,7 @@ private fun MusicLayout(
     downloadProgress: Float?,
     actions: NowPlayingActions,
     openSheet: (NowSheet) -> Unit,
+    noInterruptions: Boolean = false,
 ) {
     Spacer(Modifier.height(6.dp))
     if (player.isVideo && controller != null) {
@@ -571,7 +575,7 @@ private fun MusicLayout(
     Spacer(Modifier.height(14.dp))
     MusicTransport(player, actions)
     Spacer(Modifier.height(16.dp))
-    MusicActions(player, settings, actions, openSheet)
+    MusicActions(player, settings, actions, openSheet, hideSleep = noInterruptions)
     if (player.casting) CastingNote()
     UpNext(player)
     Spacer(Modifier.height(16.dp))

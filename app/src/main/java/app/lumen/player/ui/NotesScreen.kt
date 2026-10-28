@@ -172,7 +172,18 @@ internal fun NotesView(
     val c = Lumen.colours
     val needsKey = blocker?.contains("Gemini key") == true
     val hereSection = if (hereMs == null || parsed == null) -1 else parsed.sections.indexOfLast { it.ms in 0..hereMs }
+    val listState = rememberLazyListState()
+    // In the panel the notes open at the section now playing (once; the listener then scrolls freely).
+    LaunchedEffect(parsed, compact) {
+        if (compact && parsed != null && hereSection > 0) {
+            val before = (if (notes?.status == NotesRepository.STATUS_WORKING) 1 else 0) +
+                (if (notes?.status == NotesRepository.STATUS_FAILED) 1 else 0) +
+                (if (parsed.readings.isNotEmpty()) 1 else 0)
+            listState.scrollToItem(before + hereSection)
+        }
+    }
     LazyColumn(
+        state = listState,
         modifier = Modifier.fillMaxSize().widthIn(max = 720.dp),
         contentPadding = if (compact) PaddingValues(start = 14.dp, end = 10.dp, top = 6.dp, bottom = 20.dp)
         else PaddingValues(start = Gutter, end = Gutter, top = 8.dp, bottom = 32.dp),
@@ -370,10 +381,14 @@ internal fun TranscriptView(
                 listState.animateScrollToItem((nowIndex - 1).coerceAtLeast(0) + header)
             }
         }
-        LaunchedEffect(listState.isScrollInProgress) {
-            if (listState.isScrollInProgress && System.currentTimeMillis() - autoAt > 1_500) following = false
+        // A finger on the list stops following; only a real drag counts, never the auto-scroll.
+        LaunchedEffect(listState) {
+            listState.interactionSource.interactions.collect { interaction ->
+                if (interaction is androidx.compose.foundation.interaction.DragInteraction.Start) following = false
+            }
         }
     }
+    Box(Modifier.fillMaxSize()) {
     LazyColumn(
         state = listState,
         modifier = Modifier.fillMaxSize().widthIn(max = 720.dp),
@@ -389,8 +404,6 @@ internal fun TranscriptView(
                     color = c.text3,
                     modifier = Modifier.padding(top = 8.dp, bottom = 4.dp),
                 )
-            } else if (follow && !following) {
-                TextAction("Follow along", onClick = { following = true })
             } else {
                 Spacer(Modifier.height(1.dp))
             }
@@ -412,6 +425,20 @@ internal fun TranscriptView(
                 )
             }
         }
+    }
+    if (follow && !following) {
+        Box(
+            Modifier
+                .align(Alignment.BottomEnd)
+                .padding(10.dp)
+                .clip(RoundedCornerShape(50))
+                .background(c.accentFill)
+                .clickable { following = true }
+                .padding(horizontal = 14.dp, vertical = 8.dp),
+        ) {
+            Text("Follow along", style = Lumen.type.labelS, color = c.onAccentFill)
+        }
+    }
     }
 }
 

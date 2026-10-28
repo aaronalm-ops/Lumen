@@ -637,6 +637,8 @@ The Library opens on a row of section chips under the title: All, Phone, Drive, 
 - Music: art at 82 percent width, title, scrubber, transport, then five tiles (Sleep, Labels, Sound, Queue, More), then what plays next.
 - Speed, Sleep, Sound and Queue open a list showing every choice (Sleep adds "End of this recording" and 90 and 120 minutes). More holds Sound and the two clarity switches (sermons), Speed (music), Labels, New chapter here, Keep offline, Audio only (video), Notes full screen, Show as music or sermon, Share chapter list.
 - Mark saves the moment and shows "Marked 47:12 · Name it"; naming turns it into a chapter. Each chapter row has a menu with Name it and Remove; Remove offers Undo.
+- Sleep "End of this recording" pauses when the item ends (pauseAtEndOfMediaItems), whatever skips or speed changes happen meanwhile; no fade. Labels marked No interruptions hide the Sleep tile.
+- The Queue sheet is a lazy list opened at the item playing. The transcript stops following on a real drag; a "Follow along" button floats over it.
 - The eyebrow says Sermon instead of Speech. Notes opened from Now Playing stay on black.
 - Library sections wrap instead of running off screen. Home's pill reads "Open player" while playing.
 

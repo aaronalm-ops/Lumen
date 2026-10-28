@@ -253,6 +253,7 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
                 notesAvailable = currentItem?.let { !it.media.isYtm && !it.media.isVideo } ?: false,
                 justMarked = justMarked,
                 lastRemoved = lastRemoved,
+                noInterruptions = noInterruptions,
             ),
         )
     }

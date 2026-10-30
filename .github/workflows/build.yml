@@ -71,7 +71,15 @@ jobs:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-        run: ./gradlew assembleRelease --no-daemon --stacktrace
+        shell: bash
+        # 0.8.0: compile errors are copied into the run's annotations, so they can be read without
+        # opening the full log.
+        run: |
+          set -o pipefail
+          if ! ./gradlew assembleRelease --no-daemon --stacktrace 2>&1 | tee build.log; then
+            grep -E "^e: |error:|What went wrong" -A2 build.log | head -40 | while IFS= read -r line; do echo "::error::${line}"; done
+            exit 1
+          fi
 
       - name: Rename APK
         shell: bash

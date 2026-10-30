@@ -55,6 +55,13 @@ data class Settings(
     val trimSilences: Boolean = false,
     /** "Smooth transitions" between music items: 0 (off), 2, 4 or 6 seconds. */
     val crossfadeSeconds: Int = 0,
+    // 0.8.2.
+    /** Pause when a sermon ends instead of playing the next item. On by default. */
+    val stopAfterSermon: Boolean = true,
+    /** A sleep timer held by a manual pause: the time that was left, 0 when none is held. */
+    val sleepHeldMs: Long = 0L,
+    /** Download new sermons in the Drive folder on Wi-Fi after each listing. */
+    val driveAutoKeep: Boolean = false,
 ) {
     val driveConnected: Boolean get() = driveFolderId.isNotBlank()
 
@@ -137,10 +144,13 @@ class SettingsRepository(private val dao: ProgressDao) {
         const val KEY_DRIVE_MOBILE_DOWNLOADS = "drive_mobile_downloads"
         const val KEY_BACKUP_AT = "backup_at"
         const val KEY_BACKUP_DRIVE_AT = "backup_drive_at"
+        const val KEY_STOP_AFTER_SERMON = "stop_after_sermon"
+        const val KEY_SLEEP_HELD = "sleep_held_ms"
+        const val KEY_DRIVE_AUTO_KEEP = "drive_auto_keep"
 
         /** Keys that describe this device rather than the listener; never written by a restore. */
         val deviceOnlyKeys = setOf(
-            KEY_EQ_ENGINE, KEY_SEEDED, KEY_MS_SCAN_AT, KEY_MS_SCAN_COUNT, KEY_SLEEP_END_AT, KEY_SLEEP_MINUTES,
+            KEY_EQ_ENGINE, KEY_SEEDED, KEY_MS_SCAN_AT, KEY_MS_SCAN_COUNT, KEY_SLEEP_END_AT, KEY_SLEEP_MINUTES, KEY_SLEEP_HELD,
             KEY_DRIVE_FOLDER_ID, KEY_DRIVE_FOLDER_NAME, KEY_DRIVE_SCAN_AT, KEY_DRIVE_SCAN_COUNT,
             KEY_DRIVE_NEEDS_SIGN_IN, KEY_DRIVE_NEEDS_RECONNECT, KEY_DRIVE_ACCOUNT, KEY_BACKUP_AT, KEY_BACKUP_DRIVE_AT, PositionStore.KEY_LAST_ITEM,
         )
@@ -184,6 +194,9 @@ class SettingsRepository(private val dao: ProgressDao) {
                 levelOutVoices = map[KEY_LEVEL_OUT] == "1",
                 trimSilences = map[KEY_TRIM_SILENCES] == "1",
                 crossfadeSeconds = map[KEY_CROSSFADE]?.toIntOrNull()?.takeIf { it in crossfadeChoices } ?: 0,
+                stopAfterSermon = map[KEY_STOP_AFTER_SERMON] != "0",
+                sleepHeldMs = map[KEY_SLEEP_HELD]?.toLongOrNull() ?: 0L,
+                driveAutoKeep = map[KEY_DRIVE_AUTO_KEEP] == "1",
             )
         }
     }
@@ -211,9 +224,26 @@ class SettingsRepository(private val dao: ProgressDao) {
     suspend fun setEqEngine(engine: String) = put(KEY_EQ_ENGINE, engine)
 
     suspend fun setSleep(minutes: Int) {
+        put(KEY_SLEEP_HELD, "0")
         val end = if (minutes <= 0) 0L else System.currentTimeMillis() + minutes * 60_000L
         put(KEY_SLEEP_MINUTES, minutes.toString())
         put(KEY_SLEEP_END_AT, end.toString())
+    }
+
+    suspend fun setStopAfterSermon(on: Boolean) = put(KEY_STOP_AFTER_SERMON, if (on) "1" else "0")
+
+    suspend fun setDriveAutoKeep(on: Boolean) = put(KEY_DRIVE_AUTO_KEEP, if (on) "1" else "0")
+
+    /** 0.8.2: a manual pause holds the timer: its end goes, the time left is kept. */
+    suspend fun holdSleep(leftMs: Long) {
+        put(KEY_SLEEP_HELD, leftMs.toString())
+        put(KEY_SLEEP_END_AT, "0")
+    }
+
+    /** Play again after a held timer: it runs on from where it was. */
+    suspend fun resumeSleep(leftMs: Long) {
+        put(KEY_SLEEP_HELD, "0")
+        put(KEY_SLEEP_END_AT, (System.currentTimeMillis() + leftMs).toString())
     }
 
     /** 0.7.0: "End of this recording": the timer runs to a moment, shown as "End" (minutes -1). */
@@ -223,6 +253,7 @@ class SettingsRepository(private val dao: ProgressDao) {
     }
 
     suspend fun clearSleep() {
+        put(KEY_SLEEP_HELD, "0")
         put(KEY_SLEEP_MINUTES, "0")
         put(KEY_SLEEP_END_AT, "0")
     }

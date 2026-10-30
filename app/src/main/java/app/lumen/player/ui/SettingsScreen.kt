@@ -77,6 +77,9 @@ class SettingsActions(
     val rescanDrive: () -> Unit,
     val disconnectDrive: () -> Unit,
     val setMobileDownloads: (Boolean) -> Unit,
+    /** 0.8.2. */
+    val setStopAfterSermon: (Boolean) -> Unit = {},
+    val setDriveAutoKeep: (Boolean) -> Unit = {},
     val backupNow: () -> Unit,
     val restoreBackup: () -> Unit,
     // 0.4.0: Sound.
@@ -497,7 +500,16 @@ private fun DriveBody(
         TextAction("Choose folder", onClick = actions.connectDrive)
         TextAction(if (scanning) "Listing" else "Rescan", enabled = !scanning, onClick = actions.rescanDrive)
         Spacer(Modifier.weight(1f))
-        TextAction("Disconnect", danger = true, onClick = actions.disconnectDrive)
+        // 0.8.2: Disconnect removes every kept copy, so it asks once more.
+        var confirm by remember { mutableStateOf(false) }
+        TextAction(if (confirm) "Tap again to disconnect" else "Disconnect", danger = true, onClick = {
+            if (confirm) {
+                confirm = false
+                actions.disconnectDrive()
+            } else {
+                confirm = true
+            }
+        })
     }
     DriveNotice(settings, actions)
     HorizontalDivider(color = c.divider, thickness = 1.dp, modifier = Modifier.padding(horizontal = 14.dp))
@@ -506,6 +518,13 @@ private fun DriveBody(
         "Keep offline otherwise waits for Wi-Fi",
         settings.driveMobileDownloads,
         onChange = actions.setMobileDownloads,
+    )
+    HorizontalDivider(color = c.divider, thickness = 1.dp, modifier = Modifier.padding(horizontal = 14.dp))
+    ToggleRow(
+        "Download new sermons automatically",
+        "After each listing, new sermons in the folder are kept on the phone over Wi-Fi",
+        settings.driveAutoKeep,
+        onChange = actions.setDriveAutoKeep,
     )
 }
 
@@ -622,6 +641,13 @@ private fun SoundBody(settings: Settings, actions: SettingsActions) {
         "Sermons only: skips long pauses. Music is never trimmed",
         settings.trimSilences,
         onChange = actions.setTrimSilences,
+    )
+    HorizontalDivider(color = c.divider, thickness = 1.dp, modifier = Modifier.padding(horizontal = 14.dp))
+    ToggleRow(
+        "Stop after each sermon",
+        "Pauses when a sermon ends instead of playing whatever is next. Play carries on",
+        settings.stopAfterSermon,
+        onChange = actions.setStopAfterSermon,
     )
     HorizontalDivider(color = c.divider, thickness = 1.dp, modifier = Modifier.padding(horizontal = 14.dp))
     val choices = SettingsRepository.crossfadeChoices

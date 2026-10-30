@@ -5,6 +5,7 @@ import android.net.Uri
 import app.lumen.player.BuildConfig
 import app.lumen.player.data.BookmarkEntity
 import app.lumen.player.data.ChapterEntity
+import app.lumen.player.data.FolderEntity
 import app.lumen.player.data.KvEntity
 import app.lumen.player.data.LabelEntity
 import app.lumen.player.data.LabelRepository
@@ -109,7 +110,8 @@ class BackupManager(
                 JSONObject()
                     .put("uri", link.mediaUri)
                     .put("fingerprint", media[link.mediaUri]?.fingerprint ?: JSONObject.NULL)
-                    .put("label", name),
+                    .put("label", name)
+                    .put("position", link.position),
             )
         }
         root.put("media_labels", links)
@@ -138,6 +140,42 @@ class BackupManager(
             )
         }
         root.put("chapters", chapters)
+
+        // 0.8.2: YouTube Music rows (they exist only in Lumen), and sermon notes with transcripts.
+        val ytm = JSONArray()
+        for (m in media.values) {
+            if (!app.lumen.player.remote.YtmLink.isYtm(m.uri)) continue
+            ytm.put(
+                JSONObject()
+                    .put("uri", m.uri)
+                    .put("title", m.title)
+                    .put("artist", m.artist)
+                    .put("duration_ms", m.durationMs)
+                    .put("date_added", m.dateAdded),
+            )
+        }
+        root.put("youtube_music", ytm)
+
+        val notesDao = db.notesDao()
+        val notesRows = JSONArray()
+        for (n in notesDao.allOnce()) {
+            if (n.status != "done" || n.json.isBlank()) continue
+            val segments = JSONArray()
+            for (seg in notesDao.segmentsFor(n.mediaUri)) segments.put(JSONArray().put(seg.startMs).put(seg.text))
+            notesRows.put(
+                JSONObject()
+                    .put("uri", n.mediaUri)
+                    .put("fingerprint", media[n.mediaUri]?.fingerprint ?: JSONObject.NULL)
+                    .put("title", n.title)
+                    .put("size_bytes", n.sizeBytes)
+                    .put("json", n.json)
+                    .put("model", n.model)
+                    .put("created_at", n.createdAt)
+                    .put("updated_at", n.updatedAt)
+                    .put("segments", segments),
+            )
+        }
+        root.put("notes", notesRows)
 
         val kv = JSONObject()
         for (entry in settings.allEntries()) {
@@ -317,6 +355,24 @@ class BackupManager(
             }
         }
 
+        // 0.8.2: YouTube Music rows first, so their playlist links have something to point at.
+        var ytmAdded = 0
+        root.optJSONArray("youtube_music")?.let { arr ->
+            for (i in 0 until arr.length()) {
+                val y = arr.optJSONObject(i) ?: continue
+                val link = app.lumen.player.remote.YtmLink.fromUri(y.optString("uri", "")) ?: continue
+                if (mediaDao.mediaByUri(link.uri) != null) continue
+                if (mediaDao.folders().none { it.uri == app.lumen.player.remote.YtmLink.FOLDER_URI }) {
+                    mediaDao.upsertFolder(FolderEntity(uri = app.lumen.player.remote.YtmLink.FOLDER_URI, name = app.lumen.player.remote.YtmLink.FOLDER_NAME, addedAt = System.currentTimeMillis()))
+                }
+                mediaDao.upsertMedia(
+                    link.toMediaEntity(y.optString("title", ""), y.optString("artist", ""), y.optLong("date_added", System.currentTimeMillis()))
+                        .copy(durationMs = y.optLong("duration_ms", 0L)),
+                )
+                ytmAdded++
+            }
+        }
+
         var links = 0
         root.optJSONArray("media_labels")?.let { arr ->
             for (i in 0 until arr.length()) {
@@ -325,7 +381,7 @@ class BackupManager(
                 val fingerprint = link.optString("fingerprint", "").takeIf { it.isNotBlank() && it != "null" }
                 for (target in resolveUris(link.optString("uri", ""), fingerprint)) {
                     if (label.id in labelDao.labelIdsFor(target)) continue
-                    labelDao.attach(MediaLabelEntity(target, label.id))
+                    labelDao.attach(MediaLabelEntity(target, label.id, link.optInt("position", labelDao.nextPosition(label.id))))
                     links++
                 }
             }
@@ -366,6 +422,44 @@ class BackupManager(
             }
         }
 
+        var notes = 0
+        root.optJSONArray("notes")?.let { arr ->
+            val notesDao = db.notesDao()
+            for (i in 0 until arr.length()) {
+                val n = arr.optJSONObject(i) ?: continue
+                val json = n.optString("json", "")
+                if (json.isBlank()) continue
+                val fingerprint = n.optString("fingerprint", "").takeIf { it.isNotBlank() && it != "null" }
+                for (target in resolveUris(n.optString("uri", ""), fingerprint)) {
+                    if (notesDao.notes(target)?.status == "done") continue
+                    notesDao.upsert(
+                        app.lumen.player.data.NotesEntity(
+                            mediaUri = target,
+                            title = n.optString("title", ""),
+                            sizeBytes = n.optLong("size_bytes", 0L),
+                            status = "done",
+                            step = "",
+                            json = json,
+                            model = n.optString("model", ""),
+                            createdAt = n.optLong("created_at", System.currentTimeMillis()),
+                            updatedAt = n.optLong("updated_at", System.currentTimeMillis()),
+                        ),
+                    )
+                    val segs = n.optJSONArray("segments")
+                    if (segs != null && segs.length() > 0) {
+                        notesDao.deleteSegments(target)
+                        notesDao.insertSegments(
+                            (0 until segs.length()).mapNotNull { j ->
+                                val s = segs.optJSONArray(j) ?: return@mapNotNull null
+                                app.lumen.player.data.SegmentEntity(mediaUri = target, startMs = s.optLong(0), text = s.optString(1))
+                            },
+                        )
+                    }
+                    notes++
+                }
+            }
+        }
+
         var kvAdded = 0
         root.optJSONObject("settings")?.let { kv ->
             val local = settings.allEntries().associate { it.k to it.v }
@@ -385,7 +479,12 @@ class BackupManager(
         if (links > 0) parts += "$links label links"
         if (bookmarks > 0) parts += "$bookmarks bookmarks"
         if (chapters > 0) parts += "$chapters chapters"
+        if (ytmAdded > 0) parts += "$ytmAdded YouTube Music songs"
+        if (notes > 0) parts += "$notes sets of notes"
         if (kvAdded > 0) parts += "$kvAdded settings"
-        return "Restored " + parts.joinToString(", ")
+        // 0.8.2: restored before the phone was scanned, playlists and marks sit on the backup's
+        // file addresses; say so, since a restore after a scan matches them to this phone's files.
+        val emptyLibrary = mediaByUri.isEmpty()
+        return "Restored " + parts.joinToString(", ") + if (emptyLibrary) ". Scan your phone, then restore again so playlists find their files" else ""
     }
 }

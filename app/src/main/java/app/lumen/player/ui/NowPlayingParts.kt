@@ -124,6 +124,8 @@ fun ActionTile(
 fun speedValue(speed: Float): String = if (kotlin.math.abs(speed - 1f) < 0.01f) "Speed" else speedLabel(speed)
 
 fun sleepValue(settings: Settings): String? {
+    // 0.8.2: a timer held by a pause shows its time left.
+    if (settings.sleepHeldMs > 0) return "${(settings.sleepHeldMs / 60_000L + 1).coerceAtLeast(1)} min"
     if (!settings.sleepActive) return null
     if (settings.sleepMinutes == -1) return "End"
     val left = ((settings.sleepEndAt - System.currentTimeMillis()) / 60_000L + 1).coerceAtLeast(1)
@@ -137,7 +139,7 @@ fun SermonActions(player: PlayerState, settings: Settings, actions: NowPlayingAc
         ActionTile(LumenIcons.Speed, "Speed", Modifier.weight(1f), value = speedValue(player.speed).takeIf { it != "Speed" },
             active = false, enabled = !player.casting) { onSheet(NowSheet.SPEED) }
         if (!hideSleep) {
-            ActionTile(LumenIcons.Moon, "Sleep", Modifier.weight(1f), value = sleepValue(settings), active = settings.sleepActive) { onSheet(NowSheet.SLEEP) }
+            ActionTile(LumenIcons.Moon, "Sleep", Modifier.weight(1f), value = sleepValue(settings), active = settings.sleepActive || settings.sleepHeldMs > 0) { onSheet(NowSheet.SLEEP) }
         }
         ActionTile(LumenIcons.Bookmark, "Mark", Modifier.weight(1f), enabled = player.hasItem, onClick = actions.markNow)
         ActionTile(LumenIcons.More, "More", Modifier.weight(1f)) { onSheet(NowSheet.MORE) }
@@ -149,7 +151,7 @@ fun SermonActions(player: PlayerState, settings: Settings, actions: NowPlayingAc
 fun MusicActions(player: PlayerState, settings: Settings, actions: NowPlayingActions, onSheet: (NowSheet) -> Unit, hideSleep: Boolean = false) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         if (!hideSleep) {
-            ActionTile(LumenIcons.Moon, "Sleep", Modifier.weight(1f), value = sleepValue(settings), active = settings.sleepActive) { onSheet(NowSheet.SLEEP) }
+            ActionTile(LumenIcons.Moon, "Sleep", Modifier.weight(1f), value = sleepValue(settings), active = settings.sleepActive || settings.sleepHeldMs > 0) { onSheet(NowSheet.SLEEP) }
         }
         ActionTile(LumenIcons.Playlist, "Playlists", Modifier.weight(1f), enabled = player.hasItem, onClick = actions.openLabelSheet)
         ActionTile(LumenIcons.Sound, "Sound", Modifier.weight(1f), value = settings.eqPreset, enabled = settings.eqEngine != "none") { onSheet(NowSheet.SOUND) }
@@ -422,7 +424,7 @@ fun NowPlayingSheet(
                             onSheet(null)
                         }
                     }
-                    if (settings.sleepActive) {
+                    if (settings.sleepActive || settings.sleepHeldMs > 0) {
                         ChoiceRow("Turn off", danger = true) {
                             actions.setSleepMinutes(0)
                             onSheet(null)

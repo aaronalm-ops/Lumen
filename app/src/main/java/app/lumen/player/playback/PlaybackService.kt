@@ -3,6 +3,7 @@ package app.lumen.player.playback
 import android.app.PendingIntent
 import android.content.Intent
 import android.net.Uri
+import android.os.SystemClock
 import androidx.media3.cast.CastPlayer
 import androidx.media3.cast.RemoteCastPlayer
 import androidx.media3.common.AudioAttributes
@@ -296,7 +297,9 @@ class PlaybackService : MediaLibraryService() {
             var appliedBack = 10
             var appliedForward = 30
             settingsRepo.settings.collect { s ->
+                val stopChanged = s.stopAfterSermon != settings.stopAfterSermon
                 settings = s
+                if (stopChanged) applyPauseAtEnd()
                 player.backMs = s.skipBackSeconds * 1000L
                 player.forwardMs = s.skipForwardSeconds * 1000L
                 if (s.skipBackSeconds != appliedBack || s.skipForwardSeconds != appliedForward) {
@@ -358,12 +361,12 @@ class PlaybackService : MediaLibraryService() {
                     sleepJob?.cancel()
                     sleepJob = null
                     sleepAtEnd = true
-                    exo.pauseAtEndOfMediaItems = true
+                    applyPauseAtEnd()
                     RingLog.i("sleep", "set to the end of this recording")
                 } else {
                     if (sleepAtEnd) {
                         sleepAtEnd = false
-                        exo.pauseAtEndOfMediaItems = false
+                        applyPauseAtEnd()
                     }
                     scheduleSleep(endAt)
                 }
@@ -379,6 +382,45 @@ class PlaybackService : MediaLibraryService() {
     }
 
     /** Fades volume over the last 20 s, pauses, then clears the timer. */
+    /** elapsedRealtime of the last pause, 0 when nothing is paused (or the item simply ended). */
+    private var pausedAt = 0L
+
+    /** Set when the sleep timer paused playback: the next play goes back further. */
+    private var rewindAfterSleep = false
+
+    /**
+     * 0.8.2: play after a pause. A held sleep timer runs on, and a sermon steps back a little so
+     * the last sentence heard is heard again: 5 s after a minute away, 15 s after ten minutes,
+     * 30 s after an hour or after the sleep timer stopped it.
+     */
+    private fun onPlayAgain() {
+        if (settings.sleepHeldMs > 0) {
+            val left = settings.sleepHeldMs
+            scope.launch { settingsRepo.resumeSleep(left) }
+        }
+        val since = if (pausedAt > 0) SystemClock.elapsedRealtime() - pausedAt else 0L
+        pausedAt = 0L
+        val sleptOn = rewindAfterSleep
+        rewindAfterSleep = false
+        if (!currentSpeech.value || castActive) return
+        val back = when {
+            sleptOn || since >= 60 * 60_000L -> 30_000L
+            since >= 10 * 60_000L -> 15_000L
+            since >= 60_000L -> 5_000L
+            else -> 0L
+        }
+        if (back > 0 && player.playbackState != Player.STATE_ENDED) {
+            val target = (player.currentPosition - back).coerceAtLeast(0L)
+            RingLog.i("player", "back ${back / 1000} s after a pause of ${since / 1000} s")
+            player.seekTo(player.currentMediaItemIndex, target)
+        }
+    }
+
+    /** 0.8.2: pause at the end of the item for the sleep timer, or after a sermon when that is set. */
+    private fun applyPauseAtEnd() {
+        exo.pauseAtEndOfMediaItems = sleepAtEnd || (currentSpeech.value && settings.stopAfterSermon)
+    }
+
     private fun scheduleSleep(endAt: Long) {
         sleepJob?.cancel()
         sleepJob = null
@@ -406,6 +448,7 @@ class PlaybackService : MediaLibraryService() {
                 delay(SLEEP_FADE_STEP_MS)
             }
             sleepFiring = true
+            rewindAfterSleep = true
             player.pause()
             sleepFiring = false
             sleepFading = false
@@ -748,6 +791,7 @@ class PlaybackService : MediaLibraryService() {
                 val speech = isSpeech(item, media, labelNames)
                 currentSpeech.value = speech
                 applyAudioAttributes(speech, item)
+                applyPauseAtEnd()
                 // 0.4.0, item 4: a long voice note resumes like speech in the music layout, so the
                 // saved-position lookup below keys on this rather than on the layout.
                 val resume = resumes(item, media, labelNames)
@@ -990,18 +1034,30 @@ class PlaybackService : MediaLibraryService() {
          * timer itself does not.
          */
         override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
-            if (playWhenReady) return
-            resetFade("pause")
-            if (reason == Player.PLAY_WHEN_READY_CHANGE_REASON_END_OF_MEDIA_ITEM && sleepAtEnd) {
-                RingLog.i("sleep", "end of the recording reached, paused")
-                sleepAtEnd = false
-                exo.pauseAtEndOfMediaItems = false
-                scope.launch { settingsRepo.clearSleep() }
+            if (playWhenReady) {
+                onPlayAgain()
                 return
             }
+            resetFade("pause")
+            if (reason == Player.PLAY_WHEN_READY_CHANGE_REASON_END_OF_MEDIA_ITEM) {
+                if (sleepAtEnd) {
+                    RingLog.i("sleep", "end of the recording reached, paused")
+                    sleepAtEnd = false
+                    scope.launch { settingsRepo.clearSleep() }
+                } else {
+                    RingLog.i("player", "sermon finished; stopped before the next item")
+                }
+                applyPauseAtEnd()
+                pausedAt = 0L
+                return
+            }
+            pausedAt = SystemClock.elapsedRealtime()
+            // 0.8.2: a manual pause holds the sleep timer (its time left is kept) instead of
+            // cancelling it; play picks it up again.
             if (reason == Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST && !sleepFiring && sleepJob?.isActive == true) {
-                RingLog.i("sleep", "timer cancelled by a manual pause")
-                scope.launch { settingsRepo.clearSleep() }
+                val left = (settings.sleepEndAt - System.currentTimeMillis()).coerceAtLeast(SLEEP_FADE_MS)
+                RingLog.i("sleep", "timer held by a manual pause, ${left / 1000} s left")
+                scope.launch { settingsRepo.holdSleep(left) }
             }
         }
 

@@ -85,6 +85,9 @@ fun LibraryScreen(
     sortByName: Boolean,
     folderFilter: String?,
     subfolder: String?,
+    /** 0.8.2: only sermons not yet listened to the end. */
+    unplayedOnly: Boolean = false,
+    onToggleUnplayed: () -> Unit = {},
     /** 0.6.0: lines said in transcribed recordings that match the search. */
     transcriptHits: List<TranscriptHit> = emptyList(),
     onHit: (TranscriptHit) -> Unit = {},
@@ -99,9 +102,10 @@ fun LibraryScreen(
     val sunoId = remember(labels) { sunoLabelId(labels) }
     val counts = remember(items, labels) { sourceCounts(items, labels) }
     val inSection = remember(items, source, sunoId) { items.filter { inSource(it, source, sunoId) } }
-    val visible = remember(inSection, search, sortByName, folderFilter, subfolder, labels) {
+    val visible = remember(inSection, search, sortByName, folderFilter, subfolder, labels, unplayedOnly) {
         val byFolder = filterItems(inSection, labels, search, folderFilter, sortByName)
-        if (subfolder == null) byFolder else byFolder.filter { (driveSubfolder(it) ?: DRIVE_TOP_LEVEL) == subfolder }
+        val bySub = if (subfolder == null) byFolder else byFolder.filter { (driveSubfolder(it) ?: DRIVE_TOP_LEVEL) == subfolder }
+        if (unplayedOnly) bySub.filter { !it.finished && !it.media.isYtm && looksLikeSpeech(it, labels) } else bySub
     }
     val phoneFolders = remember(folders) { folders.filter { it.isPhone() } }
     val folderCounts = remember(items) { items.groupingBy { it.media.folderUri }.eachCount() }
@@ -123,6 +127,8 @@ fun LibraryScreen(
             Text("Library", style = Lumen.type.displayM, color = c.text)
             Spacer(Modifier.weight(1f))
             // The sort chip shows a setting, not a selection: a rest chip on light, silver on black.
+            StatusChip(text = "Unplayed", active = unplayedOnly, onClick = onToggleUnplayed)
+            Spacer(Modifier.width(6.dp))
             StatusChip(text = if (sortByName) "Name" else "Date", active = c.isDark, onClick = onToggleSort)
         }
         SourceRow(
@@ -331,6 +337,7 @@ fun LibraryScreen(
                                 // YouTube Music keeps no position and Lumen knows no duration.
                                 youTubeMusic -> ""
                                 offline -> "Offline"
+                                item.finished && !playing -> "Played"
                                 time > 0 -> formatTime(time)
                                 item.media.durationMs > 0 -> formatTime(item.media.durationMs)
                                 else -> "--:--"
@@ -348,6 +355,9 @@ fun LibraryScreen(
                             progress = downloads[item.uri],
                             // In the YouTube Music section the chip would repeat the section's name.
                             badge = if (youTubeMusic && source != LibrarySource.YTM) YtmLink.SOURCE_LABEL else null,
+                            // 0.8.2: a started sermon shows how far through; a finished one a tick.
+                            listened = if (speech) item.listened else null,
+                            finished = item.finished,
                             // Offline with nothing cached: the tap does nothing and nothing pops up.
                             onClick = { if (!offline) onItem(item, visible) },
                             onLongClick = { onItemLongPress(item) },

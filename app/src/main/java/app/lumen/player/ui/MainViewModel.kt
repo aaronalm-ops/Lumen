@@ -34,6 +34,7 @@ import app.lumen.player.data.MediaPermissions
 import app.lumen.player.data.MediaRepository
 import app.lumen.player.data.NotesEntity
 import app.lumen.player.data.SegmentEntity
+import app.lumen.player.data.PositionStore
 import app.lumen.player.data.ProgressEntity
 import app.lumen.player.data.Settings
 import app.lumen.player.data.SettingsRepository
@@ -95,8 +96,16 @@ data class LibraryItem(
     val positionMs: Long,
     val lastPlayedAt: Long,
     val folderName: String,
+    /** 0.8.2: the length, from the file or from the last save when the file does not know it yet. */
+    val durationMs: Long = media.durationMs,
+    /** 0.8.2: listened to the end (the last 30 s or 97 percent). */
+    val finished: Boolean = false,
 ) {
     val uri: String get() = media.uri
+
+    /** 0.8.2: how far through, for the bar under a row; null when not started or finished. */
+    val listened: Float?
+        get() = if (finished || positionMs <= 0 || durationMs <= 0) null else (positionMs.toFloat() / durationMs).coerceIn(0f, 1f)
 }
 
 data class PlayerState(
@@ -473,6 +482,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 positionMs = played?.positionMs ?: 0L,
                 lastPlayedAt = played?.updatedAt ?: 0L,
                 folderName = folderNames[representative.folderUri] ?: "",
+                durationMs = representative.durationMs.takeIf { it > 0 } ?: played?.durationMs ?: 0L,
+                finished = played != null && PositionStore.isFinished(
+                    played.positionMs,
+                    representative.durationMs.takeIf { it > 0 } ?: played.durationMs,
+                ),
             )
         }.sortedByDescending { it.media.dateAdded }
     }
@@ -1790,6 +1804,32 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 RingLog.e("youtube", "add failed", t)
                 ytImport.value = ytImport.value?.copy(adding = false, error = "Could not add the songs")
             }
+        }
+    }
+
+
+    // 0.8.2: played and unplayed.
+
+    fun setStopAfterSermon(on: Boolean) {
+        viewModelScope.launch { settingsRepo.setStopAfterSermon(on) }
+    }
+
+    fun setDriveAutoKeep(on: Boolean) {
+        viewModelScope.launch {
+            settingsRepo.setDriveAutoKeep(on)
+            if (on) app.appScope.launch { drive.keepNewSermons(onlyRecent = false) }
+        }
+    }
+
+    /** Library: show only sermons not yet listened to the end. */
+    val libraryUnplayed = MutableStateFlow(false)
+
+    /** Marks [item] played (its place at the end) or unplayed (its place back at 0:00). */
+    fun togglePlayed(item: LibraryItem) {
+        val duration = item.durationMs
+        if (!item.finished && duration <= 0) return
+        viewModelScope.launch {
+            store.saveNow(item.uri, item.media.title, if (item.finished) 0L else duration, duration, if (item.finished) "marked unplayed" else "marked played", remember = false)
         }
     }
 

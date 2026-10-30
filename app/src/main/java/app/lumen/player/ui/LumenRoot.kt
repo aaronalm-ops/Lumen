@@ -155,6 +155,7 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
     val openPlaylist by vm.openPlaylist.collectAsState()
     val playlistPicker by vm.playlistPicker.collectAsState()
     val ytImport by vm.ytImport.collectAsState()
+    val libraryUnplayed by vm.libraryUnplayed.collectAsState()
     val nowSegments by vm.nowSegments.collectAsState()
     val justMarked by vm.justMarked.collectAsState()
     val lastRemoved by vm.lastRemoved.collectAsState()
@@ -318,6 +319,8 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
                     sortByName = sortByName,
                     folderFilter = folderFilter,
                     subfolder = librarySubfolder,
+                    unplayedOnly = libraryUnplayed,
+                    onToggleUnplayed = { vm.libraryUnplayed.value = !vm.libraryUnplayed.value },
                     transcriptHits = transcriptHits,
                     onHit = { hit -> vm.playAt(hit.item, hit.ms) },
                     onHitLongPress = { hit -> vm.openNotesFor(hit.item, search) },
@@ -393,6 +396,8 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
                         rescanDrive = vm::rescanDrive,
                         disconnectDrive = vm::disconnectDrive,
                         setMobileDownloads = vm::setMobileDownloads,
+                        setStopAfterSermon = vm::setStopAfterSermon,
+                        setDriveAutoKeep = vm::setDriveAutoKeep,
                         backupNow = actions.backupNow,
                         restoreBackup = actions.restoreBackup,
                         setLevelOutVoices = vm::setLevelOutVoices,
@@ -518,6 +523,7 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
                     onDelete = vm::deleteLabel,
                     onToggleOffline = vm::toggleOffline,
                     onDismiss = vm::closeLabelSheet,
+                    onTogglePlayed = vm::togglePlayed,
                 )
             }
         }

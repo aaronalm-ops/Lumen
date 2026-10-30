@@ -41,6 +41,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.lumen.player.data.LabelEntity
 import app.lumen.player.data.drive.isDrive
+import app.lumen.player.remote.isYtm
 import kotlinx.coroutines.launch
 
 /**
@@ -58,6 +59,8 @@ fun LabelSheet(
     onDelete: (LabelEntity) -> Unit,
     onToggleOffline: (LibraryItem) -> Unit,
     onDismiss: () -> Unit,
+    /** 0.8.2: mark an item played or unplayed. */
+    onTogglePlayed: (LibraryItem) -> Unit = {},
 ) {
     val c = Lumen.colours
     val state = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -104,6 +107,7 @@ fun LabelSheet(
                     onEdit = { editing = it; creating = false },
                     onNew = { editing = newLabel(); creating = true },
                     onToggleOffline = { onToggleOffline(target.item) },
+                    onTogglePlayed = { onTogglePlayed(target.item) },
                 )
             }
         }
@@ -121,6 +125,7 @@ private fun ItemLabelsBody(
     onEdit: (LabelEntity) -> Unit,
     onNew: () -> Unit,
     onToggleOffline: () -> Unit,
+    onTogglePlayed: () -> Unit,
 ) {
     val c = Lumen.colours
     val view = LocalView.current
@@ -163,6 +168,28 @@ private fun ItemLabelsBody(
     }
     Spacer(Modifier.height(8.dp))
     TextAction("New playlist", onClick = onNew)
+    if (!item.media.isYtm) {
+        // 0.8.2: played or not, by hand.
+        Spacer(Modifier.height(8.dp))
+        HorizontalDivider(color = c.divider, thickness = 1.dp)
+        Row(
+            Modifier.fillMaxWidth().height(56.dp).clip(RoundedCornerShape(8.dp)).clickable(enabled = item.finished || item.durationMs > 0, onClick = onTogglePlayed),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(LumenIcons.Check, contentDescription = null, tint = c.text2, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.width(14.dp))
+            Column(Modifier.weight(1f)) {
+                Text(if (item.finished) "Mark as unplayed" else "Mark as played", style = Lumen.type.body, color = if (item.finished || item.durationMs > 0) c.text else c.text3)
+                Text(
+                    if (item.finished) "Starts from the beginning next time" else if (item.durationMs > 0) "Shows the tick and leaves the Unplayed list" else "Play it once first so Lumen knows its length",
+                    style = Lumen.type.bodyS,
+                    color = c.text2,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
     if (item.media.isDrive) {
         // Phase 1b: the long-press route to "Keep offline" for a Drive row.
         Spacer(Modifier.height(8.dp))

@@ -127,6 +127,7 @@ fun HomeScreen(
                                 title = item.media.title,
                                 meta = rowMeta(item, labels),
                                 time = when {
+                                    item.finished && !playing -> "Played"
                                     time > 0 -> formatTime(time)
                                     item.media.durationMs > 0 -> formatTime(item.media.durationMs)
                                     else -> "--:--"
@@ -140,6 +141,8 @@ fun HomeScreen(
                                 copies = item.copies,
                                 hues = labels.filter { it.id in item.labelIds }.map { it.hue },
                                 divider = index < recent.lastIndex,
+                                listened = if (speech) item.listened else null,
+                                finished = item.finished,
                                 onClick = { onItem(item) },
                                 onLongClick = { onItemLongPress(item) },
                             )

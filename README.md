@@ -630,6 +630,16 @@ The Library opens on a row of section chips under the title: All, Phone, Drive, 
 4. Tap YouTube Music and Suno: either the files or a card saying how to fill the section.
 5. Close and reopen Lumen: the Library opens on the last section chosen.
 
+## 0.8.2 (red team round 2, the "later" list)
+
+- Played and unplayed: a sermon listened to the end (last 30 s or 97 percent) shows a tick and "Played"; a started one a thin bar of how far through. Library has an Unplayed chip (sermons not yet finished). The item sheet has Mark as played / Mark as unplayed.
+- Stop after each sermon (Settings, Sound; on by default): the player pauses when a sermon ends (pauseAtEndOfMediaItems); Play carries on to the next item.
+- Sleep timer: a manual pause holds the timer (time left kept, tile shows it) and play picks it up; Turn off clears it.
+- Back a little after a pause, sermons only: 5 s after a minute, 15 s after ten minutes, 30 s after an hour or after the sleep timer stopped it.
+- Drive: "Download new sermons automatically" (Settings, Drive; off by default). After each listing, sermons new since the last one are kept on the phone over Wi-Fi; turning it on keeps the three newest now. The first listing of a folder never starts downloads. Disconnect asks twice.
+- Sound: music presets that lift a band lower the input by the biggest lift (DynamicsProcessing input gain), so loud songs do not pump.
+- Backups now carry YouTube Music songs, playlist order, and sermon notes with transcripts. A restore into an empty library says to scan first and restore again.
+
 ## 0.8.1
 
 ### Pick songs from a YouTube Music playlist

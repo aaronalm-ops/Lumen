@@ -209,6 +209,10 @@ fun MediaRow(
     progress: Float? = null,
     /** 0.5.0: a small source chip after the meta, such as "via YouTube Music". */
     badge: String? = null,
+    /** 0.8.2: how far through a started item is (a thin bar under the meta); null hides it. */
+    listened: Float? = null,
+    /** 0.8.2: listened to the end: a tick on the thumbnail. */
+    finished: Boolean = false,
     onClick: () -> Unit,
     onLongClick: (() -> Unit)? = null,
 ) {
@@ -229,7 +233,7 @@ fun MediaRow(
                 modifier = Modifier.size(48.dp).background(c.thumb, RoundedCornerShape(6.dp)),
                 contentAlignment = Alignment.Center,
             ) {
-                Icon(icon, contentDescription = null, tint = metaColour, modifier = Modifier.size(20.dp))
+                Icon(if (finished) LumenIcons.Check else icon, contentDescription = if (finished) "Played" else null, tint = if (finished) c.accentInk else metaColour, modifier = Modifier.size(20.dp))
             }
             Column(Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -263,6 +267,10 @@ fun MediaRow(
                                 .padding(horizontal = 6.dp, vertical = 2.dp),
                         )
                     }
+                }
+                if (listened != null) {
+                    Spacer(Modifier.height(4.dp))
+                    ProgressLine(fraction = listened, thickness = 2.dp, modifier = Modifier.fillMaxWidth(0.6f))
                 }
             }
             Text(time, style = Lumen.type.timeS, color = if (playing) c.accentInk else metaColour)

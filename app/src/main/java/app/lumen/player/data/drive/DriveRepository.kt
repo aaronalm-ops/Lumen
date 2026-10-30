@@ -15,6 +15,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -277,6 +278,7 @@ class DriveRepository(
                 val batch = ArrayList<MediaEntity>()
                 var added = 0
                 var updated = 0
+                val addedUris = ArrayList<String>()
                 for ((file, relPath) in found.values) {
                     val uri = uriFor(file.id)
                     seen += uri
@@ -301,7 +303,12 @@ class DriveRepository(
                         modifiedAt = file.modifiedMs,
                         offlinePath = old?.offlinePath,
                     )
-                    if (old == null) added++ else updated++
+                    if (old == null) {
+                        added++
+                        addedUris += uri
+                    } else {
+                        updated++
+                    }
                 }
                 if (batch.isNotEmpty()) {
                     dao.upsertMediaAll(batch)
@@ -326,6 +333,13 @@ class DriveRepository(
                         ""
                     }
                     if (email.isNotBlank()) settings.setDriveAccount(email)
+                }
+                // 0.8.2: new sermons are kept on the phone when the owner asked for that. A first
+                // listing (nothing there before) is left alone, so connecting a folder never
+                // starts gigabytes of downloads.
+                if (addedUris.isNotEmpty() && existing.isNotEmpty() && settings.get(SettingsRepository.KEY_DRIVE_AUTO_KEEP) == "1") {
+                    val uris = addedUris.toList()
+                    autoScope.launch { keepNewSermons(onlyRecent = true, uris = uris) }
                 }
                 RingLog.i(
                     "drive",
@@ -509,6 +523,29 @@ class DriveRepository(
             // Runs on cancellation too: the lock must still be taken, or the uri stays "in flight".
             withContext(NonCancellable) { downloadLock.withLock { downloading.remove(uri) } }
             clearProgress(uri)
+        }
+    }
+
+    private val autoScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO)
+
+    /**
+     * 0.8.2: "Download new sermons automatically". After a listing, the sermons it found new
+     * ([uris]); when the setting is first turned on, the three newest sermons not yet kept. One at
+     * a time, each waiting for Wi-Fi unless mobile downloads are allowed.
+     */
+    suspend fun keepNewSermons(onlyRecent: Boolean, uris: List<String> = emptyList()) {
+        val rows = if (onlyRecent) uris.mapNotNull { dao.mediaByUri(it) }
+        else dao.mediaWithFolderPrefix(FOLDER_PREFIX).sortedByDescending { it.dateAdded }
+        val sermons = rows.filter { it.offlinePath == null && !it.isVideo && (it.durationMs > MediaRepository.SPEECH_THRESHOLD_MS || MediaRepository.looksLikeSpeechBySize(it)) }
+            .let { if (onlyRecent) it else it.take(3) }
+        if (sermons.isEmpty()) return
+        RingLog.i("drive", "keeping ${sermons.size} new sermons offline")
+        for (row in sermons) {
+            if (downloadBlocker() != null) {
+                RingLog.i("drive", "automatic downloads paused: ${downloadBlocker()}")
+                return
+            }
+            keepOffline(row.uri)
         }
     }
 

@@ -146,6 +146,11 @@ class AudioEffects {
                 }
                 effect.setMbcBandAllChannelsTo(0, band)
                 effect.setLimiterAllChannelsTo(if (levelOut) levelledLimiter() else standardLimiter())
+                // 0.8.2 (red team round 2): music presets that lift a band (Bass, Worship, Kids)
+                // lower the input by the biggest lift, so loud songs do not hit the limiter hard.
+                // Speech keeps 0 dB: its compressor's makeup gain is tuned for it.
+                val preamp = if (speech || levelOut) 0f else -(g.maxOrNull() ?: 0f).coerceAtLeast(0f)
+                effect.setInputGainAllChannelsTo(preamp)
             } catch (t: Throwable) {
                 RingLog.w("fx", "DynamicsProcessing apply failed: $t")
             }

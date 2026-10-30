@@ -352,6 +352,12 @@ interface NotesDao {
     @Query("SELECT * FROM notes")
     fun allFlow(): Flow<List<NotesEntity>>
 
+    @Query("SELECT * FROM notes")
+    suspend fun allOnce(): List<NotesEntity>
+
+    @Query("SELECT * FROM transcript_segments WHERE media_uri = :uri ORDER BY start_ms ASC")
+    suspend fun segmentsFor(uri: String): List<SegmentEntity>
+
     @Upsert
     suspend fun upsert(notes: NotesEntity)
 

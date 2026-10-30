@@ -123,6 +123,39 @@ class RemoteController(context: Context) {
         if (wanted) attach()
     }
 
+    // 0.8.0: media keys. Without notification access Lumen cannot read YouTube Music's session,
+    // but Android hands a media key to the app that played last, so play, pause and skip reach
+    // YouTube Music while it holds the sound. No permission is needed. Whether anything is playing
+    // comes from the audio system, since Lumen itself is paused while YouTube Music plays.
+
+    private val audio: android.media.AudioManager? =
+        appContext.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager
+
+    fun sendKey(keyCode: Int) {
+        val a = audio ?: return
+        val now = SystemClock.uptimeMillis()
+        try {
+            a.dispatchMediaKeyEvent(android.view.KeyEvent(now, now, android.view.KeyEvent.ACTION_DOWN, keyCode, 0))
+            a.dispatchMediaKeyEvent(android.view.KeyEvent(now, now, android.view.KeyEvent.ACTION_UP, keyCode, 0))
+            RingLog.i("ytm", "media key $keyCode sent")
+        } catch (t: Throwable) {
+            RingLog.w("ytm", "media key failed: $t")
+        }
+    }
+
+    fun keyPlayPause() = sendKey(android.view.KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE)
+
+    fun keyNext() = sendKey(android.view.KeyEvent.KEYCODE_MEDIA_NEXT)
+
+    fun keyPrevious() = sendKey(android.view.KeyEvent.KEYCODE_MEDIA_PREVIOUS)
+
+    /** Some app is playing sound through the media stream (YouTube Music, while Lumen is paused). */
+    fun musicActive(): Boolean = try {
+        audio?.isMusicActive == true
+    } catch (_: Throwable) {
+        false
+    }
+
     /**
      * True when the owner allowed Lumen in Settings, Notification access. 0.6.0: always false,
      * since the listener is no longer declared (see [CONTROL_ENABLED]).

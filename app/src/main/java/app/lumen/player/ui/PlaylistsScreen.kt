@@ -191,7 +191,7 @@ private fun Detail(label: LabelEntity, members: List<PlaylistEntry>, player: Pla
         }
         return
     }
-    ReorderableList(label, members, player, actions)
+    ReorderableList(label, members, player, labels, actions)
 }
 
 /**
@@ -199,7 +199,7 @@ private fun Detail(label: LabelEntity, members: List<PlaylistEntry>, player: Pla
  * finger lifts. Tap a row to play the playlist from there.
  */
 @Composable
-private fun ReorderableList(label: LabelEntity, members: List<PlaylistEntry>, player: PlayerState, actions: PlaylistActions) {
+private fun ReorderableList(label: LabelEntity, members: List<PlaylistEntry>, player: PlayerState, labels: List<LabelEntity>, actions: PlaylistActions) {
     val c = Lumen.colours
     var order by remember(members) { mutableStateOf(members) }
     var dragging by remember { mutableStateOf<String?>(null) }

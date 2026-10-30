@@ -712,7 +712,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         withController { c ->
             if (c.currentMediaItem?.mediaId == item.uri) {
                 // Tapping the item already loaded resumes it; it never restarts. A YouTube Music
-                // item opens in YouTube Music again.
+                // item opens in YouTube Music again. 0.8.2: one that has finished starts again.
+                if (!item.media.isYtm && atEnd(c)) c.seekTo(0)
                 if (item.media.isYtm) enterRemote(item.uri, open = true) else playOrResume(c)
                 return@withController
             }
@@ -826,7 +827,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         if (c.playbackState == Player.STATE_IDLE) c.prepare()
         if (c.playbackState == Player.STATE_ENDED) c.seekTo(0)
+        // 0.8.2: paused at the very end (Stop after each sermon) with nothing after it: start again.
+        if (atEnd(c) && !c.hasNextMediaItem()) c.seekTo(0)
         c.play()
+    }
+
+    private fun atEnd(c: MediaController): Boolean {
+        val d = c.duration
+        return d != C.TIME_UNSET && d > 0 && c.currentPosition >= d - 1_500
     }
 
     // 0.5.0: in remote mode (a YouTube Music item) the transport goes to YouTube Music.

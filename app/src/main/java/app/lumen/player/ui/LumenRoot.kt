@@ -149,6 +149,9 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
     val notesByUri by vm.notesByUri.collectAsState()
     val notesQuery by vm.notesQuery.collectAsState()
     val nowNotes by vm.nowNotes.collectAsState()
+    val playlistEntries by vm.playlistEntries.collectAsState()
+    val openPlaylist by vm.openPlaylist.collectAsState()
+    val playlistPicker by vm.playlistPicker.collectAsState()
     val nowSegments by vm.nowSegments.collectAsState()
     val justMarked by vm.justMarked.collectAsState()
     val lastRemoved by vm.lastRemoved.collectAsState()
@@ -226,6 +229,8 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
         setPreset = vm::setPreset,
         queue = vm::queueSnapshot,
         jumpToQueue = vm::jumpToQueue,
+        remotePrevious = { vm.remoteSkip(forward = false) },
+        remoteNext = { vm.remoteSkip(forward = true) },
     )
 
     val nowPlaying: @Composable (Boolean) -> Unit = { paned ->
@@ -331,6 +336,25 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
                         onAllowYouTubeMusic = actions.openNotificationAccess,
                     ),
                 )
+                Screen.Playlists -> PlaylistsScreen(
+                    labels = labels,
+                    entries = playlistEntries,
+                    items = items,
+                    player = player,
+                    openId = openPlaylist,
+                    picker = playlistPicker,
+                    actions = PlaylistActions(
+                        open = { vm.openPlaylist.value = it },
+                        newPlaylist = { vm.openLabelSheet(LabelSheetTarget.EditLabel(null)) },
+                        edit = { vm.openLabelSheet(LabelSheetTarget.EditLabel(it)) },
+                        play = { label, from, shuffle -> vm.playPlaylist(label, from, shuffle) },
+                        reorder = vm::reorderPlaylist,
+                        remove = vm::removeFromPlaylist,
+                        openPicker = { vm.playlistPicker.value = it },
+                        toggleMember = vm::togglePlaylistMember,
+                        back = { vm.playlistBack() },
+                    ),
+                )
                 Screen.Settings -> SettingsScreen(
                     settings = settings,
                     folders = folders,
@@ -419,6 +443,7 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
                 when {
                     screen == Screen.DriveBrowser -> vm.driveBrowserBack()
                     screen == Screen.Library && vm.libraryBack() -> Unit
+                    screen == Screen.Playlists && vm.playlistBack() -> Unit
                     else -> vm.screen.value = Screen.Home
                 }
             }
@@ -436,7 +461,7 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
                     } else {
                         Column(Modifier.fillMaxSize()) {
                             Box(Modifier.weight(1f).fillMaxWidth()) { screens() }
-                            if (player.hasItem && screen == Screen.Library) {
+                            if (player.hasItem && (screen == Screen.Library || screen == Screen.Playlists)) {
                                 // 0.5.0: in remote mode the bar shows YouTube Music's own title and time.
                                 val r = remote
                                 val positionMs = r?.positionMs ?: player.positionMs
@@ -464,6 +489,7 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
                             when {
                                 screen == Screen.DriveBrowser -> vm.driveBrowserBack()
                                 screen == Screen.Library && vm.libraryBack() -> Unit
+                                screen == Screen.Playlists && vm.playlistBack() -> Unit
                                 else -> vm.screen.value = Screen.Home
                             }
                         }
@@ -560,6 +586,7 @@ private fun NavRail(current: Screen, onSelect: (Screen) -> Unit) {
         ) {
             RailItem("Home", LumenIcons.Home, current == Screen.Home) { onSelect(Screen.Home) }
             RailItem("Library", LumenIcons.Library, current == Screen.Library) { onSelect(Screen.Library) }
+            RailItem("Playlists", LumenIcons.Playlist, current == Screen.Playlists) { onSelect(Screen.Playlists) }
         }
         Box(Modifier.width(1.dp).fillMaxHeight().background(c.line))
     }

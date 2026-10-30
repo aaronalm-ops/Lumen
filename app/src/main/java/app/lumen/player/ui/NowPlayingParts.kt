@@ -151,7 +151,7 @@ fun MusicActions(player: PlayerState, settings: Settings, actions: NowPlayingAct
         if (!hideSleep) {
             ActionTile(LumenIcons.Moon, "Sleep", Modifier.weight(1f), value = sleepValue(settings), active = settings.sleepActive) { onSheet(NowSheet.SLEEP) }
         }
-        ActionTile(LumenIcons.Label, "Labels", Modifier.weight(1f), enabled = player.hasItem, onClick = actions.openLabelSheet)
+        ActionTile(LumenIcons.Playlist, "Playlists", Modifier.weight(1f), enabled = player.hasItem, onClick = actions.openLabelSheet)
         ActionTile(LumenIcons.Sound, "Sound", Modifier.weight(1f), value = settings.eqPreset, enabled = settings.eqEngine != "none") { onSheet(NowSheet.SOUND) }
         ActionTile(LumenIcons.Queue, "Queue", Modifier.weight(1f), enabled = player.queueSize > 1) { onSheet(NowSheet.QUEUE) }
         ActionTile(LumenIcons.More, "More", Modifier.weight(1f)) { onSheet(NowSheet.MORE) }
@@ -462,7 +462,7 @@ fun NowPlayingSheet(
                         SwitchRow("Level out voices", if (levelOutAvailable) "Brings quiet and loud speakers closer" else "Needs an equaliser this phone does not offer",
                             checked = settings.levelOutVoices && levelOutAvailable, enabled = levelOutAvailable, onChange = actions.setLevelOutVoices)
                         SwitchRow("Trim silences", "Skips long pauses in speech", checked = settings.trimSilences, enabled = true, onChange = actions.setTrimSilences)
-                        MoreRow("Labels", item?.let { "${it.labelIds.size}" }, enabled = item != null) {
+                        MoreRow("Add to playlists", item?.let { "${it.labelIds.size}" }, enabled = item != null) {
                             onSheet(null)
                             actions.openLabelSheet()
                         }

@@ -630,6 +630,17 @@ The Library opens on a row of section chips under the title: All, Phone, Drive, 
 4. Tap YouTube Music and Suno: either the files or a card saying how to fill the section.
 5. Close and reopen Lumen: the Library opens on the last section chosen.
 
+## 0.8.0
+
+### Playlists tab
+- Third tab: Home, Library, Playlists. A playlist is what a label was (Kids lock, No interruptions and Shuffle on open stay as its settings); it now keeps an order.
+- Room v6: `media_labels.position` (numbered as added by the migration); new members go to the end. The destructive migration fallback is removed: a missing migration must never wipe saved places.
+- Overview: each playlist with its count, total time, sources (Phone, Drive, YouTube Music) and a play button. Detail: Play, Shuffle, Add, Edit; rows in order with a drag handle (the order saves when the finger lifts), tap plays from that row, the menu removes it. Add: every file in the library by section with search; a tick adds to the end or takes it out.
+- "Labels" reads "Playlists" everywhere (the item sheet, Now Playing's tile and More).
+
+### YouTube Music controls without notification access
+- Once YouTube Music has the song, play, pause, previous and next reach it as media keys (AudioManager.dispatchMediaKeyEvent, no permission). Playing or paused comes from AudioManager.isMusicActive while Lumen is paused. Next in Lumen moves Lumen's queue on. Lumen still cannot read YouTube Music's title, position or the end of its song.
+
 ## 0.7.0 (Now Playing redesign; Aaron, 2026-10-28: Option B for sermons, Option A for music)
 
 - Nothing scrolls sideways and nothing needs a long press. The hint lines are gone.

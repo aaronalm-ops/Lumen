@@ -70,12 +70,18 @@ class LabelRepository(private val dao: LabelDao, private val settings: SettingsR
 
     suspend fun mediaUrisFor(labelId: Long): List<String> = dao.mediaUrisFor(labelId)
 
-    suspend fun attach(uri: String, labelId: Long) = dao.attach(MediaLabelEntity(uri, labelId))
+    /** 0.8.0: a new member goes to the end of the playlist. */
+    suspend fun attach(uri: String, labelId: Long) = dao.attach(MediaLabelEntity(uri, labelId, dao.nextPosition(labelId)))
 
     suspend fun detach(uri: String, labelId: Long) = dao.detach(uri, labelId)
 
     suspend fun toggle(uri: String, labelId: Long) {
-        if (labelId in dao.labelIdsFor(uri)) dao.detach(uri, labelId) else dao.attach(MediaLabelEntity(uri, labelId))
+        if (labelId in dao.labelIdsFor(uri)) dao.detach(uri, labelId) else attach(uri, labelId)
+    }
+
+    /** 0.8.0: the playlist in this order (the uris as stored on its links). */
+    suspend fun reorder(labelId: Long, uris: List<String>) {
+        uris.forEachIndexed { index, uri -> dao.setPosition(uri, labelId, index) }
     }
 
     /** The Suno label is created the first time a Suno file is scanned. */

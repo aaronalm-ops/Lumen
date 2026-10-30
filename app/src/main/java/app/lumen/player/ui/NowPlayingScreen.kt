@@ -138,6 +138,9 @@ class NowPlayingActions(
     val setPreset: (String) -> Unit = {},
     val queue: () -> List<QueueEntry> = { emptyList() },
     val jumpToQueue: (Int) -> Unit = {},
+    /** 0.8.0: previous and next inside YouTube Music (its own songs), not Lumen's queue. */
+    val remotePrevious: () -> Unit = {},
+    val remoteNext: () -> Unit = {},
 )
 
 /** The tabletop split, in this screen's own coordinates: the height above the hinge and the hinge itself. */
@@ -621,9 +624,35 @@ private fun RemoteLayout(remote: RemoteUi, player: PlayerState, labels: List<Lab
             PlayButton(isPlaying = remote.isPlaying, enabled = true, size = 72.dp, onClick = actions.playPause)
             IconTap(LumenIcons.SkipNext, "Next in YouTube Music", c.accentInk, size = 28.dp, onClick = actions.next)
         }
+    } else if (remote.keys) {
+        // 0.8.0: YouTube Music has the song. Play, pause and skip reach it as media keys; Lumen
+        // cannot see its position, so there is no scrubber, and Next in Lumen moves the queue on.
+        Spacer(Modifier.height(8.dp))
+        Text(
+            if (remote.isPlaying) "Playing in YouTube Music" else "Paused in YouTube Music",
+            style = Lumen.type.bodyS,
+            color = c.text2,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(14.dp))
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(28.dp, Alignment.CenterHorizontally),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconTap(LumenIcons.SkipPrevious, "Previous in YouTube Music", c.accentInk, size = 28.dp, onClick = actions.remotePrevious)
+            PlayButton(isPlaying = remote.isPlaying, enabled = true, size = 72.dp, onClick = actions.playPause)
+            IconTap(LumenIcons.SkipNext, "Next in YouTube Music", c.accentInk, size = 28.dp, onClick = actions.remoteNext)
+        }
+        Spacer(Modifier.height(16.dp))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally)) {
+            if (player.nextTitle != null) PrimaryPill("Next in Lumen", icon = LumenIcons.SkipNext, onClick = actions.next)
+            SecondaryPill("Open YouTube Music", onClick = actions.openYouTubeMusic)
+        }
     } else {
         Spacer(Modifier.height(8.dp))
-        Text("Plays in YouTube Music. Pause and skip it there", style = Lumen.type.body, color = c.text2)
+        Text("Plays in YouTube Music", style = Lumen.type.body, color = c.text2)
         if (!remote.access && RemoteController.CONTROL_ENABLED) {
             Text(
                 "Allow Lumen to control YouTube Music in Settings to see it here and move on to the next item",
@@ -633,7 +662,7 @@ private fun RemoteLayout(remote: RemoteUi, player: PlayerState, labels: List<Lab
             )
         }
         Spacer(Modifier.height(16.dp))
-        PrimaryPill("Open YouTube Music", icon = LumenIcons.Play, onClick = actions.openYouTubeMusic)
+        PrimaryPill("Play in YouTube Music", icon = LumenIcons.Play, onClick = actions.playPause)
         // 0.6.1: the Lumen queue carries on from here, so a YouTube Music song is never a dead end.
         if (player.nextTitle != null) {
             Spacer(Modifier.height(10.dp))

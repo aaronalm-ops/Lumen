@@ -83,7 +83,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 
-enum class Screen { Home, Library, Settings, DriveBrowser }
+enum class Screen { Home, Library, Settings, DriveBrowser, Playlists }
 
 private const val KEY_LIBRARY_SOURCE = "library_source"
 
@@ -156,6 +156,8 @@ data class RemoteUi(
     val positionMs: Long,
     val durationMs: Long,
     val isPlaying: Boolean,
+    /** 0.8.0: no session access, so play, pause and skip go to YouTube Music as media keys. */
+    val keys: Boolean = false,
 )
 
 /**
@@ -170,6 +172,9 @@ data class TimelineMark(
 ) {
     val isChapter: Boolean get() = chapter != null
 }
+
+/** 0.8.0: one member of a playlist, with the uri its link is stored under. */
+data class PlaylistEntry(val item: LibraryItem, val linkUri: String)
 
 /** 0.7.0: one row of the Queue sheet. */
 data class QueueEntry(val index: Int, val title: String, val current: Boolean)
@@ -359,6 +364,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             null
         } else {
             val live = access && s.connected
+            val keys = !live && remoteOpened
             RemoteUi(
                 link = link,
                 access = access,
@@ -368,7 +374,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 art = if (live) s.art else null,
                 positionMs = if (live) s.positionNow(SystemClock.elapsedRealtime()) else 0L,
                 durationMs = if (live) s.durationMs else 0L,
-                isPlaying = live && s.isPlaying,
+                isPlaying = if (live) s.isPlaying else keys && ytm.musicActive(),
+                keys = keys,
             )
         }
     }.state(null)
@@ -749,20 +756,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun playLabel(label: LabelEntity) {
-        val members = items.value.filter { label.id in it.labelIds }.sortedByDescending { it.media.dateAdded }
-        if (members.isEmpty()) return
-        val ordered = if (label.shuffleOnOpen) members.shuffled() else members
-        play(ordered.first(), ordered)
-    }
+    fun playLabel(label: LabelEntity) = playPlaylist(label)
 
     /** Used by shortcuts before the UI flows have loaded: reads the label straight from Room. */
     private fun playLabelFromDb(name: String) {
         viewModelScope.launch {
             val label = labelRepo.byName(name) ?: return@launch
+            // 0.8.0: in the playlist's own order.
             val rows = labelRepo.mediaUrisFor(label.id).mapNotNull { mediaRepo.byUri(it) }
                 .distinctBy { it.fingerprint }
-                .sortedByDescending { it.dateAdded }
             if (rows.isEmpty()) return@launch
             val ordered = if (label.shuffleOnOpen) rows.shuffled() else rows
             val mediaItems = ordered.map { mediaItemFor(it) }
@@ -1286,9 +1288,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         when {
             ytmAccess.value && state.connected && state.isPlaying -> ytm.pause()
             ytmAccess.value && state.connected -> ytm.play()
+            // 0.8.0: once YouTube Music has the song, play and pause reach it as a media key.
+            remoteOpened -> ytm.keyPlayPause()
             else -> enterRemote(link.uri, open = true)
         }
+        remoteTick.value = SystemClock.elapsedRealtime()
     }
+
+    /** 0.8.0: skip inside YouTube Music (its own next song), as distinct from Lumen's queue. */
+    fun remoteSkip(forward: Boolean) {
+        if (remoteLink() == null) return
+        val state = ytm.state.value
+        if (ytmAccess.value && state.connected) {
+            if (forward) ytm.next() else ytm.previous()
+        } else {
+            if (forward) ytm.keyNext() else ytm.keyPrevious()
+        }
+    }
+
+    /** 0.8.0: YouTube Music was opened on the current link, so media keys now reach it. */
+    private var remoteOpened = false
 
     /**
      * A YouTube Music item is current. Follows YouTube Music's session (with Notification access)
@@ -1302,6 +1321,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         ytmAccess.value = ytm.hasAccess()
         val following = ytm.follow(true)
         if (!open) return
+        remoteOpened = true
         // Without access nothing can be watched, so the queue does not move on by itself.
         ytmWatch = if (following) YtmWatch(link) else null
         if (foreground) {
@@ -1315,6 +1335,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun leaveRemote() {
         if (remoteUri == null) return
         remoteUri = null
+        remoteOpened = false
         ytmWatch = null
         ytm.follow(false)
     }
@@ -1558,6 +1579,70 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 c.seekToDefaultPosition(index)
                 c.play()
             }
+        }
+    }
+
+
+    // 0.8.0: playlists (the labels, with an order), one tab of their own.
+
+    /** The playlist open in the Playlists tab; null shows the list of playlists. */
+    val openPlaylist = MutableStateFlow<Long?>(null)
+
+    /** The "Add songs" picker over the open playlist. */
+    val playlistPicker = MutableStateFlow(false)
+
+    /** Every playlist's members in order. A member stored under another copy's uri maps to its library row. */
+    val playlistEntries: StateFlow<Map<Long, List<PlaylistEntry>>> = combine(links, items, mediaRows) { links, items, rows ->
+        val byUri = items.associateBy { it.uri }
+        val byFingerprint = items.associateBy { it.media.fingerprint }
+        val rowByUri = rows.associateBy { it.uri }
+        links.groupBy { it.labelId }.mapValues { (_, members) ->
+            members.sortedBy { it.position }.mapNotNull { link ->
+                val item = byUri[link.mediaUri] ?: rowByUri[link.mediaUri]?.let { byFingerprint[it.fingerprint] }
+                item?.let { PlaylistEntry(it, link.mediaUri) }
+            }.distinctBy { it.item.uri }
+        }
+    }.flowOn(Dispatchers.Default).state(emptyMap())
+
+    fun openPlaylistScreen(labelId: Long?) {
+        playlistPicker.value = false
+        openPlaylist.value = labelId
+        screen.value = Screen.Playlists
+    }
+
+    /** Back inside the Playlists tab: the picker first, then the open playlist. */
+    fun playlistBack(): Boolean = when {
+        playlistPicker.value -> {
+            playlistPicker.value = false
+            true
+        }
+        openPlaylist.value != null -> {
+            openPlaylist.value = null
+            true
+        }
+        else -> false
+    }
+
+    fun playPlaylist(label: LabelEntity, from: LibraryItem? = null, shuffle: Boolean = label.shuffleOnOpen && from == null) {
+        val members = playlistEntries.value[label.id].orEmpty().map { it.item }
+        if (members.isEmpty()) return
+        val ordered = if (shuffle) members.shuffled() else members
+        play(from ?: ordered.first(), ordered)
+    }
+
+    fun reorderPlaylist(labelId: Long, entries: List<PlaylistEntry>) {
+        viewModelScope.launch { labelRepo.reorder(labelId, entries.map { it.linkUri }) }
+    }
+
+    fun removeFromPlaylist(labelId: Long, entry: PlaylistEntry) {
+        viewModelScope.launch { labelRepo.detach(entry.linkUri, labelId) }
+    }
+
+    /** The picker's tick: adds to the end, or takes it out. */
+    fun togglePlaylistMember(labelId: Long, item: LibraryItem) {
+        val existing = playlistEntries.value[labelId].orEmpty().firstOrNull { it.item.uri == item.uri }
+        viewModelScope.launch {
+            if (existing != null) labelRepo.detach(existing.linkUri, labelId) else labelRepo.attach(item.uri, labelId)
         }
     }
 

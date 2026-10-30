@@ -236,6 +236,25 @@ object LumenIcons {
         }
     }
 
+    /** 0.8.0: playlists, three lines and a note. */
+    val Playlist: ImageVector by lazy {
+        icon("playlist") {
+            stroke { moveTo(4f, 6f); lineTo(15f, 6f) }
+            stroke { moveTo(4f, 11f); lineTo(15f, 11f) }
+            stroke { moveTo(4f, 16f); lineTo(10f, 16f) }
+            stroke { moveTo(18f, 8f); lineTo(18f, 17f) }
+            fill { moveTo(18f, 17f); arcTo(2.2f, 2.2f, 0f, true, true, 17.99f, 17f); close() }
+        }
+    }
+
+    /** 0.8.0: a drag handle, two short lines. */
+    val Handle: ImageVector by lazy {
+        icon("handle") {
+            stroke { moveTo(6f, 10f); lineTo(18f, 10f) }
+            stroke { moveTo(6f, 14f); lineTo(18f, 14f) }
+        }
+    }
+
     /** 0.7.0: speed, a dial with its needle. */
     val Speed: ImageVector by lazy {
         icon("speed") {

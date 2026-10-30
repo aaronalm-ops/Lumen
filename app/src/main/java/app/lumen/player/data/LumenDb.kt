@@ -96,6 +96,8 @@ data class LabelEntity(
 data class MediaLabelEntity(
     @ColumnInfo(name = "media_uri") val mediaUri: String,
     @ColumnInfo(name = "label_id") val labelId: Long,
+    /** 0.8.0: the order within the playlist; new members go to the end. */
+    @ColumnInfo(name = "position", defaultValue = "0") val position: Int = 0,
 )
 
 @Entity(tableName = "bookmarks", indices = [Index(value = ["media_uri"])])
@@ -284,7 +286,7 @@ interface LabelDao {
     @Query("DELETE FROM labels WHERE id = :id")
     suspend fun delete(id: Long)
 
-    @Query("SELECT * FROM media_labels")
+    @Query("SELECT * FROM media_labels ORDER BY label_id ASC, position ASC, rowid ASC")
     fun mediaLabelsFlow(): Flow<List<MediaLabelEntity>>
 
     @Query("SELECT * FROM media_labels")
@@ -293,7 +295,7 @@ interface LabelDao {
     @Query("SELECT label_id FROM media_labels WHERE media_uri = :uri")
     suspend fun labelIdsFor(uri: String): List<Long>
 
-    @Query("SELECT media_uri FROM media_labels WHERE label_id = :labelId")
+    @Query("SELECT media_uri FROM media_labels WHERE label_id = :labelId ORDER BY position ASC, rowid ASC")
     suspend fun mediaUrisFor(labelId: Long): List<String>
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
@@ -304,6 +306,12 @@ interface LabelDao {
 
     @Query("DELETE FROM media_labels WHERE label_id = :labelId")
     suspend fun detachAll(labelId: Long)
+
+    @Query("SELECT COALESCE(MAX(position), -1) + 1 FROM media_labels WHERE label_id = :labelId")
+    suspend fun nextPosition(labelId: Long): Int
+
+    @Query("UPDATE media_labels SET position = :position WHERE media_uri = :uri AND label_id = :labelId")
+    suspend fun setPosition(uri: String, labelId: Long, position: Int)
 }
 
 /**
@@ -383,7 +391,7 @@ interface NotesDao {
         NotesEntity::class,
         SegmentEntity::class,
     ],
-    version = 5,
+    version = 6,
     exportSchema = false,
 )
 abstract class LumenDb : RoomDatabase() {
@@ -480,13 +488,22 @@ abstract class LumenDb : RoomDatabase() {
             }
         }
 
+        /** 0.7.x to 0.8.0. Playlists keep an order: one column on `media_labels`, numbered as added. */
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `media_labels` ADD COLUMN `position` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL(
+                    "UPDATE `media_labels` SET `position` = (SELECT COUNT(*) FROM `media_labels` AS m2 " +
+                        "WHERE m2.`label_id` = `media_labels`.`label_id` AND m2.rowid < `media_labels`.rowid)",
+                )
+            }
+        }
+
         fun build(context: Context): LumenDb =
             Room.databaseBuilder(context.applicationContext, LumenDb::class.java, "lumen.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
-                // Phase 1 only: if a later Phase 1 build changes the new tables, start those over
-                // rather than crash. The 1 to 2 migration above still runs first, so progress
-                // written in Phase 0 is never dropped by it.
-                .fallbackToDestructiveMigration(true)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
+                // 0.8.0 (red team round 2): no destructive fallback. Every version step has its
+                // migration; a missing one must never wipe saved places, labels or notes.
                 .build()
     }
 }

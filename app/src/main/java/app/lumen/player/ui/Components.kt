@@ -558,12 +558,13 @@ fun BottomBar(current: Screen, onSelect: (Screen) -> Unit) {
                 .fillMaxWidth()
                 .navigationBarsPadding()
                 .height(64.dp)
-                .padding(horizontal = 40.dp),
+                .padding(horizontal = 24.dp),
             horizontalArrangement = Arrangement.SpaceAround,
             verticalAlignment = Alignment.CenterVertically,
         ) {
             BarItem("Home", LumenIcons.Home, current == Screen.Home) { onSelect(Screen.Home) }
             BarItem("Library", LumenIcons.Library, current == Screen.Library) { onSelect(Screen.Library) }
+            BarItem("Playlists", LumenIcons.Playlist, current == Screen.Playlists) { onSelect(Screen.Playlists) }
         }
     }
 }

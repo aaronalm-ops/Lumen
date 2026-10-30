@@ -127,7 +127,7 @@ private fun ItemLabelsBody(
     Spacer(Modifier.height(12.dp))
     Text(item.media.title, style = Lumen.type.displayS, color = c.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
     Spacer(Modifier.height(4.dp))
-    Text("Labels", style = Lumen.type.label, color = c.text2)
+    Text("Playlists", style = Lumen.type.label, color = c.text2)
     Spacer(Modifier.height(8.dp))
     labels.forEachIndexed { index, label ->
         val on = label.id in item.labelIds
@@ -162,7 +162,7 @@ private fun ItemLabelsBody(
         if (index < labels.lastIndex) HorizontalDivider(color = c.divider, thickness = 1.dp)
     }
     Spacer(Modifier.height(8.dp))
-    TextAction("New label", onClick = onNew)
+    TextAction("New playlist", onClick = onNew)
     if (item.media.isDrive) {
         // Phase 1b: the long-press route to "Keep offline" for a Drive row.
         Spacer(Modifier.height(8.dp))
@@ -230,7 +230,7 @@ private fun EditLabelBody(
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         IconTap(LumenIcons.ChevronLeft, "Back", c.text, onClick = onBack)
         Spacer(Modifier.width(4.dp))
-        Text(if (isNew) "New label" else "Edit label", style = Lumen.type.displayS, color = c.text)
+        Text(if (isNew) "New playlist" else "Edit playlist", style = Lumen.type.displayS, color = c.text)
     }
     Spacer(Modifier.height(12.dp))
     Text("Name", style = Lumen.type.label, color = c.text2)
@@ -252,7 +252,7 @@ private fun EditLabelBody(
             .padding(horizontal = 14.dp),
         contentAlignment = Alignment.CenterStart,
     ) {
-        if (name.isEmpty()) Text("Label name", style = Lumen.type.body, color = c.text3)
+        if (name.isEmpty()) Text("Playlist name", style = Lumen.type.body, color = c.text3)
         BasicTextField(
             value = name,
             onValueChange = { name = it; error = null },
@@ -292,7 +292,7 @@ private fun EditLabelBody(
     Spacer(Modifier.height(12.dp))
     ToggleRow("Lock for kids", "Only play, previous and next; hold the top-right corner to leave", lockKids) { lockKids = it }
     ToggleRow("No interruptions", "Keeps the screen on, dimmed, and hides the sleep timer", noInterruptions) { noInterruptions = it }
-    ToggleRow("Shuffle on open", "Plays this label in a random order", shuffleOnOpen) { shuffleOnOpen = it }
+    ToggleRow("Shuffle on open", "Plays this playlist in a random order", shuffleOnOpen) { shuffleOnOpen = it }
     Spacer(Modifier.height(16.dp))
     PrimaryPill("Save", icon = LumenIcons.Check) {
         scope.launch {
@@ -301,14 +301,14 @@ private fun EditLabelBody(
                 view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
                 onSaved()
             } else {
-                error = if (name.isBlank()) "Give the label a name" else "A label with this name already exists"
+                error = if (name.isBlank()) "Give the playlist a name" else "A playlist with this name already exists"
             }
         }
     }
     if (!isNew) {
         Spacer(Modifier.height(4.dp))
         Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-            TextAction("Delete label", danger = true, onClick = onDelete)
+            TextAction("Delete playlist", danger = true, onClick = onDelete)
         }
     }
 }

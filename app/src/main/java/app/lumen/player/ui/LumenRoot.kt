@@ -87,6 +87,8 @@ class RootActions(
     val openGeminiKeyPage: () -> Unit,
     /** 0.6.0: asks once for notifications (Android 13 and later) so the notes job can show progress. */
     val requestNotifications: () -> Unit,
+    /** 0.8.1: the Google sheet for reading YouTube playlists. */
+    val youtubeSignIn: () -> Unit = {},
 )
 
 /**
@@ -152,6 +154,7 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
     val playlistEntries by vm.playlistEntries.collectAsState()
     val openPlaylist by vm.openPlaylist.collectAsState()
     val playlistPicker by vm.playlistPicker.collectAsState()
+    val ytImport by vm.ytImport.collectAsState()
     val nowSegments by vm.nowSegments.collectAsState()
     val justMarked by vm.justMarked.collectAsState()
     val lastRemoved by vm.lastRemoved.collectAsState()
@@ -353,6 +356,7 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
                         openPicker = { vm.playlistPicker.value = it },
                         toggleMember = vm::togglePlaylistMember,
                         back = { vm.playlistBack() },
+                        importYouTube = { vm.openYtImport() },
                     ),
                 )
                 Screen.Settings -> SettingsScreen(
@@ -556,6 +560,30 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
                         vm.nowPlayingOpen.value = false
                         vm.screen.value = Screen.Settings
                     },
+                )
+            }
+        }
+
+        // 0.8.1: the YouTube playlist song picker, over everything.
+        ytImport?.let { st ->
+            LumenTheme(dark = appearanceDark) {
+                val c = Lumen.colours
+                SystemBars(light = !appearanceDark, background = c.base)
+                YtImportScreen(
+                    state = st,
+                    labels = labels,
+                    actions = YtImportActions(
+                        close = vm::closeYtImport,
+                        setLink = vm::setYtImportLink,
+                        load = vm::loadYtImport,
+                        signIn = actions.youtubeSignIn,
+                        toggle = vm::toggleYtTrack,
+                        selectAll = vm::selectAllYt,
+                        setTarget = vm::setYtTarget,
+                        setNewName = vm::setYtNewName,
+                        add = vm::addYtSelected,
+                        addAsOneLink = vm::addYtAsOneLink,
+                    ),
                 )
             }
         }

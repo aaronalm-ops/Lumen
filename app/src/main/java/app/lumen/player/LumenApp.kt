@@ -55,6 +55,9 @@ class LumenApp : Application() {
     /** 0.5.0: YouTube Music's session, followed while a YouTube Music item is current. */
     val remote: RemoteController by lazy { RemoteController(this) }
 
+    /** 0.8.1: reads YouTube playlists for the song picker. */
+    val youtube: app.lumen.player.remote.YoutubeApi by lazy { app.lumen.player.remote.YoutubeApi(this) }
+
     /** Application-wide work that must outlive any screen: seeding labels, the start-up scan. */
     val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 

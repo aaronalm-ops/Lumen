@@ -630,6 +630,13 @@ The Library opens on a row of section chips under the title: All, Phone, Drive, 
 4. Tap YouTube Music and Suno: either the files or a card saying how to fill the section.
 5. Close and reopen Lumen: the Library opens on the last section chosen.
 
+## 0.8.1
+
+### Pick songs from a YouTube Music playlist
+- Sharing a playlist or album link from YouTube Music to Lumen (or "Pick songs from a YouTube Music playlist" in Playlists, or "From YouTube" inside a playlist) opens a song picker: every song with its artist and length, ticked one by one or all at once, then added in the playlist's order to a Lumen playlist (an existing one, or a new one named after the YouTube playlist). Each song is its own row that plays in YouTube Music. "Add the whole playlist as one link instead" keeps the 0.5.0 behaviour.
+- YouTube Data API v3 (playlists.list, playlistItems.list, videos.list for lengths) with the owner's Google account through Play Services AuthorizationClient, scope youtube.readonly, asked once. Deleted and private videos are left out. Mixes YouTube makes on the fly (radio) cannot be read.
+- Owner setup (once), Google Cloud project 189838965059: enable "YouTube Data API v3"; on the Data Access page add the scope youtube.readonly.
+
 ## 0.8.0
 
 ### Playlists tab

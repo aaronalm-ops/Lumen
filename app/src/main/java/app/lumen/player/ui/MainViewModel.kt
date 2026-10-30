@@ -1363,8 +1363,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         ytm.openApp()
     }
 
-    /** A song or playlist shared from YouTube Music: stored in the Library, then the label sheet. */
+    /**
+     * A song or playlist shared from YouTube Music. 0.8.1: a playlist opens the song picker, so its
+     * songs can be ticked into Lumen one by one; a song is stored and the playlist sheet opens.
+     */
     fun addSharedYouTubeMusic(shared: YtmLink.Shared) {
+        if (shared.link.isList) {
+            nowPlayingOpen.value = false
+            screen.value = Screen.Playlists
+            openYtImport(shared.link.id, shared)
+            return
+        }
+        addSharedYouTubeMusicLink(shared)
+    }
+
+    /** The 0.5.0 behaviour: the link itself as one Library row, then the playlist sheet. */
+    fun addSharedYouTubeMusicLink(shared: YtmLink.Shared) {
         viewModelScope.launch {
             val now = System.currentTimeMillis()
             val media = shared.link.toMediaEntity(shared.title, shared.artist, now)
@@ -1643,6 +1657,139 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val existing = playlistEntries.value[labelId].orEmpty().firstOrNull { it.item.uri == item.uri }
         viewModelScope.launch {
             if (existing != null) labelRepo.detach(existing.linkUri, labelId) else labelRepo.attach(item.uri, labelId)
+        }
+    }
+
+
+    // 0.8.1: pick songs from a YouTube or YouTube Music playlist.
+
+    data class YtImport(
+        val linkText: String = "",
+        val listId: String? = null,
+        val loading: Boolean = false,
+        val needsSignIn: Boolean = false,
+        val error: String? = null,
+        val title: String = "",
+        val tracks: List<app.lumen.player.remote.YoutubeApi.Track> = emptyList(),
+        val selected: Set<String> = emptySet(),
+        /** The Lumen playlist the songs go to; null makes a new one named [newName]. */
+        val targetLabelId: Long? = null,
+        val newName: String = "",
+        val adding: Boolean = false,
+        /** The share that opened the picker, for "Add as one link instead". */
+        val shared: YtmLink.Shared? = null,
+    )
+
+    val ytImport = MutableStateFlow<YtImport?>(null)
+    private val youtube = app.youtube
+
+    fun openYtImport(listId: String? = null, shared: YtmLink.Shared? = null) {
+        ytImport.value = YtImport(
+            linkText = listId?.let { "https://music.youtube.com/playlist?list=$it" }.orEmpty(),
+            listId = listId,
+            shared = shared,
+            targetLabelId = openPlaylist.value,
+        )
+        if (listId != null) loadYtImport()
+    }
+
+    fun closeYtImport() {
+        ytImport.value = null
+    }
+
+    fun setYtImportLink(text: String) {
+        ytImport.value = ytImport.value?.copy(linkText = text, error = null)
+    }
+
+    fun loadYtImport() {
+        val st = ytImport.value ?: return
+        val id = st.listId ?: Regex("https?://\\S+").find(st.linkText)?.value?.let { YtmLink.fromUrl(it) }?.takeIf { it.isList }?.id
+            ?: Regex("[?&]list=([A-Za-z0-9_-]+)").find(st.linkText)?.groupValues?.get(1)
+        if (id == null) {
+            ytImport.value = st.copy(error = "Paste a link to a playlist or album (it has list= in it)")
+            return
+        }
+        ytImport.value = st.copy(listId = id, loading = true, error = null, needsSignIn = false)
+        viewModelScope.launch {
+            try {
+                val list = withContext(Dispatchers.IO) { youtube.fetchPlaylist(id) }
+                val now = ytImport.value ?: return@launch
+                ytImport.value = now.copy(
+                    loading = false,
+                    title = list.title,
+                    tracks = list.tracks,
+                    selected = emptySet(),
+                    newName = now.newName.ifBlank { list.title.ifBlank { "From YouTube Music" } },
+                    error = if (list.tracks.isEmpty()) "No songs could be read from this playlist" else null,
+                )
+            } catch (e: app.lumen.player.remote.YoutubeApi.NeedsSignIn) {
+                ytImport.value = ytImport.value?.copy(loading = false, needsSignIn = true)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                RingLog.w("youtube", "import failed: $t")
+                ytImport.value = ytImport.value?.copy(loading = false, error = t.message ?: "Could not read the playlist")
+            }
+        }
+    }
+
+    fun toggleYtTrack(videoId: String) {
+        val st = ytImport.value ?: return
+        ytImport.value = st.copy(selected = if (videoId in st.selected) st.selected - videoId else st.selected + videoId)
+    }
+
+    fun selectAllYt(all: Boolean) {
+        val st = ytImport.value ?: return
+        ytImport.value = st.copy(selected = if (all) st.tracks.map { it.videoId }.toSet() else emptySet())
+    }
+
+    fun setYtTarget(labelId: Long?) {
+        ytImport.value = ytImport.value?.copy(targetLabelId = labelId)
+    }
+
+    fun setYtNewName(name: String) {
+        ytImport.value = ytImport.value?.copy(newName = name)
+    }
+
+    /** "Add as one link instead": the whole playlist as a single row that opens in YouTube Music. */
+    fun addYtAsOneLink() {
+        val shared = ytImport.value?.shared ?: return
+        ytImport.value = null
+        addSharedYouTubeMusicLink(shared)
+    }
+
+    /** Stores the ticked songs (in the playlist's order) and adds them to the chosen Lumen playlist. */
+    fun addYtSelected() {
+        val st = ytImport.value ?: return
+        val chosen = st.tracks.filter { it.videoId in st.selected }
+        if (chosen.isEmpty() || st.adding) return
+        ytImport.value = st.copy(adding = true)
+        viewModelScope.launch {
+            try {
+                val labelId = st.targetLabelId ?: run {
+                    val existing = labels.value
+                    var name = st.newName.trim().ifBlank { "From YouTube Music" }
+                    var n = 2
+                    while (existing.any { it.name.equals(name, ignoreCase = true) }) name = "${st.newName.trim()} ($n)".also { n++ }
+                    labelRepo.save(LabelEntity(name = name, hue = existing.size % 6, lockKids = false, noInterruptions = false, shuffleOnOpen = false))?.id
+                } ?: return@launch
+                val folder = FolderEntity(uri = YtmLink.FOLDER_URI, name = YtmLink.FOLDER_NAME, addedAt = System.currentTimeMillis())
+                val members = labelRepo.mediaUrisFor(labelId).toSet()
+                chosen.forEachIndexed { i, track ->
+                    val link = YtmLink(track.videoId, isList = false)
+                    val media = link.toMediaEntity(track.title, track.artist, System.currentTimeMillis() + i).copy(durationMs = track.durationMs)
+                    mediaRepo.upsertYouTubeMusic(folder, media)
+                    if (link.uri !in members) labelRepo.attach(link.uri, labelId)
+                }
+                RingLog.i("youtube", "added ${chosen.size} songs to playlist $labelId")
+                ytImport.value = null
+                openPlaylistScreen(labelId)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                RingLog.e("youtube", "add failed", t)
+                ytImport.value = ytImport.value?.copy(adding = false, error = "Could not add the songs")
+            }
         }
     }
 

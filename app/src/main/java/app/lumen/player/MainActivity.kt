@@ -81,6 +81,38 @@ class MainActivity : ComponentActivity() {
     }
     private var notificationsAsked = false
 
+    /** 0.8.1: the Google sheet for youtube.readonly, then the playlist loads. */
+    private val youtubeSignIn = registerForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
+        if (result.resultCode != Activity.RESULT_OK) {
+            RingLog.i("youtube", "sign-in sheet dismissed")
+            return@registerForActivityResult
+        }
+        try {
+            val yt = LumenApp.from(this).youtube
+            if (yt.accept(yt.resultFromIntent(result.data)) != null) vm.loadYtImport()
+        } catch (t: Throwable) {
+            RingLog.w("youtube", "sign-in result failed: $t")
+        }
+    }
+
+    private fun startYoutubeAuthorisation() {
+        val yt = LumenApp.from(this).youtube
+        yt.authorizeTask()
+            .addOnSuccessListener { result ->
+                if (result.hasResolution()) {
+                    val pending = result.pendingIntent ?: return@addOnSuccessListener
+                    try {
+                        youtubeSignIn.launch(IntentSenderRequest.Builder(pending.intentSender).build())
+                    } catch (t: Throwable) {
+                        RingLog.w("youtube", "sign-in sheet failed to open: $t")
+                    }
+                } else if (yt.accept(result) != null) {
+                    vm.loadYtImport()
+                }
+            }
+            .addOnFailureListener { e -> RingLog.w("youtube", "authorisation failed: $e") }
+    }
+
     // Phase 1b: backup, through the system document pickers only.
     private val createBackup = registerForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri: Uri? ->
         if (uri != null) vm.backupTo(uri)
@@ -150,6 +182,7 @@ class MainActivity : ComponentActivity() {
                     RingLog.w("notes", "key page failed: $t")
                 }
             },
+            youtubeSignIn = { startYoutubeAuthorisation() },
             requestNotifications = {
                 if (!notificationsAsked && NotesService.isPermissionNeeded(this)) {
                     notificationsAsked = true

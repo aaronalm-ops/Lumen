@@ -62,6 +62,8 @@ class PlaylistActions(
     val openPicker: (Boolean) -> Unit,
     val toggleMember: (Long, LibraryItem) -> Unit,
     val back: () -> Unit,
+    /** 0.8.1: pick songs from a YouTube Music playlist. */
+    val importYouTube: () -> Unit = {},
 )
 
 /**
@@ -111,6 +113,8 @@ private fun Overview(labels: List<LabelEntity>, entries: Map<Long, List<Playlist
                 color = c.text2,
                 modifier = Modifier.padding(bottom = 4.dp),
             )
+            SecondaryPill("Pick songs from a YouTube Music playlist", icon = LumenIcons.Music, onClick = actions.importYouTube)
+            Spacer(Modifier.height(4.dp))
         }
         items(labels, key = { it.id }) { label ->
             val members = entries[label.id].orEmpty()
@@ -159,6 +163,7 @@ private fun durationWords(ms: Long): String {
 
 private val PlaylistRowHeight = 64.dp
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun Detail(label: LabelEntity, members: List<PlaylistEntry>, player: PlayerState, labels: List<LabelEntity>, actions: PlaylistActions) {
     val c = Lumen.colours
@@ -173,10 +178,11 @@ private fun Detail(label: LabelEntity, members: List<PlaylistEntry>, player: Pla
     Column(Modifier.padding(horizontal = Gutter)) {
         Text(playlistMeta(members), style = Lumen.type.bodyS, color = c.text2)
         Spacer(Modifier.height(10.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             PrimaryPill("Play", icon = LumenIcons.Play, enabled = members.isNotEmpty()) { actions.play(label, null, false) }
             SecondaryPill("Shuffle", icon = LumenIcons.Shuffle, enabled = members.isNotEmpty()) { actions.play(label, null, true) }
             SecondaryPill("Add", icon = LumenIcons.Plus) { actions.openPicker(true) }
+            SecondaryPill("From YouTube", icon = LumenIcons.Music, onClick = actions.importYouTube)
         }
         Spacer(Modifier.height(12.dp))
     }

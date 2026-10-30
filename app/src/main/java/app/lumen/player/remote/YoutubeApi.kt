@@ -41,8 +41,22 @@ class YoutubeApi(private val context: Context) {
     @Volatile
     private var cachedAt = 0L
 
-    private fun request(): AuthorizationRequest =
-        AuthorizationRequest.builder().setRequestedScopes(listOf(Scope(SCOPE))).build()
+    /**
+     * 0.8.3: Google refuses YouTube scopes in one request with other services' scopes, and Play
+     * Services adds the scopes already granted (Drive) to every request. The builder's opt-out is
+     * set where this Play Services version has it (looked up by name, so an older version that
+     * lacks it still builds); without it, the API key path below still reads public playlists.
+     */
+    private fun request(): AuthorizationRequest {
+        val builder = AuthorizationRequest.builder().setRequestedScopes(listOf(Scope(SCOPE)))
+        try {
+            builder.javaClass.getMethod("setOptOutIncludingGrantedScopes", Boolean::class.javaPrimitiveType).invoke(builder, true)
+            RingLog.i("youtube", "asking for youtube.readonly alone")
+        } catch (t: Throwable) {
+            RingLog.w("youtube", "this Play Services cannot ask for youtube.readonly alone: $t")
+        }
+        return builder.build()
+    }
 
     /** The Task MainActivity shows the sheet for when `hasResolution()`. */
     fun authorizeTask(): Task<AuthorizationResult> = Identity.getAuthorizationClient(context).authorize(request())
@@ -65,9 +79,29 @@ class YoutubeApi(private val context: Context) {
         return accept(result) ?: throw NeedsSignIn()
     }
 
-    /** The whole playlist, in its own order, without deleted or private videos. */
-    fun fetchPlaylist(listId: String): Playlist {
-        val token = tokenBlocking()
+    /**
+     * The whole playlist, in its own order, without deleted or private videos. 0.8.3: with an API
+     * key (the Gemini key, when YouTube Data API v3 is allowed on it) public and unlisted playlists
+     * are read without any sign-in; a private one, or a key that cannot reach YouTube, falls back
+     * to the Google account.
+     */
+    fun fetchPlaylist(listId: String, apiKey: String? = null): Playlist {
+        if (!apiKey.isNullOrBlank()) {
+            try {
+                return fetchWith(Auth.Key(apiKey), listId)
+            } catch (t: Throwable) {
+                RingLog.w("youtube", "key path failed ($t); trying the Google account")
+            }
+        }
+        return fetchWith(Auth.Bearer(tokenBlocking()), listId)
+    }
+
+    private sealed class Auth {
+        data class Bearer(val token: String) : Auth()
+        data class Key(val key: String) : Auth()
+    }
+
+    private fun fetchWith(token: Auth, listId: String): Playlist {
         val title = try {
             getJson(token, "$API/playlists?part=snippet&id=${enc(listId)}")
                 .optJSONArray("items")?.optJSONObject(0)?.optJSONObject("snippet")?.optString("title").orEmpty()
@@ -116,11 +150,14 @@ class YoutubeApi(private val context: Context) {
         return Playlist(listId, title, tracks)
     }
 
-    private fun getJson(token: String, url: String): JSONObject {
+    private fun getJson(token: Auth, url: String): JSONObject {
         val c = URL(url).openConnection() as HttpURLConnection
         c.connectTimeout = 15_000
         c.readTimeout = 30_000
-        c.setRequestProperty("Authorization", "Bearer $token")
+        when (token) {
+            is Auth.Bearer -> c.setRequestProperty("Authorization", "Bearer ${token.token}")
+            is Auth.Key -> c.setRequestProperty("x-goog-api-key", token.key)
+        }
         try {
             val code = c.responseCode
             if (code == 401) {

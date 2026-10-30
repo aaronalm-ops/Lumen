@@ -632,6 +632,7 @@ The Library opens on a row of section chips under the title: All, Phone, Drive, 
 
 ## 0.8.3
 
+- YouTube playlist picker: Google refuses youtube.readonly in one request with drive.file, and Play Services adds the granted Drive scopes to every request ("Access blocked: scopes that cannot be requested together"). The request now opts out of granted scopes where Play Services offers it, and public or unlisted playlists are read first with the Gemini API key (YouTube Data API v3 allowed on it), with no sign-in.
 - Sermons tab (fourth: Home, Library, Sermons, Playlists). Every item that plays as a sermon, in three parts: Carry on (started, not finished, five most recent), With notes (Gemini notes written, newest first, plus any being written), All sermons (newest first; the Unplayed chip filters it). Each row shows minutes left or Played and a Notes button when notes exist. The search finds titles and, from three letters, what was said; a line found plays from its time, and Notes opens the transcript at the search.
 
 ## 0.8.2 (red team round 2, the "later" list)

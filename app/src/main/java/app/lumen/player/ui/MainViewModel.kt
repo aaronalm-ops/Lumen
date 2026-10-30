@@ -1754,7 +1754,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         ytImport.value = st.copy(listId = id, loading = true, error = null, needsSignIn = false)
         viewModelScope.launch {
             try {
-                val list = withContext(Dispatchers.IO) { youtube.fetchPlaylist(id) }
+                val list = withContext(Dispatchers.IO) { youtube.fetchPlaylist(id, notesRepo.apiKey().ifBlank { null }) }
                 val now = ytImport.value ?: return@launch
                 ytImport.value = now.copy(
                     loading = false,

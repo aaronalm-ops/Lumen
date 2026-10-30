@@ -84,7 +84,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 
-enum class Screen { Home, Library, Settings, DriveBrowser, Playlists }
+enum class Screen { Home, Library, Settings, DriveBrowser, Playlists, Sermons }
 
 private const val KEY_LIBRARY_SOURCE = "library_source"
 
@@ -1446,6 +1446,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     /** Lines said in any transcribed recording that match the Library search (three letters or more). */
     val transcriptHits: StateFlow<List<TranscriptHit>> = combine(librarySearch.debounce(250), items) { q, list -> q to list }
+        .mapLatest { (q, list) ->
+            if (q.trim().length < 3) {
+                emptyList()
+            } else {
+                val byUri = list.associateBy { it.uri }
+                notesRepo.search(q).mapNotNull { seg -> byUri[seg.mediaUri]?.let { TranscriptHit(it, seg.startMs, seg.text) } }
+            }
+        }
+        .flowOn(Dispatchers.IO)
+        .state(emptyList())
+
+    // 0.8.3: the Sermons tab.
+
+    val sermonSearch = MutableStateFlow("")
+
+    /** Sermons tab: only sermons not yet listened to the end. */
+    val sermonsUnplayed = MutableStateFlow(false)
+
+    /** Lines said in sermons matching the Sermons tab's search (three letters or more). */
+    val sermonHits: StateFlow<List<TranscriptHit>> = combine(sermonSearch.debounce(250), items) { q, list -> q to list }
         .mapLatest { (q, list) ->
             if (q.trim().length < 3) {
                 emptyList()

@@ -156,6 +156,9 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
     val playlistPicker by vm.playlistPicker.collectAsState()
     val ytImport by vm.ytImport.collectAsState()
     val libraryUnplayed by vm.libraryUnplayed.collectAsState()
+    val sermonSearch by vm.sermonSearch.collectAsState()
+    val sermonsUnplayed by vm.sermonsUnplayed.collectAsState()
+    val sermonHits by vm.sermonHits.collectAsState()
     val nowSegments by vm.nowSegments.collectAsState()
     val justMarked by vm.justMarked.collectAsState()
     val lastRemoved by vm.lastRemoved.collectAsState()
@@ -342,6 +345,22 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
                         onAllowYouTubeMusic = actions.openNotificationAccess,
                     ),
                 )
+                Screen.Sermons -> SermonsScreen(
+                    items = items,
+                    labels = labels,
+                    notes = notesByUri,
+                    player = player,
+                    search = sermonSearch,
+                    unplayedOnly = sermonsUnplayed,
+                    hits = sermonHits,
+                    unreachable = unreachable,
+                    onSearch = { vm.sermonSearch.value = it },
+                    onToggleUnplayed = { vm.sermonsUnplayed.value = !vm.sermonsUnplayed.value },
+                    onPlay = { item, queue -> vm.play(item, queue) },
+                    onLongPress = { vm.openLabelSheet(LabelSheetTarget.ForItem(it)) },
+                    onNotes = { item, q -> vm.openNotesFor(item, q) },
+                    onHit = { hit -> vm.playAt(hit.item, hit.ms) },
+                )
                 Screen.Playlists -> PlaylistsScreen(
                     labels = labels,
                     entries = playlistEntries,
@@ -470,7 +489,7 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
                     } else {
                         Column(Modifier.fillMaxSize()) {
                             Box(Modifier.weight(1f).fillMaxWidth()) { screens() }
-                            if (player.hasItem && (screen == Screen.Library || screen == Screen.Playlists)) {
+                            if (player.hasItem && (screen == Screen.Library || screen == Screen.Playlists || screen == Screen.Sermons)) {
                                 // 0.5.0: in remote mode the bar shows YouTube Music's own title and time.
                                 val r = remote
                                 val positionMs = r?.positionMs ?: player.positionMs
@@ -620,6 +639,7 @@ private fun NavRail(current: Screen, onSelect: (Screen) -> Unit) {
         ) {
             RailItem("Home", LumenIcons.Home, current == Screen.Home) { onSelect(Screen.Home) }
             RailItem("Library", LumenIcons.Library, current == Screen.Library) { onSelect(Screen.Library) }
+            RailItem("Sermons", LumenIcons.Speech, current == Screen.Sermons) { onSelect(Screen.Sermons) }
             RailItem("Playlists", LumenIcons.Playlist, current == Screen.Playlists) { onSelect(Screen.Playlists) }
         }
         Box(Modifier.width(1.dp).fillMaxHeight().background(c.line))

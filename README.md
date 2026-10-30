@@ -630,6 +630,10 @@ The Library opens on a row of section chips under the title: All, Phone, Drive, 
 4. Tap YouTube Music and Suno: either the files or a card saying how to fill the section.
 5. Close and reopen Lumen: the Library opens on the last section chosen.
 
+## 0.8.3
+
+- Sermons tab (fourth: Home, Library, Sermons, Playlists). Every item that plays as a sermon, in three parts: Carry on (started, not finished, five most recent), With notes (Gemini notes written, newest first, plus any being written), All sermons (newest first; the Unplayed chip filters it). Each row shows minutes left or Played and a Notes button when notes exist. The search finds titles and, from three letters, what was said; a line found plays from its time, and Notes opens the transcript at the search.
+
 ## 0.8.2 (red team round 2, the "later" list)
 
 - Played and unplayed: a sermon listened to the end (last 30 s or 97 percent) shows a tick and "Played"; a started one a thin bar of how far through. Library has an Unplayed chip (sermons not yet finished). The item sheet has Mark as played / Mark as unplayed.

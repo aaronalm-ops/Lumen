@@ -566,12 +566,13 @@ fun BottomBar(current: Screen, onSelect: (Screen) -> Unit) {
                 .fillMaxWidth()
                 .navigationBarsPadding()
                 .height(64.dp)
-                .padding(horizontal = 24.dp),
+                .padding(horizontal = 6.dp),
             horizontalArrangement = Arrangement.SpaceAround,
             verticalAlignment = Alignment.CenterVertically,
         ) {
             BarItem("Home", LumenIcons.Home, current == Screen.Home) { onSelect(Screen.Home) }
             BarItem("Library", LumenIcons.Library, current == Screen.Library) { onSelect(Screen.Library) }
+            BarItem("Sermons", LumenIcons.Speech, current == Screen.Sermons) { onSelect(Screen.Sermons) }
             BarItem("Playlists", LumenIcons.Playlist, current == Screen.Playlists) { onSelect(Screen.Playlists) }
         }
     }
@@ -588,7 +589,7 @@ private fun BarItem(text: String, icon: ImageVector, selected: Boolean, onClick:
     val labelTint = if (selected) c.navSelectedLabel else c.text3
     Column(
         modifier = Modifier
-            .size(width = 96.dp, height = 56.dp)
+            .size(width = 84.dp, height = 56.dp)
             .clip(RoundedCornerShape(12.dp))
             .clickable(onClick = onClick),
         horizontalAlignment = Alignment.CenterHorizontally,

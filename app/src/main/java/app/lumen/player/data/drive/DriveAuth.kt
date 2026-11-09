@@ -68,7 +68,7 @@ class DriveAuth(private val context: Context) {
     private val fileOnlyScopes = listOf(Scope(SCOPE_DRIVE_FILE))
 
     private fun request(scopes: List<Scope>): AuthorizationRequest =
-        AuthorizationRequest.builder().setRequestedScopes(scopes).build()
+        AuthorizationRequest.builder().setRequestedScopes(scopes).setOptOutIncludingGrantedScopes(true).build()
 
     /**
      * The Task MainActivity drives interactively, always for both scopes; `hasResolution()` means

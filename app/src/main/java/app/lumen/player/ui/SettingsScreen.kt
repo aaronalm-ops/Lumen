@@ -92,6 +92,8 @@ class SettingsActions(
     val saveGeminiKey: (String) -> Unit,
     /** 0.6.0: Google AI Studio's key page in the browser. */
     val openGeminiKeyPage: () -> Unit,
+    val importYouTube: () -> Unit,
+    val openAndroidAuto: () -> Unit,
 )
 
 /** Settings, light: one list under mono labels, no row icons. */
@@ -221,6 +223,27 @@ fun SettingsScreen(
                 }
             }
 
+            item {
+                SectionLabel("YouTube Music", modifier = Modifier.padding(top = 20.dp, bottom = 10.dp))
+                ListCard {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Your playlists in Lumen", style = Lumen.type.bodyStrong, color = c.text)
+                        Text("Connect YouTube to browse your playlists or add songs from a playlist link. Your Drive connection stays separate.", style = Lumen.type.bodyS, color = c.text2)
+                        SecondaryPill("Browse YouTube playlists", onClick = actions.importYouTube)
+                    }
+                }
+            }
+            item {
+                SectionLabel("In the car", modifier = Modifier.padding(top = 20.dp, bottom = 10.dp))
+                ListCard {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Android Auto", style = Lumen.type.bodyStrong, color = c.text)
+                        Text("Setup and help if Lumen is missing from your car's launcher", style = Lumen.type.bodyS, color = c.text2)
+                        SecondaryPill("Set up Android Auto", onClick = actions.openAndroidAuto)
+                    }
+                }
+            }
+
             if (RemoteController.CONTROL_ENABLED) item {
                 // 0.5.0: the YouTube Music remote. The system page is opened from this row only; Lumen
                 // never asks on its own. 0.6.0: hidden while the control is off (Play Protect).
@@ -261,7 +284,7 @@ fun SettingsScreen(
                             Text("Gemini key", style = Lumen.type.bodyStrong, color = c.text)
                             Text(
                                 if (notesKeyHint.isNotBlank()) {
-                                    "Saved, ending $notesKeyHint. Used only to write notes"
+                                    "Saved, ending $notesKeyHint. Used for notes and public YouTube playlist links when the key allows it"
                                 } else {
                                     "Notes are written by Google's Gemini. Get a free key from Google AI Studio and paste it below"
                                 },

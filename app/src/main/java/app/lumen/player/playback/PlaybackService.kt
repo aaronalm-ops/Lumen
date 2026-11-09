@@ -264,7 +264,10 @@ class PlaybackService : MediaLibraryService() {
         observeSettings()
     }
 
-    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? = session
+    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? {
+        RingLog.i("library", "session requested by ${controllerInfo.packageName}; ready=${session != null}")
+        return session
+    }
 
     override fun onDestroy() {
         RingLog.i("service", "onDestroy")
@@ -1316,8 +1319,10 @@ class PlaybackService : MediaLibraryService() {
             session: MediaLibrarySession,
             browser: MediaSession.ControllerInfo,
             params: LibraryParams?,
-        ): ListenableFuture<LibraryResult<MediaItem>> =
-            Futures.immediateFuture(LibraryResult.ofItem(MediaItems.folder(ROOT_ID, "Lumen"), params))
+        ): ListenableFuture<LibraryResult<MediaItem>> {
+            RingLog.i("library", "root requested by ${browser.packageName}")
+            return Futures.immediateFuture(LibraryResult.ofItem(MediaItems.folder(ROOT_ID, "Lumen"), params))
+        }
 
         override fun onGetChildren(
             session: MediaLibrarySession,
@@ -1327,10 +1332,12 @@ class PlaybackService : MediaLibraryService() {
             pageSize: Int,
             params: LibraryParams?,
         ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> {
+            if (page < 0 || pageSize <= 0) return Futures.immediateFuture(LibraryResult.ofError(LibraryResult.RESULT_ERROR_BAD_VALUE))
             val future = SettableFuture.create<LibraryResult<ImmutableList<MediaItem>>>()
             scope.launch {
                 try {
-                    val children = childrenOf(parentId)
+                    val children = LibraryPage.slice(childrenOf(parentId), page, pageSize)
+                    RingLog.i("library", "${browser.packageName}: $parentId page=$page size=$pageSize returned=${children.size}")
                     future.set(LibraryResult.ofItemList(ImmutableList.copyOf(children), params))
                 } catch (t: Throwable) {
                     RingLog.e("library", "children of $parentId failed", t)
@@ -1347,18 +1354,23 @@ class PlaybackService : MediaLibraryService() {
         ): ListenableFuture<LibraryResult<MediaItem>> {
             val future = SettableFuture.create<LibraryResult<MediaItem>>()
             scope.launch {
-                val item = when {
-                    mediaId == ROOT_ID -> MediaItems.folder(ROOT_ID, "Lumen")
-                    mediaId == CONTINUE_ID -> MediaItems.folder(CONTINUE_ID, "Continue")
-                    mediaId == LABELS_ID -> MediaItems.folder(LABELS_ID, "Labels")
-                    mediaId == SERMONS_ID -> MediaItems.folder(SERMONS_ID, "Sermons")
-                    mediaId == RECENT_ID -> MediaItems.folder(RECENT_ID, "Recent")
-                    mediaId.startsWith(LABEL_PREFIX) -> mediaId.removePrefix(LABEL_PREFIX).toLongOrNull()
-                        ?.let { labelRepo.byId(it) }?.let { MediaItems.folder(mediaId, it.name) }
-                    else -> mediaRepo.byUri(mediaId)?.let { itemFor(it) }
+                try {
+                    val item = when {
+                        mediaId == ROOT_ID -> MediaItems.folder(ROOT_ID, "Lumen")
+                        mediaId == CONTINUE_ID -> MediaItems.folder(CONTINUE_ID, "Continue")
+                        mediaId == LABELS_ID -> MediaItems.folder(LABELS_ID, "Playlists")
+                        mediaId == SERMONS_ID -> MediaItems.folder(SERMONS_ID, "Sermons")
+                        mediaId == RECENT_ID -> MediaItems.folder(RECENT_ID, "Recent")
+                        mediaId.startsWith(LABEL_PREFIX) -> mediaId.removePrefix(LABEL_PREFIX).toLongOrNull()
+                            ?.let { labelRepo.byId(it) }?.let { MediaItems.folder(mediaId, it.name) }
+                        else -> mediaRepo.byUri(mediaId)?.let { itemFor(it) }
+                    }
+                    if (item == null) future.set(LibraryResult.ofError(LibraryResult.RESULT_ERROR_BAD_VALUE))
+                    else future.set(LibraryResult.ofItem(item, null))
+                } catch (t: Throwable) {
+                    RingLog.e("library", "item lookup failed", t)
+                    future.set(LibraryResult.ofError(LibraryResult.RESULT_ERROR_UNKNOWN))
                 }
-                if (item == null) future.set(LibraryResult.ofError(LibraryResult.RESULT_ERROR_BAD_VALUE))
-                else future.set(LibraryResult.ofItem(item, null))
             }
             return future
         }
@@ -1372,14 +1384,14 @@ class PlaybackService : MediaLibraryService() {
         private suspend fun childrenOf(parentId: String): List<MediaItem> = when {
             parentId == ROOT_ID -> listOf(
                 MediaItems.folder(CONTINUE_ID, "Continue"),
-                MediaItems.folder(LABELS_ID, "Labels"),
+                MediaItems.folder(LABELS_ID, "Playlists"),
                 MediaItems.folder(SERMONS_ID, "Sermons"),
                 MediaItems.folder(RECENT_ID, "Recent"),
             )
             parentId == CONTINUE_ID -> {
                 val last = store.lastItem()
                 val media = last?.let { mediaRepo.byUri(it.uri) }
-                if (media != null) listOf(itemFor(media)) else emptyList()
+                if (media != null && !YtmLink.isYtm(media.uri)) listOf(itemFor(media)) else emptyList()
             }
             parentId == LABELS_ID -> labelRepo.all().map { MediaItems.folder(LABEL_PREFIX + it.id, it.name) }
             parentId == SERMONS_ID -> {
@@ -1392,14 +1404,13 @@ class PlaybackService : MediaLibraryService() {
             }
             parentId == RECENT_ID -> {
                 val rows = store.recent(8)
-                rows.mapNotNull { mediaRepo.byUri(it.uri) }.distinctBy { it.fingerprint }.map { itemFor(it) }
+                rows.filterNot { YtmLink.isYtm(it.uri) }.mapNotNull { mediaRepo.byUri(it.uri) }.distinctBy { it.fingerprint }.map { itemFor(it) }
             }
             parentId.startsWith(LABEL_PREFIX) -> {
                 val id = parentId.removePrefix(LABEL_PREFIX).toLongOrNull()
                 if (id == null) emptyList()
                 // 0.5.0: YouTube Music rows play in YouTube Music, so Android Auto never lists them.
                 else labelRepo.mediaUrisFor(id).filterNot { YtmLink.isYtm(it) }.mapNotNull { mediaRepo.byUri(it) }
-                    .sortedByDescending { it.dateAdded }
                     .distinctBy { it.fingerprint }
                     .map { itemFor(it) }
             }

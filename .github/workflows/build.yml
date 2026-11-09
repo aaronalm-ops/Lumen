@@ -65,7 +65,7 @@ jobs:
             echo "No KEYSTORE_BASE64 secret; release will use the debug signing key."
           fi
 
-      - name: Build
+      - name: Build and test
         env:
           VERSION_NAME: ${{ steps.version.outputs.name }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
@@ -76,7 +76,7 @@ jobs:
         # opening the full log.
         run: |
           set -o pipefail
-          if ! ./gradlew assembleRelease --no-daemon --stacktrace 2>&1 | tee build.log; then
+          if ! ./gradlew testDebugUnitTest assembleRelease --no-daemon --stacktrace 2>&1 | tee build.log; then
             grep -E "^e: |error:|What went wrong" -A2 build.log | head -40 | while IFS= read -r line; do echo "::error::${line}"; done
             exit 1
           fi

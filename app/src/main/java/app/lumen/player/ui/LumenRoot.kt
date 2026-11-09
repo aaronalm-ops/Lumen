@@ -342,6 +342,7 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
                         onRescanDrive = vm::rescanDrive,
                         onDriveSignIn = actions.driveSignIn,
                         onOpenYouTubeMusic = vm::openYouTubeMusic,
+                        onImportYouTube = { vm.openYtImport() },
                         onAllowYouTubeMusic = actions.openNotificationAccess,
                     ),
                 )
@@ -425,7 +426,13 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
                         openNotificationAccess = actions.openNotificationAccess,
                         saveGeminiKey = vm::saveGeminiKey,
                         openGeminiKeyPage = actions.openGeminiKeyPage,
+                        importYouTube = { vm.openYtImport() },
+                        openAndroidAuto = { vm.screen.value = Screen.AndroidAuto },
                     ),
+                )
+                Screen.AndroidAuto -> AndroidAutoScreen(
+                    back = { vm.screen.value = Screen.Settings },
+                    shareDiagnostics = { vm.shareDiagnostics(context) },
                 )
                 Screen.DriveBrowser -> DriveBrowserScreen(
                     state = driveBrowser,
@@ -469,6 +476,7 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
             }
             BackHandler(enabled = screen != Screen.Home) {
                 when {
+                    screen == Screen.AndroidAuto -> vm.screen.value = Screen.Settings
                     screen == Screen.DriveBrowser -> vm.driveBrowserBack()
                     screen == Screen.Library && vm.libraryBack() -> Unit
                     screen == Screen.Playlists && vm.playlistBack() -> Unit
@@ -508,13 +516,14 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
                                     onPlayPause = vm::playPause,
                                 )
                             }
-                            if (screen != Screen.Settings && screen != Screen.DriveBrowser) {
+                            if (screen != Screen.Settings && screen != Screen.DriveBrowser && screen != Screen.AndroidAuto) {
                                 BottomBar(current = screen) { vm.screen.value = it }
                             }
                         }
                         // The Drive browser goes up a level (and from its top level back to Settings).
                         BackHandler(enabled = screen != Screen.Home) {
                             when {
+                                screen == Screen.AndroidAuto -> vm.screen.value = Screen.Settings
                                 screen == Screen.DriveBrowser -> vm.driveBrowserBack()
                                 screen == Screen.Library && vm.libraryBack() -> Unit
                                 screen == Screen.Playlists && vm.playlistBack() -> Unit
@@ -599,6 +608,9 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
                     labels = labels,
                     actions = YtImportActions(
                         close = vm::closeYtImport,
+                        browse = vm::loadYtPlaylists,
+                        showLink = vm::showYtLinks,
+                        openPlaylist = vm::openYtPlaylist,
                         setLink = vm::setYtImportLink,
                         load = vm::loadYtImport,
                         signIn = actions.youtubeSignIn,

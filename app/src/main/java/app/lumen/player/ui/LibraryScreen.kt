@@ -56,6 +56,7 @@ class LibraryActions(
     val onRescanDrive: () -> Unit,
     val onDriveSignIn: () -> Unit,
     val onOpenYouTubeMusic: () -> Unit,
+    val onImportYouTube: () -> Unit,
     val onAllowYouTubeMusic: () -> Unit,
 )
 
@@ -178,16 +179,18 @@ fun LibraryScreen(
                     item {
                         EmptyState(
                             title = "YouTube Music, in Lumen",
-                            body = "In YouTube Music, tap Share on a song or playlist and choose Lumen. It lands here, " +
-                                "ready for labels and playlists, and plays in YouTube Music when you tap it.",
-                            action = "Open YouTube Music",
-                            onAction = actions.onOpenYouTubeMusic,
+                            body = "Connect your YouTube account to pick a playlist and add its songs, or paste a playlist link. Songs play in YouTube Music.",
+                            action = "Browse YouTube playlists",
+                            onAction = actions.onImportYouTube,
+                            secondaryAction = "Open YouTube Music",
+                            onSecondaryAction = actions.onOpenYouTubeMusic,
                             notice = if (!ytmAccess && RemoteController.CONTROL_ENABLED) ({ YtmAccessNotice(actions.onAllowYouTubeMusic) }) else null,
                         )
                     }
                     return@LazyColumn
-                } else if (!ytmAccess && RemoteController.CONTROL_ENABLED) {
-                    item { HintCard("Lumen can pause and skip YouTube Music once it may read its playback controls", "Allow", actions.onAllowYouTubeMusic) }
+                } else {
+                    item { SecondaryPill("Browse YouTube playlists", icon = LumenIcons.Music, onClick = actions.onImportYouTube) }
+                    if (!ytmAccess && RemoteController.CONTROL_ENABLED) item { HintCard("Lumen can pause and skip YouTube Music once it may read its playback controls", "Allow", actions.onAllowYouTubeMusic) }
                 }
                 LibrarySource.SUNO -> if (inSection.isEmpty()) {
                     item {

@@ -1,4 +1,16 @@
-# Lumen (0.5.0, Phase 3: Chromecast and the YouTube Music remote)
+# Lumen
+
+## 0.8.4 candidate: YouTube playlists, Android Auto and the light ribbon
+
+- YouTube and Drive both request isolated grants. Connect explicitly selects a YouTube account; missing grants, cancellation and failures remain visible and recoverable. The account preference stays on the phone and tokens stay in memory.
+- Browse playlists owned by the selected YouTube account, including private ones, or use a playlist link. All pages are read; the old 2,000-song cutoff is removed. The API does not expose the whole YouTube Music saved library or every generated mix.
+- The browser is reachable from Library > YouTube Music, Playlists, playlist detail, Settings and shared playlist links. All readable songs start selected. Imports preserve order, avoid existing members, and commit atomically. The chosen playlist opens after import.
+- Android Auto has setup guidance in Settings > In the car. Browse requests are paged and logged; car playlists keep the user's order, and remote YouTube links stay out of car browse results. App visibility still depends on Android Auto's installation-source policy. Play internal testing or Android Auto's Unknown sources media-testing option is needed for the relevant install path.
+- Now Playing uses a cyan light ribbon with a glowing head, smooth progress, gesture feedback, gentler speech motion and chapter marks. Pausing settles the ribbon; paused speech keeps its amber held position. The Material Slider keeps keyboard and TalkBack seeking. Music, speech, video and tabletop layouts share this component. The ribbon is decorative, not an audio waveform.
+- Samsung renders the notification/lock-screen media card. This change does not claim control over its animation. YouTube Music playback remains in the official app, and the notification listener remains disabled.
+
+Validation uses JVM regression tests and Robolectric, including real Room imports, root navigation, media-browser service startup without an activity, paging/order, permission isolation, gestures, TalkBack and rendered previews. Live Google authorization, physical-car visibility and Samsung's media-card appearance require device checks. No connected phone or browser access was available during this local build.
+
 
 Lumen is a player for long spoken-word recordings and the music that sits beside them. Phase 0
 (v0.1.x) answered one question on one device: does a Media3 playback service survive One UI on a

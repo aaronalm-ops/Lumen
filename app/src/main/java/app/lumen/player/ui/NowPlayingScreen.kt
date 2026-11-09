@@ -294,6 +294,9 @@ private fun SermonScreen(
                 enabled = player.hasItem,
                 thin = false,
                 holdingPlace = player.hasItem && !player.isPlaying,
+                isPlaying = player.isPlaying,
+                mediaKey = player.mediaId,
+                chapterPositions = timeline.filter { it.isChapter }.map { it.positionMs },
                 onSeek = actions.seekTo,
             )
             Spacer(Modifier.height(if (roomy) 18.dp else 10.dp))
@@ -419,6 +422,9 @@ private fun TabletopLayout(
                 enabled = player.hasItem,
                 thin = !speech,
                 holdingPlace = speech && player.hasItem && !player.isPlaying,
+                isPlaying = player.isPlaying,
+                mediaKey = player.mediaId,
+                chapterPositions = if (speech) timeline.filter { it.isChapter }.map { it.positionMs } else emptyList(),
                 onSeek = actions.seekTo,
             )
             Spacer(Modifier.height(8.dp))
@@ -574,7 +580,7 @@ private fun MusicLayout(
     MusicTitle(player)
     if (downloadProgress != null) ProgressLine(fraction = downloadProgress, thickness = 1.dp, modifier = Modifier.padding(top = 6.dp))
     Spacer(Modifier.height(10.dp))
-    Scrubber(positionMs = player.positionMs, durationMs = player.durationMs, enabled = player.hasItem, thin = true, onSeek = actions.seekTo)
+    Scrubber(positionMs = player.positionMs, durationMs = player.durationMs, enabled = player.hasItem, thin = true, isPlaying = player.isPlaying, mediaKey = player.mediaId, onSeek = actions.seekTo)
     Spacer(Modifier.height(14.dp))
     MusicTransport(player, actions)
     Spacer(Modifier.height(16.dp))
@@ -613,7 +619,7 @@ private fun RemoteLayout(remote: RemoteUi, player: PlayerState, labels: List<Lab
     Text("EQ is handled by YouTube Music", style = Lumen.type.bodyS, color = c.text3, modifier = Modifier.padding(top = 2.dp))
     Spacer(Modifier.height(8.dp))
     if (remote.connected) {
-        Scrubber(positionMs = remote.positionMs, durationMs = remote.durationMs, enabled = true, thin = true, onSeek = actions.seekTo)
+        Scrubber(positionMs = remote.positionMs, durationMs = remote.durationMs, enabled = true, thin = true, isPlaying = remote.isPlaying, mediaKey = remote.title, onSeek = actions.seekTo)
         Spacer(Modifier.height(16.dp))
         Row(
             Modifier.fillMaxWidth(),

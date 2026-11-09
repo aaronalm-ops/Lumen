@@ -1,15 +1,11 @@
 package app.lumen.player.ui
 
-import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,23 +16,18 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderState
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -402,103 +393,6 @@ fun ProgressLine(fraction: Float, modifier: Modifier = Modifier, thickness: Dp =
                 .height(thickness)
                 .background(c.accentInk, RoundedCornerShape(1.dp)),
         )
-    }
-}
-
-/** The held head on a paused speech item: a 16 dp amber dot in a 3 dp black ring (DESIGN.md round 5, C). */
-private val HeadRest = 14.dp
-private val HeadHeld = 16.dp
-private val HeadDragged = 22.dp
-private val HeadRing = 3.dp
-
-/**
- * The scrubber: a Material Slider with a thin track (6 dp speech, 3 dp music), ink fill and a
- * white handle that grows from 14 to 22 dp on touch. The seek fires on release, never during.
- * [holdingPlace] (a paused speech item) turns the head into the ember: 16 dp amber inside a 3 dp
- * ring of the base colour, back to white within 120 ms of play.
- */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun Scrubber(
-    positionMs: Long,
-    durationMs: Long,
-    enabled: Boolean,
-    thin: Boolean,
-    modifier: Modifier = Modifier,
-    holdingPlace: Boolean = false,
-    onSeek: (Long) -> Unit,
-) {
-    val c = Lumen.colours
-    var dragging by remember { mutableStateOf(false) }
-    var dragValue by remember { mutableFloatStateOf(0f) }
-    val duration = durationMs.coerceAtLeast(0L)
-    val shown = if (dragging) dragValue else positionMs.toFloat()
-    val range = 0f..(if (duration > 0) duration.toFloat() else 1f)
-    val interaction = remember { MutableInteractionSource() }
-    val isDragged by interaction.collectIsDraggedAsState()
-    val ember = holdingPlace && enabled
-    val thumbSize by animateDpAsState(targetValue = if (isDragged) HeadDragged else if (ember) HeadHeld else HeadRest, animationSpec = tween(120), label = "thumb")
-    val headColour by animateColorAsState(targetValue = if (!enabled) c.line else if (ember) c.ember else c.text, animationSpec = tween(120), label = "head")
-    val ring by animateDpAsState(targetValue = if (ember) HeadRing else 0.dp, animationSpec = tween(120), label = "ring")
-    val trackHeight = if (thin) 3.dp else 6.dp
-
-    Column(modifier.fillMaxWidth()) {
-        Slider(
-            value = shown.coerceIn(range),
-            onValueChange = { v ->
-                dragging = true
-                dragValue = v
-            },
-            onValueChangeFinished = {
-                dragging = false
-                onSeek(dragValue.toLong())
-            },
-            enabled = enabled && duration > 0,
-            interactionSource = interaction,
-            valueRange = range,
-            thumb = {
-                Box(
-                    Modifier
-                        .size(HeadDragged),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    // The ring may overhang the 22 dp slot while dragging, so it ignores the
-                    // slot's constraints rather than squeezing the dot.
-                    Box(
-                        Modifier
-                            .requiredSize(thumbSize + ring * 2)
-                            .then(if (ring > 0.dp) Modifier.background(c.base, CircleShape) else Modifier),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Box(Modifier.size(thumbSize).background(headColour, CircleShape))
-                    }
-                }
-            },
-            track = { state: SliderState ->
-                val span = (state.valueRange.endInclusive - state.valueRange.start).takeIf { it > 0f } ?: 1f
-                val fraction = ((state.value - state.valueRange.start) / span).coerceIn(0f, 1f)
-                Box(Modifier.fillMaxWidth().height(trackHeight).background(c.line, RoundedCornerShape(3.dp))) {
-                    Box(
-                        Modifier
-                            .fillMaxWidth(fraction)
-                            .height(trackHeight)
-                            .background(if (enabled) c.accentInk else c.line, RoundedCornerShape(3.dp)),
-                    )
-                }
-            },
-            modifier = Modifier.fillMaxWidth().height(TouchTarget),
-        )
-        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
-            Text(formatTime(shown.toLong()), style = if (thin) Lumen.type.timeS else Lumen.type.timeL, color = if (thin) c.text2 else c.text)
-            Spacer(Modifier.weight(1f))
-            Text(if (duration > 0) formatTime(duration) else "--:--", style = Lumen.type.timeS, color = c.text3)
-            Spacer(Modifier.weight(1f))
-            Text(
-                if (duration > 0) "-" + formatTime((duration - shown.toLong()).coerceAtLeast(0L)) else "--:--",
-                style = if (thin) Lumen.type.timeS else Lumen.type.timeL,
-                color = if (thin) c.text2 else c.text,
-            )
-        }
     }
 }
 

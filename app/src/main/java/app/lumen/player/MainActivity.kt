@@ -81,36 +81,57 @@ class MainActivity : ComponentActivity() {
     }
     private var notificationsAsked = false
 
-    /** 0.8.1: the Google sheet for youtube.readonly, then the playlist loads. */
+    private var youtubeAttempt = 0
+    private var youtubeSheetAttempt: Int? = null
+
+    /** Only the importer that requested the sheet may consume its result. */
     private val youtubeSignIn = registerForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
+        val attempt = youtubeSheetAttempt
+        youtubeSheetAttempt = null
+        if (attempt != youtubeAttempt || vm.ytImport.value?.signingIn != true) return@registerForActivityResult
         if (result.resultCode != Activity.RESULT_OK) {
-            RingLog.i("youtube", "sign-in sheet dismissed")
+            vm.youtubeSignInFailed()
             return@registerForActivityResult
         }
         try {
             val yt = LumenApp.from(this).youtube
-            if (yt.accept(yt.resultFromIntent(result.data)) != null) vm.loadYtImport()
-        } catch (t: Throwable) {
-            RingLog.w("youtube", "sign-in result failed: $t")
+            if (yt.accept(yt.resultFromIntent(result.data)) != null) vm.youtubeAuthorized() else vm.youtubeSignInFailed()
+        } catch (error: Exception) {
+            youtubeAuthorisationFailed(error)
         }
     }
 
+    private fun youtubeAuthorisationFailed(error: Exception) {
+        RingLog.w("youtube", "authorisation failed: ${error.javaClass.simpleName}")
+        vm.youtubeSignInFailed(error)
+    }
+
     private fun startYoutubeAuthorisation() {
+        if (!vm.youtubeSignInStarted()) return
+        val attempt = ++youtubeAttempt
         val yt = LumenApp.from(this).youtube
-        yt.authorizeTask()
-            .addOnSuccessListener { result ->
-                if (result.hasResolution()) {
-                    val pending = result.pendingIntent ?: return@addOnSuccessListener
+        try {
+            yt.authorizeTask(selectAccount = true)
+                .addOnSuccessListener { result ->
+                    if (attempt != youtubeAttempt || vm.ytImport.value?.signingIn != true) return@addOnSuccessListener
                     try {
-                        youtubeSignIn.launch(IntentSenderRequest.Builder(pending.intentSender).build())
-                    } catch (t: Throwable) {
-                        RingLog.w("youtube", "sign-in sheet failed to open: $t")
+                        if (result.hasResolution()) {
+                            val pending = result.pendingIntent ?: run { vm.youtubeSignInFailed(); return@addOnSuccessListener }
+                            youtubeSheetAttempt = attempt
+                            youtubeSignIn.launch(IntentSenderRequest.Builder(pending.intentSender).build())
+                        } else if (yt.accept(result) != null) {
+                            vm.youtubeAuthorized()
+                        } else vm.youtubeSignInFailed()
+                    } catch (error: Exception) {
+                        youtubeAuthorisationFailed(error)
                     }
-                } else if (yt.accept(result) != null) {
-                    vm.loadYtImport()
                 }
-            }
-            .addOnFailureListener { e -> RingLog.w("youtube", "authorisation failed: $e") }
+                .addOnFailureListener { error ->
+                    if (attempt == youtubeAttempt && vm.ytImport.value?.signingIn == true) youtubeAuthorisationFailed(error)
+                }
+        } catch (error: Exception) {
+            youtubeAuthorisationFailed(error)
+        }
     }
 
     // Phase 1b: backup, through the system document pickers only.

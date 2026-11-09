@@ -54,7 +54,7 @@
 <body>
 <main>
   <h1>Lumen Privacy Policy</h1>
-  <p class="meta">Lumen for Android (<code>com.aaronalmeida.lumen</code>). Effective 27 October 2026, version 0.5.0.</p>
+  <p class="meta">Lumen for Android (<code>com.aaronalmeida.lumen</code>). Updated 8 November 2026 for version 0.8.4.</p>
 
   <p>Lumen is a personal media player for long spoken-word recordings, such as sermons, and the music beside them. It is made by Aaron Almeida for private and family use. This page explains what Lumen reads, what it keeps and where anything goes.</p>
 
@@ -63,7 +63,7 @@
     <ul>
       <li>Lumen has no account system, no analytics, no advertising and no crash reporter.</li>
       <li>Everything Lumen keeps (your library, playback positions, labels, bookmarks and settings) stays on your phone.</li>
-      <li>Lumen never sells, shares or transfers your data to anyone.</li>
+      <li>Lumen never sells your data. Optional Drive backup, casting, YouTube playlist access and Gemini notes send the information needed for the features you choose directly to those services.</li>
       <li>With Google Drive connected, Lumen only reads your Drive to list and play the audio and video in the folder you choose. It never modifies or deletes anything there.</li>
     </ul>
   </div>
@@ -83,13 +83,19 @@
   <div class="card">
     <p>Lumen's use and transfer of information received from Google APIs to any other app will adhere to the <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>, including the Limited Use requirements.</p>
   </div>
-  <p>In particular, Lumen uses Google user data only to provide the features described above, does not transfer it to anyone, does not use it for advertising, and does not allow any person to read it. Nobody other than you sees your Drive data through Lumen.</p>
+  <p>Lumen uses Google user data for the playback, library and backup features you request. It does not use this data for advertising. Optional casting and Gemini notes processing can send the recording you choose to another device or to Google for processing, as described below.</p>
 
   <h2>Casting</h2>
   <p>When you cast to a Chromecast, the phone serves the file you are playing to your Chromecast over your local network only, and only while casting. Lumen opens a small server on the phone's Wi-Fi address that answers only for the items you cast in that session, each at a random, unguessable address, and closes it when casting ends. Nothing is uploaded anywhere: the Chromecast fetches the file straight from the phone. Google's Cast service on the phone and the Chromecast see the title and artist Lumen sends with each item, as with any app that casts.</p>
 
   <h2>YouTube Music</h2>
-  <p>Lumen never plays YouTube audio itself. When you share a song or playlist from YouTube Music to Lumen, Lumen keeps its link, title and artist on your phone so it can sit in your labels. Playing it opens the YouTube Music app. If you allow notification access for Lumen in Android's settings, Lumen reads the now-playing title and position of the YouTube Music app through that access, to show it and to control it (play, pause, seek, next and previous) and to move your Lumen queue on when it finishes. Lumen reads no other notifications, and nothing it reads is stored or sent anywhere. You can turn the access off at any time in Android's settings.</p>
+  <p>Connecting YouTube is optional and separate from connecting Drive. Lumen requests read-only YouTube access (<code>https://www.googleapis.com/auth/youtube.readonly</code>) to list playlists owned by your selected YouTube account, including private playlists, and to read their song titles, artists, durations and video IDs. It follows all returned pages. Saved playlists, albums and generated mixes are not all exposed by this API; playlist links provide another way to request supported lists. Lumen never modifies your YouTube library.</p>
+  <p>Imported links and song metadata stay in Lumen's database and are included in backups you choose to make. Lumen remembers the chosen Google account on this phone to refresh its access; this account preference is excluded from Lumen's backup files. Access tokens are cached in memory and refreshed through Google Play services. When no account grant is available, public playlist links may use your saved Google API key if YouTube Data API access is enabled for that key.</p>
+  <p>Lumen never streams or downloads YouTube audio itself. Playing an imported song opens the official YouTube Music app. Lumen can send play, pause and skip media keys, but the current build does not request notification access and cannot read YouTube Music's live position or reliably advance a mixed-source queue when a YouTube song ends. YouTube Music supplies its own Android Auto playback.</p>
+  <p>You can choose another account using Reconnect YouTube. To revoke Google's grants, remove Lumen at <a href="https://myaccount.google.com/permissions">myaccount.google.com/permissions</a>; this can also affect Lumen's Drive access.</p>
+
+  <h2>Gemini sermon notes</h2>
+  <p>If you save a Google API key and choose Write notes, Lumen uploads the selected recording directly to Google's Gemini service, obtains a timed transcript, requests deletion of the uploaded recording, and asks Gemini to write notes from the transcript. Notes and transcripts are saved on your phone and included in backups you choose to make. Your API key is stored on the phone outside Lumen's backups. Google's processing and retention practices depend on the service and tier you use.</p>
 
   <h2>Backups</h2>
   <p>"Back up" writes your positions, labels, bookmarks and settings to a file in a place you choose. When Drive is connected, the same file is also saved in the "Lumen" folder in your Drive, and a fresh copy is saved there about once a week. "Restore" reads a backup file you choose and merges it in; it never deletes anything.</p>

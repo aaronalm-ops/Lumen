@@ -113,7 +113,7 @@ private fun Overview(labels: List<LabelEntity>, entries: Map<Long, List<Playlist
                 color = c.text2,
                 modifier = Modifier.padding(bottom = 4.dp),
             )
-            SecondaryPill("Pick songs from a YouTube Music playlist", icon = LumenIcons.Music, onClick = actions.importYouTube)
+            SecondaryPill("Browse YouTube playlists", icon = LumenIcons.Music, onClick = actions.importYouTube)
             Spacer(Modifier.height(4.dp))
         }
         items(labels, key = { it.id }) { label ->

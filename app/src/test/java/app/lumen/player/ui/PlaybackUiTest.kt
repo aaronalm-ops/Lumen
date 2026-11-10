@@ -205,6 +205,32 @@ class PlaybackUiTest {
         assertEquals(20_000L, playedAt)
     }
 
+    @Test fun `cover remains visible in its block while legacy artwork tints cannot recolour the player`() {
+        val cover = File.createTempFile("lumen-cover-fixture", ".png").also { it.deleteOnExit() }
+        val bitmap = Bitmap.createBitmap(32, 32, Bitmap.Config.ARGB_8888).also { it.eraseColor(android.graphics.Color.MAGENTA) }
+        cover.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        val media = mutableStateOf(YtmLink("aaaaaaaaaaa", false).toMediaEntity("Fixed theme", "Fixture artist", 1)
+            .copy(uri = "file:///fixture.mp3", artPath = cover.absolutePath, tint = android.graphics.Color.RED))
+        compose.setContent {
+            LumenTheme(dark = true) {
+                NowPlayingScreen(PlayerState(connected = true, hasItem = true, title = "Fixed theme", artist = "Fixture artist"),
+                    controller = null, item = LibraryItem(media.value, emptyList(), 1, 0, 0, ""), labels = emptyList(), settings = Settings(),
+                    speech = false, kidsLocked = false, noInterruptions = false, timeline = emptyList(), audioOnly = false,
+                    downloadProgress = null, actions = playerActions())
+            }
+        }
+        compose.waitUntil(5_000) {
+            val frame = compose.onRoot().captureToImage().asAndroidBitmap()
+            frame.getPixel(frame.width / 2, frame.height / 4) == android.graphics.Color.MAGENTA
+        }
+        val first = compose.onRoot().captureToImage().asAndroidBitmap()
+        assertEquals(android.graphics.Color.BLACK, first.getPixel(2, first.height / 2))
+        compose.runOnUiThread { media.value = media.value.copy(tint = android.graphics.Color.GREEN) }
+        compose.waitForIdle()
+        assertTrue(first.sameAs(compose.onRoot().captureToImage().asAndroidBitmap()))
+        savePreview("fixed-player-theme")
+    }
+
     private fun savePreview(name: String) {
         val bitmap = compose.onRoot().captureToImage().asAndroidBitmap()
         val file = File("build/test-previews/$name.png").also { it.parentFile?.mkdirs() }

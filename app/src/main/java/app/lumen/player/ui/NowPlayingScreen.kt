@@ -189,8 +189,6 @@ fun NowPlayingScreen(
     KeepScreenOn(enabled = noInterruptions)
     val showCast = (castAvailable || player.casting) && remote == null
 
-    val tintValue = item?.media?.tint
-    val tint = if (!speech && tintValue != null) Color(tintValue) else c.base
     val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
 
     if (kidsLocked) {
@@ -217,7 +215,7 @@ fun NowPlayingScreen(
     Box(
         Modifier
             .fillMaxSize()
-            .background(tint)
+            .background(c.base)
             .dismissPlayerOnPull(enabled = !paned, onDismiss = actions.close)
             .onGloballyPositioned { coordinates ->
                 val bounds = coordinates.boundsInWindow()
@@ -709,7 +707,7 @@ private fun RemoteArt(remote: RemoteUi) {
     }
 }
 
-/** Embedded art from the cache, or a flat block with the first letter. Tint comes from data. */
+/** Artwork stays inside its own block and never supplies colours to the surrounding player. */
 @Composable
 private fun ArtBlock(item: LibraryItem?, title: String, modifier: Modifier = Modifier.fillMaxWidth().aspectRatio(1f)) {
     val c = Lumen.colours

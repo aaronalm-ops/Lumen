@@ -160,6 +160,11 @@ class NotesService : Service() {
             dao.setStatus(uri, NotesRepository.STATUS_WORKING, text, System.currentTimeMillis())
             notify(text)
         }
+        val recovering: (GeminiClient.Retry) -> Unit = { retry -> runBlocking {
+            val seconds = (retry.delayMs + 999) / 1000
+            step(if (retry.switchingModel) "Google could not finish this section (HTTP ${retry.code}). Trying another model in ${seconds}s; saved transcript text is kept"
+                else "Google could not finish this section (HTTP ${retry.code}). Retrying automatically in ${seconds}s; saved transcript text is kept")
+        } }
         var stage = "Starting"
         try {
             val media = app.db.mediaDao().mediaByUri(uri) ?: throw IOException("This recording is no longer in the library")
@@ -206,7 +211,7 @@ class NotesService : Service() {
                                     .put(JSONObject().put("file_data", JSONObject().put("mime_type", file.mimeType).put("file_uri", file.uri)))
                                     .put(JSONObject().put("text", NotesPrompts.transcriptRequest(after)))
                                 client.generate(GeminiClient.MODELS, NotesPrompts.TRANSCRIPT_SYSTEM, parts,
-                                    NotesPrompts.transcriptSchema, maxOutputTokens = 8_192, thinking = "low", onText = onText)
+                                    NotesPrompts.transcriptSchema, maxOutputTokens = 8_192, thinking = "low", onText = onText, onRetry = recovering)
                             },
                             persist = { added, all, complete -> runBlocking {
                                 if (added.isNotEmpty()) dao.insertSegments(added.map { (ms, text) -> SegmentEntity(mediaUri = uri, startMs = ms, text = text) })
@@ -230,6 +235,7 @@ class NotesService : Service() {
                 NotesPrompts.notesSchema,
                 maxOutputTokens = 32_768,
                 thinking = "medium",
+                onRetry = recovering,
                 onText = { text ->
                     val now = System.nanoTime()
                     if (now - progressAt > 2_000_000_000L) {
@@ -313,7 +319,7 @@ class NotesService : Service() {
             "Google refused the Gemini key. Check it in Settings"
         t is GeminiClient.GeminiException && (t.code == 401 || t.code == 403) -> "Google refused the Gemini key. Check it in Settings"
         t is GeminiClient.GeminiException && t.code == 429 -> "Google's limit for this key is used up for now. Try again later"
-        t is GeminiClient.GeminiException && t.code >= 500 -> "Google is busy. Try again in a few minutes"
+        t is GeminiClient.GeminiException && t.code >= 500 -> "Google is still unable to process this section (HTTP ${t.code}). Saved transcript text is kept; try again later"
         t is GeminiClient.GeminiException -> "Google said: ${t.message.orEmpty().take(160)}"
         t is java.net.SocketTimeoutException -> "Google did not finish this section in time. Saved transcript lines are kept; try again to continue"
         t is java.net.UnknownHostException || t is javax.net.ssl.SSLException || t is java.net.ConnectException ||

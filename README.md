@@ -1,5 +1,12 @@
 # Lumen
 
+## 0.8.6: fixed Lumen palette and automatic transcription recovery
+
+- Aaron's fixed-palette rule: covers never change the surrounding app colours or style. Existing cached tints are ignored, new art caching no longer extracts a palette, and original artwork remains in its own artwork block. The mini player and widget retain their existing product colours.
+- Lumen's system media metadata replaces both embedded cover bytes and cover URIs with a constant black Lumen card. Titles, artists, queue and playback controls are retained. Android/Samsung still decide the system card's layout and final rendering; YouTube Music owns its separate notification.
+- Transcription and note generation recover from temporary HTTP 500/502/503/504 errors with bounded backoff and model fallback. Each configured model gets at most one transient-error retry before fallback. A short Retry-After is honoured; long server waits, authentication failures and quota exhaustion do not turn into hidden retry loops. Recovery is visible in the job status, and partial text is preserved without another audio upload during automatic retries.
+- A failed recovery retains the HTTP error code in the visible message and diagnostics. A live Google outage cannot be fixed by the app; phone verification of the affected sermon is still required.
+
 ## 0.8.5: sermon recovery and YouTube player navigation
 
 - Transcription uses streamed, bounded output batches. Completed lines appear in Transcript while processing and survive failed requests. Retry continues after saved text; a completed transcript can be used to rewrite notes without uploading audio again. Source changes invalidate checkpoints, while learning a duration during playback does not.
@@ -72,7 +79,7 @@ amber only for a held place in a paused sermon and the LUMEN mark's core).
 
    Either way, files with the same fingerprint collapse to one row in the UI with an "x2" badge
    (so a file reached both ways is listed once). Music files keep their embedded art in
-   `filesDir/art` with a desaturated dominant colour (Palette) for the music layout's base tint.
+   `filesDir/art`. Artwork stays inside its own block; Lumen's surrounding palette is fixed.
    Scanning shows as a 1 dp line, never a spinner; the Scan row counts files as they are seen.
 2. **Home.** Wordmark and gear; CONTINUE card for the last played item (title, speaker, 2 dp
    progress line, mono times, amber Resume pill); a row of label chips (tap plays the label as a

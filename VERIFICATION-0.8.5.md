@@ -37,3 +37,7 @@ Version 0.8.5, version code 58, application ID `com.aaronalmeida.lumen`.
 APK SHA-256: `ee86dcb102bea3525bc7ae3b123467068b338def1f46e30dbdd4b9458ce8cba3`.
 
 The signing certificate was verified against the existing release SHA-256 `e066c5323008406bc2b092289117a09620d45a653ed5cd84e2d0778e8c68e122`. The signed APK is intended for GitHub release `v0.8.5`, with an anonymous download and matching digest verified before delivery is reported.
+
+## Delivery correction, 10 November 2026
+
+The initial public download matched the local version-code 58 artifact recorded above. The tag-triggered workflow later replaced it with its own version-code 59 rebuild. That rebuilt APK was independently downloaded and its existing Lumen signing identity verified on 10 November. Its SHA-256 is `849e9c4a93d56a1a403b6734a82e9cc4c86473ff3b2a6f3313d27e8c2455e1ce`. The public checksum asset was corrected to match the rebuilt file; a fresh anonymous asset download verified the corrected checksum. The 0.8.6 workflow disables replacement of existing release files so a later rebuild cannot replace the uploaded installer.

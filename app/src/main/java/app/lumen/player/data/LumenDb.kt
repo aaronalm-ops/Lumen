@@ -66,7 +66,7 @@ data class MediaEntity(
     /** Relative path inside the folder tree, used for the "Suno" rule and the folder name. */
     @ColumnInfo(name = "rel_path") val relPath: String,
     @ColumnInfo(name = "art_path") val artPath: String?,
-    /** Desaturated dominant colour of the art as ARGB, null when there is no art. */
+    /** Legacy artwork tint column. Ignored by the UI; the product palette never follows cover art. */
     val tint: Int?,
     /** Last-modified stamp from the provider, used to skip unchanged files on rescan. */
     @ColumnInfo(name = "modified_at") val modifiedAt: Long,

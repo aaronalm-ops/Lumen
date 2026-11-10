@@ -101,7 +101,25 @@ class PlaybackService : MediaLibraryService() {
      * rebuild. 0.5.0: it wraps the CastPlayer (ExoPlayer on the phone, the receiver while casting),
      * or ExoPlayer alone where the Cast framework is missing.
      */
-    private class SkipPlayer(inner: Player) : ForwardingPlayer(inner) {
+    private class SkipPlayer(inner: Player, private val artwork: SystemMediaArtwork) : ForwardingPlayer(inner) {
+        private val listeners = java.util.IdentityHashMap<Player.Listener, Player.Listener>()
+
+        override fun getMediaMetadata(): MediaMetadata = artwork.metadata(super.getMediaMetadata())
+
+        override fun addListener(listener: Player.Listener) {
+            val wrapped = listeners.getOrPut(listener) {
+                object : Player.Listener by listener {
+                    override fun onMediaMetadataChanged(mediaMetadata: MediaMetadata) {
+                        listener.onMediaMetadataChanged(artwork.metadata(mediaMetadata))
+                    }
+                }
+            }
+            super.addListener(wrapped)
+        }
+
+        override fun removeListener(listener: Player.Listener) {
+            super.removeListener(listeners.remove(listener) ?: listener)
+        }
         @Volatile
         var backMs: Long = 10_000L
 
@@ -245,7 +263,7 @@ class PlaybackService : MediaLibraryService() {
         // A stable, explicit audio session so the effects bind before the first frame.
         val sessionId = (getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager).generateAudioSessionId()
         exo.setAudioSessionId(sessionId)
-        player = SkipPlayer(buildCastPlayer(exo) ?: exo)
+        player = SkipPlayer(buildCastPlayer(exo) ?: exo, SystemMediaArtwork(this))
         player.addListener(playerListener)
         bindEffects(exo.audioSessionId)
 

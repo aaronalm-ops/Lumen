@@ -73,8 +73,12 @@ class NotesServiceJourneyTest {
                         val request = JSONObject(body)
                         val isTranscript = request.getJSONObject("systemInstruction").getJSONArray("parts").getJSONObject(0).getString("text").startsWith("You transcribe")
                         val events = if (isTranscript) {
-                            if (transcriptions.incrementAndGet() == 1) {
-                                "data: ${event("[{\"t\":\"00:00\",\"s\":\"First spoken line\"}]")}\n\ndata: {\"error\":{\"code\":429,\"message\":\"Synthetic quota interruption\"}}\n\n"
+                            val call = transcriptions.incrementAndGet()
+                            if (call == 1) {
+                                "data: ${event("[{\"t\":\"00:00\",\"s\":\"First spoken line\"}]")}\n\ndata: {\"error\":{\"code\":503,\"message\":\"Synthetic busy interruption\"}}\n\n"
+                            } else if (call <= 4) {
+                                val code = 503
+                                "data: {\"error\":{\"code\":$code,\"message\":\"Synthetic provider interruption\"}}\n\n"
                             } else {
                                 secondRequest = body
                                 "data: ${event("[{\"t\":\"00:20\",\"s\":\"Second spoken line\"}]", "STOP")}\n\n"
@@ -91,7 +95,7 @@ class NotesServiceJourneyTest {
         fun runService(): NotesEntity {
             val controller = Robolectric.buildService(NotesService::class.java).create()
             val service = controller.get()
-            service.createClient = { GeminiClient(it, base, 15_000) }
+            service.createClient = { GeminiClient(it, base, 15_000, waitBeforeRetry = {}) }
             try {
                 val now = System.currentTimeMillis()
                 runBlocking {
@@ -114,6 +118,8 @@ class NotesServiceJourneyTest {
             val failed = runService()
             assertEquals(NotesRepository.STATUS_FAILED, failed.status)
             assertTrue(failed.step.startsWith("Transcription failed:"))
+            assertTrue(failed.step.contains("HTTP 503"))
+            assertEquals("Automatic recovery uploaded the recording again", 1, uploads.get())
             assertEquals(1, runBlocking { app.notesRepo.dao.segmentsFor(media.uri) }.size)
             val completed = runService()
             assertEquals(NotesRepository.STATUS_DONE, completed.status)
@@ -122,7 +128,7 @@ class NotesServiceJourneyTest {
             assertEquals(2, uploads.get())
             assertEquals(NotesRepository.STATUS_DONE, runService().status)
             assertEquals("Writing notes again uploaded the audio", 2, uploads.get())
-            assertEquals(2, transcriptions.get())
+            assertEquals(5, transcriptions.get())
         } finally { server.stop(0) }
     }
 

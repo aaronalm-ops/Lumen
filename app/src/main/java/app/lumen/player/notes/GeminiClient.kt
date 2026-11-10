@@ -14,9 +14,16 @@ import java.net.URL
  * delete of the file once the transcript is in. The key is sent as the x-goog-api-key header,
  * never in a url.
  */
-class GeminiClient(private val apiKey: String, private val baseUrl: String = BASE, private val requestTimeoutMs: Long = 180_000L) {
+class GeminiClient(
+    private val apiKey: String,
+    private val baseUrl: String = BASE,
+    private val requestTimeoutMs: Long = 180_000L,
+    private val waitBeforeRetry: (Long) -> Unit = { Thread.sleep(it) },
+) {
 
-    class GeminiException(val code: Int, message: String) : IOException(message)
+    class GeminiException(val code: Int, message: String, val retryAfterMs: Long? = null) : IOException(message)
+
+    data class Retry(val code: Int, val delayMs: Long, val switchingModel: Boolean)
 
     data class UploadedFile(val name: String, val uri: String, val mimeType: String)
 
@@ -120,21 +127,37 @@ class GeminiClient(private val apiKey: String, private val baseUrl: String = BAS
         maxOutputTokens: Int,
         thinking: String?,
         onText: ((String) -> Unit)? = null,
+        onRetry: (Retry) -> Unit = {},
     ): Reply {
         var lastError: Throwable? = null
-        for (model in models) {
+        var retries = 0
+        for ((modelIndex, model) in models.withIndex()) {
             var withThinking = thinking
-            var attempts = 0
-            while (attempts < 2) {
-                attempts++
+            var busyAttempts = 0
+            while (true) {
+                if (Thread.currentThread().isInterrupted) throw InterruptedException("Notes cancelled")
                 try {
                     return generateOnce(model, system, parts, schema, maxOutputTokens, withThinking, onText)
                 } catch (e: GeminiException) {
                     lastError = e
+                    RingLog.w("notes", "$model generation failed: HTTP ${e.code}")
                     if (e.code == 400 && withThinking != null && e.message.orEmpty().contains("think", ignoreCase = true)) {
                         withThinking = null
                     } else if (e.code == 404) {
                         break
+                    } else if (e.code in TRANSIENT_CODES) {
+                        // One busy retry per model, preserving the caller's partial transcript.
+                        val switching = busyAttempts >= 1
+                        if (switching && modelIndex == models.lastIndex) throw e
+                        // A long server-requested pause needs a later user retry, not a hidden wait.
+                        if ((e.retryAfterMs ?: 0L) > MAX_RETRY_DELAY_MS) throw e
+                        val backoff = (1_000L shl retries.coerceAtMost(3)) + kotlin.random.Random.nextLong(250)
+                        val delay = maxOf(backoff, e.retryAfterMs ?: 0L)
+                        retries++
+                        onRetry(Retry(e.code, delay, switching))
+                        waitBeforeRetry(delay)
+                        if (switching) break
+                        busyAttempts++
                     } else {
                         throw e
                     }
@@ -167,7 +190,7 @@ class GeminiClient(private val apiKey: String, private val baseUrl: String = BAS
         try {
             c.outputStream.use { it.write(request.toString().toByteArray(Charsets.UTF_8)) }
             val code = c.responseCode
-            if (code !in 200..299) throw GeminiException(code, readError(c))
+            if (code !in 200..299) throw GeminiException(code, readError(c), retryAfter(c))
             val result = c.inputStream.bufferedReader().use { GeminiStream.read(it, onText) }
             RingLog.i("notes", "$model: ${result.finishReason}, ${result.text.length} streamed characters")
             return Reply(result.text, result.finishReason, model)
@@ -203,8 +226,19 @@ class GeminiClient(private val apiKey: String, private val baseUrl: String = BAS
         return "${c.responseCode} ${message.ifBlank { body.take(200) }}"
     }
 
+    private fun retryAfter(c: HttpURLConnection): Long? {
+        val value = c.getHeaderField("Retry-After")?.trim() ?: return null
+        value.toLongOrNull()?.takeIf { it >= 0 }?.let { return it.coerceAtMost(Long.MAX_VALUE / 1000) * 1000 }
+        return runCatching {
+            (java.time.ZonedDateTime.parse(value, java.time.format.DateTimeFormatter.RFC_1123_DATE_TIME)
+                .toInstant().toEpochMilli() - System.currentTimeMillis()).coerceAtLeast(0)
+        }.getOrNull()
+    }
+
     companion object {
         private const val BASE = "https://generativelanguage.googleapis.com"
+        private const val MAX_RETRY_DELAY_MS = 30_000L
+        private val TRANSIENT_CODES = setOf(500, 502, 503, 504)
 
         /** Newest first; the next is tried when Google no longer offers one (verified 2026-10-27). */
         val MODELS = listOf("gemini-3.8-flash", "gemini-3.6-flash")

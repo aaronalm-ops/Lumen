@@ -103,4 +103,6 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           files: lumen-*.apk
+          # Preserve the signed APK already uploaded and verified for this release.
+          overwrite_files: false
           generate_release_notes: true

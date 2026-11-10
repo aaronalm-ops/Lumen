@@ -12,9 +12,7 @@ import android.net.Uri
 import android.provider.BaseColumns
 import android.provider.DocumentsContract
 import android.provider.MediaStore
-import androidx.core.graphics.ColorUtils
 import androidx.documentfile.provider.DocumentFile
-import androidx.palette.graphics.Palette
 import app.lumen.player.data.drive.isDrive
 import app.lumen.player.diag.RingLog
 import app.lumen.player.remote.isYtm
@@ -766,25 +764,14 @@ class MediaRepository(
             if (!file.exists()) {
                 FileOutputStream(file).use { scaled.compress(Bitmap.CompressFormat.JPEG, 85, it) }
             }
-            val tint = tintOf(scaled)
             if (scaled !== bitmap) scaled.recycle()
             bitmap.recycle()
-            file.absolutePath to tint
+            // Keep the legacy DB column neutral; artwork must never redefine Lumen's palette.
+            file.absolutePath to 0xFF000000.toInt()
         } catch (t: Throwable) {
             RingLog.w("scan", "art cache failed: $t")
             null
         }
-    }
-
-    /** DESIGN.md art tint: dominant colour, saturation clamped to 18 percent, lightness to 6 percent. */
-    private fun tintOf(bitmap: Bitmap): Int {
-        val palette = Palette.from(bitmap).maximumColorCount(16).generate()
-        val rgb = palette.dominantSwatch?.rgb ?: palette.vibrantSwatch?.rgb ?: palette.mutedSwatch?.rgb ?: 0xFF000000.toInt()
-        val hsl = FloatArray(3)
-        ColorUtils.colorToHSL(rgb, hsl)
-        hsl[1] = hsl[1].coerceAtMost(0.18f)
-        hsl[2] = 0.06f
-        return ColorUtils.HSLToColor(hsl)
     }
 
     private suspend fun applySunoRule(media: MediaEntity) {

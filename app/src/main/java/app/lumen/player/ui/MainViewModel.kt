@@ -1,5 +1,6 @@
 package app.lumen.player.ui
 
+import android.app.Activity
 import android.app.Application
 import android.content.ComponentName
 import android.content.Context
@@ -124,6 +125,8 @@ data class PlayerState(
     val isVideo: Boolean = false,
     val nextTitle: String? = null,
     val queueSize: Int = 0,
+    val hasPrevious: Boolean = false,
+    val hasNext: Boolean = false,
     val shuffle: Boolean = false,
     val repeat: Int = Player.REPEAT_MODE_OFF,
     val ended: Boolean = false,
@@ -496,7 +499,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     // Controller lifecycle, driven by MainActivity.onStart and onStop.
 
+    private var foregroundActivity = java.lang.ref.WeakReference<Activity>(null)
+
     fun connect(context: Context) {
+        (context as? Activity)?.let { foregroundActivity = java.lang.ref.WeakReference(it) }
         foreground = true
         refreshMediaAccess()
         startObservingMediaStore()
@@ -550,7 +556,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         app.connectivity.stop()
         ticker?.cancel()
         ticker = null
-        if (keepForRemote && remoteUri != null && ytmWatch != null && _controller.value != null) {
+        if (keepForRemote && remoteUri != null && _controller.value != null) {
             RingLog.i("ytm", "controller kept while YouTube Music plays")
             return
         }
@@ -610,6 +616,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             isVideo = MediaItems.isVideo(item),
             nextTitle = next,
             queueSize = c.mediaItemCount,
+            hasPrevious = c.hasPreviousMediaItem(),
+            hasNext = c.hasNextMediaItem(),
             shuffle = c.shuffleModeEnabled,
             repeat = c.repeatMode,
             ended = c.playbackState == Player.STATE_ENDED,
@@ -701,16 +709,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * it in YouTube Music. While casting, YouTube Music items stay out of the queue (the receiver
      * cannot play them), and tapping one opens YouTube Music on the phone.
      */
-    fun play(item: LibraryItem, queue: List<LibraryItem> = listOf(item)) {
+    private var playingPlaylistId: Long? = null
+
+    fun dismissNowPlaying() {
+        nowPlayingOpen.value = false
+        playingPlaylistId?.let { openPlaylist.value = it; screen.value = Screen.Playlists }
+    }
+
+    fun play(item: LibraryItem, queue: List<LibraryItem> = listOf(item), originPlaylistId: Long? = null) {
+        playingPlaylistId = originPlaylistId
         val casting = _player.value.casting
         if (casting && item.media.isYtm) {
-            YtmLink.fromUri(item.uri)?.let { ytm.open(it, comeBack = true) }
+            YtmLink.fromUri(item.uri)?.let { ytm.open(it, comeBack = true, activity = foregroundActivity.get()) }
             return
         }
         val usable = if (casting) queue.filterNot { it.media.isYtm } else queue
         val start = usable.indexOfFirst { it.uri == item.uri }.coerceAtLeast(0)
-        val ordered = if (start > 0) usable.drop(start) + usable.take(start) else usable
-        val mediaItems = ordered.map { mediaItemFor(it) }
+        val mediaItems = usable.map { mediaItemFor(it) }
         kidsUnlocked.value = false
         withController { c ->
             if (c.currentMediaItem?.mediaId == item.uri) {
@@ -721,7 +736,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 return@withController
             }
             c.shuffleModeEnabled = false
-            c.setMediaItems(mediaItems)
+            c.setMediaItems(mediaItems, start, C.TIME_UNSET)
             if (!item.media.isYtm) {
                 c.prepare()
                 c.play()
@@ -784,6 +799,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val rows = labelRepo.mediaUrisFor(label.id).mapNotNull { mediaRepo.byUri(it) }
                 .distinctBy { it.fingerprint }
             if (rows.isEmpty()) return@launch
+            playingPlaylistId = label.id
             val ordered = if (label.shuffleOnOpen) rows.shuffled() else rows
             val mediaItems = ordered.map { mediaItemFor(it) }
             kidsUnlocked.value = false
@@ -859,20 +875,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         withController { it.seekTo(ms) }
     }
 
-    fun next() {
-        // 0.6.1: without control of YouTube Music, Next moves Lumen's own queue on.
-        if (remoteLink() != null && ytmAccess.value) {
-            ytm.next()
-            return
+    private fun skipRemoteQueue(forward: Boolean) {
+        withController { c ->
+            val index = if (forward) c.nextMediaItemIndex else c.previousMediaItemIndex
+            if (index == C.INDEX_UNSET) return@withController
+            val nextIsRemote = MediaItems.isYtm(c.getMediaItemAt(index))
+            if (ytmAccess.value) ytm.pause() else ytm.keyPause()
+            c.seekToDefaultPosition(index)
+            if (!nextIsRemote) { c.prepare(); c.play() }
+            refresh(c)
         }
+    }
+
+    fun next() {
+        if (remoteLink() != null) { skipRemoteQueue(true); return }
         withController { if (it.hasNextMediaItem()) it.seekToNextMediaItem() }
     }
 
     fun previous() {
-        if (remoteLink() != null && ytmAccess.value) {
-            ytm.previous()
-            return
-        }
+        if (remoteLink() != null) { skipRemoteQueue(false); return }
         withController { it.seekToPrevious() }
     }
     fun toggleShuffle() = withController { it.shuffleModeEnabled = !it.shuffleModeEnabled }
@@ -1320,18 +1341,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         remoteTick.value = SystemClock.elapsedRealtime()
     }
 
-    /** 0.8.0: skip inside YouTube Music (its own next song), as distinct from Lumen's queue. */
+    /** Select a known song in Lumen's queue so the displayed selection follows the command. */
     fun remoteSkip(forward: Boolean) {
         if (remoteLink() == null) return
-        val state = ytm.state.value
-        if (ytmAccess.value && state.connected) {
-            if (forward) ytm.next() else ytm.previous()
-        } else {
-            if (forward) ytm.keyNext() else ytm.keyPrevious()
-        }
+        if (forward) next() else previous()
     }
 
-    /** 0.8.0: YouTube Music was opened on the current link, so media keys now reach it. */
+    /** YouTube Music was opened on the current link, so play/pause keys can reach it. */
     private var remoteOpened = false
 
     /**
@@ -1350,7 +1366,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // Without access nothing can be watched, so the queue does not move on by itself.
         ytmWatch = if (following) YtmWatch(link) else null
         if (foreground) {
-            ytm.open(link, comeBack = true)
+            ytm.open(link, comeBack = true, activity = foregroundActivity.get())
         } else if (!ytm.playFromUri(link)) {
             RingLog.i("ytm", "reached ${link.uri} in the background; it opens when Lumen is next on screen")
         }
@@ -1686,7 +1702,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val members = playlistEntries.value[label.id].orEmpty().map { it.item }
         if (members.isEmpty()) return
         val ordered = if (shuffle) members.shuffled() else members
-        play(from ?: ordered.first(), ordered)
+        play(from ?: ordered.first(), ordered, originPlaylistId = label.id)
     }
 
     fun reorderPlaylist(labelId: Long, entries: List<PlaylistEntry>) {

@@ -218,6 +218,7 @@ fun NowPlayingScreen(
         Modifier
             .fillMaxSize()
             .background(tint)
+            .dismissPlayerOnPull(enabled = !paned, onDismiss = actions.close)
             .onGloballyPositioned { coordinates ->
                 val bounds = coordinates.boundsInWindow()
                 screenTop = bounds.top
@@ -631,8 +632,7 @@ private fun RemoteLayout(remote: RemoteUi, player: PlayerState, labels: List<Lab
             IconTap(LumenIcons.SkipNext, "Next in YouTube Music", c.accentInk, size = 28.dp, onClick = actions.next)
         }
     } else if (remote.keys) {
-        // 0.8.0: YouTube Music has the song. Play, pause and skip reach it as media keys; Lumen
-        // cannot see its position, so there is no scrubber, and Next in Lumen moves the queue on.
+        // Queue navigation selects a known Lumen item; media-key skips cannot report the new title.
         Spacer(Modifier.height(8.dp))
         Text(
             if (remote.isPlaying) "Playing in YouTube Music" else "Paused in YouTube Music",
@@ -647,15 +647,14 @@ private fun RemoteLayout(remote: RemoteUi, player: PlayerState, labels: List<Lab
             horizontalArrangement = Arrangement.spacedBy(28.dp, Alignment.CenterHorizontally),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            IconTap(LumenIcons.SkipPrevious, "Previous in YouTube Music", c.accentInk, size = 28.dp, onClick = actions.remotePrevious)
+            IconTap(LumenIcons.SkipPrevious, "Previous in playlist", c.accentInk, size = 28.dp, enabled = player.hasPrevious, onClick = actions.previous)
             PlayButton(isPlaying = remote.isPlaying, enabled = true, size = 72.dp, onClick = actions.playPause)
-            IconTap(LumenIcons.SkipNext, "Next in YouTube Music", c.accentInk, size = 28.dp, onClick = actions.remoteNext)
+            IconTap(LumenIcons.SkipNext, "Next in playlist", c.accentInk, size = 28.dp, enabled = player.hasNext, onClick = actions.next)
         }
-        Spacer(Modifier.height(16.dp))
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally)) {
-            if (player.nextTitle != null) PrimaryPill("Next in Lumen", icon = LumenIcons.SkipNext, onClick = actions.next)
-            SecondaryPill("Open YouTube Music", onClick = actions.openYouTubeMusic)
-        }
+        Spacer(Modifier.height(12.dp))
+        Text("These buttons follow your Lumen playlist. Changes made inside YouTube Music are not shown here.", style = Lumen.type.bodyS, color = c.text3)
+        Spacer(Modifier.height(12.dp))
+        SecondaryPill("Open YouTube Music", onClick = actions.openYouTubeMusic)
     } else {
         Spacer(Modifier.height(8.dp))
         Text("Plays in YouTube Music", style = Lumen.type.body, color = c.text2)

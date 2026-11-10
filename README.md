@@ -1,6 +1,15 @@
 # Lumen
 
-## 0.8.4 candidate: YouTube playlists, Android Auto and the light ribbon
+## 0.8.5: sermon recovery and YouTube player navigation
+
+- Transcription uses streamed, bounded output batches. Completed lines appear in Transcript while processing and survive failed requests. Retry continues after saved text; a completed transcript can be used to rewrite notes without uploading audio again. Source changes invalidate checkpoints, while learning a duration during playback does not.
+- Each transcript or notes generation request has a three-minute wall deadline. Progress shows the current stage, saved lines, and time since the last update. Failures explain the stage and preserve readable transcript text.
+- YouTube song handoff uses the current Activity and requests return into Lumen's existing task. Previous/next select known Lumen playlist items and update the displayed selection. The controller stays connected while YouTube opens. Independent track changes inside YouTube Music cannot be mirrored while notification/session access is disabled.
+- Pull down from the top of Now Playing to return to the playlist that started the queue. The chevron uses the same action. Scrolling, horizontal seeking, Kids lock and paned layouts keep their existing behavior.
+
+Phone verification is still needed for live Gemini processing and the YouTube app switch. See `VERIFICATION-0.8.5.md` for automated evidence and exact device checks.
+
+## 0.8.4: YouTube playlists, Android Auto and the light ribbon
 
 - YouTube and Drive both request isolated grants. Connect explicitly selects a YouTube account; missing grants, cancellation and failures remain visible and recoverable. The account preference stays on the phone and tokens stay in memory.
 - Browse playlists owned by the selected YouTube account, including private ones, or use a playlist link. All pages are read; the old 2,000-song cutoff is removed. The API does not expose the whole YouTube Music saved library or every generated mix.

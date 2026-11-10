@@ -31,6 +31,8 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.produceState
+import kotlinx.coroutines.delay
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -109,6 +111,16 @@ fun NotesScreen(
                 TabChip("Notes", selected = tab == 0) { tab = 0 }
                 TabChip("Transcript", selected = tab == 1) { tab = 1 }
             }
+        }
+        if (notes?.status == NotesRepository.STATUS_WORKING || (segments.isNotEmpty() && notes?.status == NotesRepository.STATUS_FAILED)) {
+            val now by produceState(System.currentTimeMillis(), notes?.updatedAt, notes?.status) {
+                while (notes?.status == NotesRepository.STATUS_WORKING) { delay(1_000); value = System.currentTimeMillis() }
+            }
+            val since = ((now - (notes?.updatedAt ?: now)) / 1000).coerceAtLeast(0)
+            Text(
+                "${segments.size} transcript ${if (segments.size == 1) "line" else "lines"} saved" + if (notes?.status == NotesRepository.STATUS_WORKING) " \u00b7 last progress ${since}s ago" else " \u00b7 available in Transcript",
+                style = Lumen.type.bodyS, color = c.text2, modifier = Modifier.padding(horizontal = Gutter, vertical = 8.dp),
+            )
         }
         Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
             if (tab == 1 && segments.isNotEmpty()) {
@@ -195,7 +207,7 @@ internal fun NotesView(
             item {
                 when {
                     working -> StatusCard("Writing notes", notes?.step.orEmpty().ifBlank { "Starting" } +
-                        ". You can leave Lumen; the notes appear here when they are ready.")
+                        ". Completed transcript text is saved as it arrives. You can leave Lumen.")
                     failed -> EmptyState(
                         title = "Notes were not written",
                         body = notes?.step.orEmpty(),
@@ -208,7 +220,7 @@ internal fun NotesView(
                         title = "Notes for this recording",
                         body = "On Wi-Fi, Lumen sends the recording to Google's Gemini for a timed transcript, then writes " +
                             "notes from the transcript holding only what was said: every point, scripture, story, " +
-                            "quote and announcement, each with its time. It takes a few minutes.",
+                            "quote and announcement, each with its time. Progress and saved text appear here while it works.",
                         action = if (needsKey) "Set up notes" else "Write notes",
                         onAction = if (needsKey) onSetUp else onWrite,
                         actionEnabled = blocker == null || needsKey,

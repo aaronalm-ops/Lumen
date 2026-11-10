@@ -14,7 +14,7 @@ import java.net.URL
  * delete of the file once the transcript is in. The key is sent as the x-goog-api-key header,
  * never in a url.
  */
-class GeminiClient(private val apiKey: String) {
+class GeminiClient(private val apiKey: String, private val baseUrl: String = BASE, private val requestTimeoutMs: Long = 180_000L) {
 
     class GeminiException(val code: Int, message: String) : IOException(message)
 
@@ -27,7 +27,7 @@ class GeminiClient(private val apiKey: String) {
      * kept by Google for at most 48 hours; Lumen deletes it as soon as the transcript is in.
      */
     fun upload(input: InputStream, size: Long, mimeType: String, displayName: String, onProgress: (Float) -> Unit): UploadedFile {
-        val start = open("$BASE/upload/v1beta/files", "POST", connectTimeoutMs = 30_000, readTimeoutMs = 60_000)
+        val start = open("$baseUrl/upload/v1beta/files", "POST", connectTimeoutMs = 30_000, readTimeoutMs = 60_000)
         start.setRequestProperty("X-Goog-Upload-Protocol", "resumable")
         start.setRequestProperty("X-Goog-Upload-Command", "start")
         start.setRequestProperty("X-Goog-Upload-Header-Content-Length", size.toString())
@@ -77,10 +77,11 @@ class GeminiClient(private val apiKey: String) {
     }
 
     /** Waits until the uploaded file can be used (state ACTIVE), for up to [timeoutMs]. */
-    fun waitUntilActive(file: UploadedFile, timeoutMs: Long = 10 * 60_000L) {
-        val until = System.currentTimeMillis() + timeoutMs
+    fun waitUntilActive(file: UploadedFile, timeoutMs: Long = 10 * 60_000L, onWaiting: (Long) -> Unit = {}) {
+        val started = System.nanoTime()
+        val until = started + timeoutMs * 1_000_000
         while (true) {
-            val c = open("$BASE/v1beta/${file.name}", "GET")
+            val c = open("$baseUrl/v1beta/${file.name}", "GET")
             val code = c.responseCode
             if (code !in 200..299) throw GeminiException(code, "file state: ${readError(c)}")
             val json = JSONObject(c.inputStream.bufferedReader().use { it.readText() })
@@ -89,14 +90,15 @@ class GeminiClient(private val apiKey: String) {
                 "ACTIVE", "" -> return
                 "FAILED" -> throw IOException("Google could not read this recording")
             }
-            if (System.currentTimeMillis() > until) throw IOException("Google took too long to prepare the recording")
+            onWaiting((System.nanoTime() - started) / 1_000_000)
+            if (System.nanoTime() > until) throw IOException("Google took too long to prepare the recording")
             Thread.sleep(4_000)
         }
     }
 
     fun delete(file: UploadedFile) {
         try {
-            val c = open("$BASE/v1beta/${file.name}", "DELETE")
+            val c = open("$baseUrl/v1beta/${file.name}", "DELETE")
             val code = c.responseCode
             c.disconnect()
             RingLog.i("notes", "uploaded file deleted ($code)")
@@ -117,6 +119,7 @@ class GeminiClient(private val apiKey: String) {
         schema: JSONObject,
         maxOutputTokens: Int,
         thinking: String?,
+        onText: ((String) -> Unit)? = null,
     ): Reply {
         var lastError: Throwable? = null
         for (model in models) {
@@ -125,7 +128,7 @@ class GeminiClient(private val apiKey: String) {
             while (attempts < 2) {
                 attempts++
                 try {
-                    return generateOnce(model, system, parts, schema, maxOutputTokens, withThinking)
+                    return generateOnce(model, system, parts, schema, maxOutputTokens, withThinking, onText)
                 } catch (e: GeminiException) {
                     lastError = e
                     if (e.code == 400 && withThinking != null && e.message.orEmpty().contains("think", ignoreCase = true)) {
@@ -142,7 +145,7 @@ class GeminiClient(private val apiKey: String) {
         throw lastError ?: IOException("no model answered")
     }
 
-    private fun generateOnce(model: String, system: String, parts: JSONArray, schema: JSONObject, maxOutputTokens: Int, thinking: String?): Reply {
+    private fun generateOnce(model: String, system: String, parts: JSONArray, schema: JSONObject, maxOutputTokens: Int, thinking: String?, onText: ((String) -> Unit)?): Reply {
         val config = JSONObject()
             .put("responseMimeType", "application/json")
             .put("responseSchema", schema)
@@ -152,29 +155,29 @@ class GeminiClient(private val apiKey: String) {
             .put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", system))))
             .put("contents", JSONArray().put(JSONObject().put("role", "user").put("parts", parts)))
             .put("generationConfig", config)
-        val c = open("$BASE/v1beta/models/$model:generateContent", "POST", readTimeoutMs = 15 * 60_000)
+        val c = open("$baseUrl/v1beta/models/$model:streamGenerateContent?alt=sse", "POST", readTimeoutMs = minOf(180_000L, requestTimeoutMs).toInt())
         c.setRequestProperty("Content-Type", "application/json")
+        c.setRequestProperty("Accept", "text/event-stream")
         c.doOutput = true
-        c.outputStream.use { it.write(request.toString().toByteArray()) }
-        val code = c.responseCode
-        if (code !in 200..299) throw GeminiException(code, readError(c))
-        val json = JSONObject(c.inputStream.bufferedReader().use { it.readText() })
-        c.disconnect()
-        val candidate = json.optJSONArray("candidates")?.optJSONObject(0)
-        if (candidate == null) {
-            val blocked = json.optJSONObject("promptFeedback")?.optString("blockReason").orEmpty()
-            throw IOException(if (blocked.isNotBlank()) "Google declined this recording ($blocked)" else "Google sent back nothing")
+        val timedOut = java.util.concurrent.atomic.AtomicBoolean(false)
+        val deadline = java.util.Timer("Lumen-notes-deadline", true)
+        deadline.schedule(object : java.util.TimerTask() {
+            override fun run() { timedOut.set(true); c.disconnect() }
+        }, requestTimeoutMs)
+        try {
+            c.outputStream.use { it.write(request.toString().toByteArray(Charsets.UTF_8)) }
+            val code = c.responseCode
+            if (code !in 200..299) throw GeminiException(code, readError(c))
+            val result = c.inputStream.bufferedReader().use { GeminiStream.read(it, onText) }
+            RingLog.i("notes", "$model: ${result.finishReason}, ${result.text.length} streamed characters")
+            return Reply(result.text, result.finishReason, model)
+        } catch (error: IOException) {
+            if (timedOut.get()) throw java.net.SocketTimeoutException("Google did not finish this section within three minutes. Completed transcript lines have been kept")
+            throw error
+        } finally {
+            deadline.cancel()
+            c.disconnect()
         }
-        val text = StringBuilder()
-        val replyParts = candidate.optJSONObject("content")?.optJSONArray("parts") ?: JSONArray()
-        for (i in 0 until replyParts.length()) {
-            val p = replyParts.optJSONObject(i) ?: continue
-            if (p.optBoolean("thought", false)) continue
-            text.append(p.optString("text", ""))
-        }
-        val usage = json.optJSONObject("usageMetadata")
-        RingLog.i("notes", "$model: ${candidate.optString("finishReason")} in ${usage?.optInt("promptTokenCount")} out ${usage?.optInt("candidatesTokenCount")}")
-        return Reply(text.toString(), candidate.optString("finishReason", ""), model)
     }
 
     private fun open(url: String, method: String, connectTimeoutMs: Int = 30_000, readTimeoutMs: Int = 60_000): HttpURLConnection {

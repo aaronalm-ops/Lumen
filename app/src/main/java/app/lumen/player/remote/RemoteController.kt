@@ -1,5 +1,6 @@
 package app.lumen.player.remote
 
+import android.app.Activity
 import android.content.ActivityNotFoundException
 import android.content.ComponentName
 import android.content.Context
@@ -145,6 +146,8 @@ class RemoteController(context: Context) {
 
     fun keyPlayPause() = sendKey(android.view.KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE)
 
+    fun keyPause() = sendKey(android.view.KeyEvent.KEYCODE_MEDIA_PAUSE)
+
     fun keyNext() = sendKey(android.view.KeyEvent.KEYCODE_MEDIA_NEXT)
 
     fun keyPrevious() = sendKey(android.view.KeyEvent.KEYCODE_MEDIA_PREVIOUS)
@@ -287,42 +290,45 @@ class RemoteController(context: Context) {
         return true
     }
 
-    /**
-     * Opens [link] in YouTube Music (any browser if the app is missing) and, with [comeBack], brings
-     * Lumen back to the front [RETURN_DELAY_MS] later. Lumen started an activity a moment before, so
-     * Android allows that second start from the background.
-     */
+    private var returnToLumen: Runnable? = null
+
+    private fun cancelReturn() {
+        returnToLumen?.let { handler.removeCallbacks(it) }
+        returnToLumen = null
+    }
+
+    /** A user-initiated activity handoff. Avoid a fresh background task for the return. */
     @MainThread
-    fun open(link: YtmLink, comeBack: Boolean) {
+    fun open(link: YtmLink, comeBack: Boolean, activity: Activity? = null) {
+        cancelReturn()
+        val host = activity?.takeUnless { it.isFinishing || it.isDestroyed }
         val view = Intent(Intent.ACTION_VIEW, Uri.parse(link.watchUrl))
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        if (host == null) view.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        val context = host ?: appContext
         try {
-            appContext.startActivity(Intent(view).setPackage(YTM_PACKAGE))
+            context.startActivity(Intent(view).setPackage(YTM_PACKAGE))
         } catch (e: ActivityNotFoundException) {
-            RingLog.w("ytm", "YouTube Music is not installed; opening the link in the browser")
-            try {
-                appContext.startActivity(view)
-            } catch (again: ActivityNotFoundException) {
-                RingLog.w("ytm", "nothing can open ${link.watchUrl}")
-                return
-            }
+            try { context.startActivity(view) }
+            catch (again: ActivityNotFoundException) { RingLog.w("ytm", "no app can open the selected song"); return }
         }
-        RingLog.i("ytm", "opened ${link.uri} in YouTube Music")
-        if (!comeBack) return
-        handler.postDelayed({
+        RingLog.i("ytm", "opened ${link.uri}; activity handoff=${host != null}")
+        if (!comeBack || host == null) return
+        val reference = java.lang.ref.WeakReference(host)
+        val back = Runnable {
+            returnToLumen = null
+            val owner = reference.get()?.takeUnless { it.isFinishing || it.isDestroyed } ?: return@Runnable
             try {
-                appContext.startActivity(
-                    Intent(appContext, MainActivity::class.java)
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT),
-                )
-            } catch (t: Throwable) {
-                RingLog.w("ytm", "could not come back to Lumen: $t")
-            }
-        }, RETURN_DELAY_MS)
+                owner.startActivity(Intent(owner, MainActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_SINGLE_TOP))
+            } catch (error: Exception) { RingLog.w("ytm", "return to Lumen failed: ${error.javaClass.simpleName}") }
+        }
+        returnToLumen = back
+        handler.postDelayed(back, RETURN_DELAY_MS)
     }
 
     /** Opens YouTube Music as it is, for "Open YouTube Music" when Lumen cannot control it. */
     fun openApp() {
+        cancelReturn()
         val launch = appContext.packageManager.getLaunchIntentForPackage(YTM_PACKAGE)
         if (launch == null) {
             RingLog.w("ytm", "YouTube Music is not installed")

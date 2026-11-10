@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.*
@@ -15,6 +16,10 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.unit.dp
 import app.lumen.player.data.Settings
 import app.lumen.player.remote.YoutubeApi
+import app.lumen.player.remote.YtmLink
+import app.lumen.player.data.NotesEntity
+import app.lumen.player.data.SegmentEntity
+import app.lumen.player.notes.NotesRepository
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
@@ -137,6 +142,69 @@ class PlaybackUiTest {
         savePreview("android-auto-setup")
     }
 
+    @Test fun `downward pull closes remote player but a short pull does not`() {
+        var closed = 0
+        compose.setContent {
+            LumenTheme(dark = true) {
+                NowPlayingScreen(
+                    player = PlayerState(connected = true, hasItem = true, title = "Second song", hasPrevious = true, hasNext = true),
+                    controller = null, item = null, labels = emptyList(), settings = Settings(), speech = false,
+                    kidsLocked = false, noInterruptions = false, timeline = emptyList(), audioOnly = false,
+                    downloadProgress = null, actions = playerActions(close = { closed++ }),
+                    remote = RemoteUi(YtmLink("bbbbbbbbbbb", false), false, false, "Second song", "Preview artist", null, 0, 0, true, keys = true),
+                )
+            }
+        }
+        compose.onRoot().performTouchInput { swipe(Offset(center.x, 240f), Offset(center.x, 280f), 300) }
+        compose.runOnIdle { assertEquals(0, closed) }
+        compose.onRoot().performTouchInput { swipe(Offset(center.x, 240f), Offset(center.x, 650f), 600) }
+        compose.runOnIdle { assertEquals(1, closed) }
+        savePreview("youtube-player")
+    }
+
+    @Test fun `remote playlist buttons honour bounds and dispatch the Lumen queue actions`() {
+        var next = 0
+        var previous = 0
+        compose.setContent {
+            LumenTheme(dark = true) {
+                NowPlayingScreen(
+                    player = PlayerState(connected = true, hasItem = true, title = "First song", hasPrevious = false, hasNext = true),
+                    controller = null, item = null, labels = emptyList(), settings = Settings(), speech = false,
+                    kidsLocked = false, noInterruptions = false, timeline = emptyList(), audioOnly = false,
+                    downloadProgress = null, actions = playerActions(next = { next++ }, previous = { previous++ }),
+                    remote = RemoteUi(YtmLink("aaaaaaaaaaa", false), false, false, "First song", "Preview artist", null, 0, 0, true, keys = true),
+                )
+            }
+        }
+        compose.onNodeWithContentDescription("Previous in playlist").performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithContentDescription("Next in playlist").performScrollTo().performClick()
+        compose.runOnIdle { assertEquals(1, next); assertEquals(0, previous) }
+        compose.onNodeWithText("These buttons follow your Lumen playlist. Changes made inside YouTube Music are not shown here.").assertExists()
+    }
+
+    @Test fun `failed notes expose saved transcript playback and retry`() {
+        val media = YtmLink("aaaaaaaaaaa", false).toMediaEntity("Sermon fixture", "", 1)
+        val item = LibraryItem(media, emptyList(), 1, 0, 0, "")
+        val failure = "Transcription failed: The connection ended. Saved transcript lines are kept"
+        var writes = 0
+        var playedAt = -1L
+        compose.setContent {
+            LumenTheme(dark = false) {
+                NotesScreen(item, NotesEntity(media.uri, media.title, 0, NotesRepository.STATUS_FAILED, failure, "", "", 1, 1),
+                    listOf(SegmentEntity(mediaUri = media.uri, startMs = 20_000, text = "Saved spoken line")),
+                    blocker = null, playingMs = null, initialQuery = "", onClose = {}, onWrite = { writes++ }, onPlayAt = { playedAt = it })
+            }
+        }
+        compose.onNodeWithText(failure).assertIsDisplayed()
+        compose.onNodeWithText("Try again").performClick()
+        assertEquals(1, writes)
+        savePreview("notes-retry")
+        compose.onNodeWithText("Transcript", ignoreCase = true).performClick()
+        compose.onNodeWithText("Saved spoken line").assertIsDisplayed()
+        compose.onNodeWithText("00:20").performClick()
+        assertEquals(20_000L, playedAt)
+    }
+
     private fun savePreview(name: String) {
         val bitmap = compose.onRoot().captureToImage().asAndroidBitmap()
         val file = File("build/test-previews/$name.png").also { it.parentFile?.mkdirs() }
@@ -148,8 +216,8 @@ class PlaybackUiTest {
         toggle = {}, selectAll = {}, setTarget = {}, setNewName = {}, add = {}, addAsOneLink = {},
     )
 
-    private fun playerActions() = NowPlayingActions(
-        close = {}, playPause = {}, seekBack = {}, seekForward = {}, seekTo = {}, next = {}, previous = {},
+    private fun playerActions(close: () -> Unit = {}, next: () -> Unit = {}, previous: () -> Unit = {}) = NowPlayingActions(
+        close = close, playPause = {}, seekBack = {}, seekForward = {}, seekTo = {}, next = next, previous = previous,
         toggleShuffle = {}, cycleRepeat = {}, cycleSpeed = {}, cyclePreset = {}, cycleSleep = {}, addBookmark = {},
         toggleLayout = {}, unlockKids = {}, setAudioOnly = {}, openLabelSheet = {}, toggleOffline = {}, openChapterSheet = {},
         deleteMark = {}, exportNotes = {}, setLevelOutVoices = {}, setTrimSilences = {}, openYouTubeMusic = {},

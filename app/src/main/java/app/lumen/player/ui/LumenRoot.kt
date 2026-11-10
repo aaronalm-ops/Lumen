@@ -188,7 +188,7 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
     }
 
     val nowPlayingActions = NowPlayingActions(
-        close = { vm.nowPlayingOpen.value = false },
+        close = vm::dismissNowPlaying,
         playPause = vm::playPause,
         seekBack = vm::seekBack,
         seekForward = vm::seekForward,

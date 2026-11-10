@@ -33,6 +33,13 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.runInterruptible
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.isActive
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -52,6 +59,8 @@ import java.io.InputStream
  */
 class NotesService : Service() {
 
+    internal var createClient: (String) -> GeminiClient = { GeminiClient(it) }
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val queue = Channel<String>(Channel.UNLIMITED)
     private val pending = LinkedHashSet<String>()
@@ -63,8 +72,15 @@ class NotesService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        goForeground(lastStep.ifBlank { "Getting ready" })
         val uri = intent?.getStringExtra(EXTRA_URI)
+        if (!goForeground(lastStep.ifBlank { "Getting ready" })) {
+            if (uri != null) LumenApp.from(this).appScope.launch {
+                LumenApp.from(this@NotesService).notesRepo.dao.setStatus(uri, NotesRepository.STATUS_FAILED,
+                    "Android could not keep the notes job running. Keep Lumen open and try again", System.currentTimeMillis())
+            }
+            stopSelfResult(startId)
+            return START_NOT_STICKY
+        }
         val idle = synchronized(pending) {
             lastStartId = startId
             if (uri != null && pending.add(uri)) queue.trySend(uri)
@@ -121,7 +137,13 @@ class NotesService : Service() {
             wake?.acquire(JOB_CEILING_MS)
             wifi?.setReferenceCounted(false)
             wifi?.acquire()
-            runJob(uri)
+            withTimeout(JOB_CEILING_MS) { runJob(uri) }
+        } catch (error: TimeoutCancellationException) {
+            LumenApp.from(this).notesRepo.dao.setStatus(uri, NotesRepository.STATUS_FAILED,
+                "The notes job reached its time limit. Saved transcript text is kept; try again to continue", System.currentTimeMillis())
+        } catch (error: CancellationException) { throw error
+        } catch (error: Exception) {
+            LumenApp.from(this).notesRepo.dao.setStatus(uri, NotesRepository.STATUS_FAILED, reasonFor(error), System.currentTimeMillis())
         } finally {
             try { if (wifi?.isHeld == true) wifi.release() } catch (_: Throwable) {}
             try { if (wake?.isHeld == true) wake.release() } catch (_: Throwable) {}
@@ -132,54 +154,90 @@ class NotesService : Service() {
         val app = LumenApp.from(this)
         val dao = app.notesRepo.dao
         val started = System.currentTimeMillis()
+        val jobContext = currentCoroutineContext()
         suspend fun step(text: String) {
+            if (!jobContext.isActive) return
             dao.setStatus(uri, NotesRepository.STATUS_WORKING, text, System.currentTimeMillis())
             notify(text)
         }
+        var stage = "Starting"
         try {
             val media = app.db.mediaDao().mediaByUri(uri) ?: throw IOException("This recording is no longer in the library")
             val key = app.notesRepo.apiKey()
             if (key.isBlank()) throw IOException("Add your Gemini key in Settings, Sermon notes")
-            val client = GeminiClient(key)
+            val client = createClient(key)
             RingLog.i("notes", "start: ${media.title}")
 
-            step("Uploading 0%")
-            val source = openSource(app, media)
-            var shown = -1
-            val file = try {
-                client.upload(source.stream, source.size, mimeFor(media), media.title) { f ->
-                    val pct = (f * 100).toInt()
-                    if (pct >= shown + 5) {
-                        shown = pct
-                        runBlocking { step("Uploading $pct%") }
+            val checkpoint = TranscriptCheckpoint(this)
+            val stored = dao.segmentsFor(uri)
+            val savedState = checkpoint.read(media, stored)
+            val existingNotes = dao.notes(uri)
+            val legacyComplete = !checkpoint.hasRecord(uri) && savedState == null && existingNotes?.sizeBytes == media.sizeBytes &&
+                SermonNotes.parse(existingNotes?.json.orEmpty()) != null && stored.isNotEmpty()
+            var segments = if (savedState != null || legacyComplete) stored.map { it.startMs to it.text } else emptyList()
+            if (legacyComplete) checkpoint.save(media, segments, true)
+            if (savedState == null && !legacyComplete) {
+                dao.deleteSegments(uri)
+                checkpoint.save(media, emptyList(), false)
+            }
+            if (savedState?.complete != true && !legacyComplete) {
+                stage = "Upload"
+                step("Uploading 0%" + if (segments.isNotEmpty()) "; saved transcript resumes at ${stamp(segments.last().first)}" else "")
+                val source = runInterruptible { openSource(app, media) }
+                var shown = -1
+                val file = try {
+                    runInterruptible {
+                        client.upload(source.stream, source.size, mimeFor(media), media.title) { fraction ->
+                            val pct = (fraction * 100).toInt()
+                            if (pct >= shown + 5) { shown = pct; runBlocking { step("Uploading $pct%") } }
+                        }
                     }
-                }
-            } finally {
-                source.close()
-            }
-            val segments = try {
-                step("Google is preparing the recording")
-                client.waitUntilActive(file)
-                step("Transcribing. This takes a few minutes")
-                transcribe(client, file, media.durationMs) { n -> runBlocking { step("Transcribing. $n lines so far") } }
-            } finally {
-                client.delete(file)
-            }
+                } finally { source.close() }
+                try {
+                    stage = "Preparing recording"
+                    step("Google is preparing the recording")
+                    runInterruptible { client.waitUntilActive(file) { elapsed -> runBlocking { step("Google is preparing the recording; ${elapsed / 1000} seconds elapsed") } } }
+                    stage = "Transcription"
+                    step("Transcribing; ${segments.size} lines saved. Text appears in Transcript as it arrives")
+                    segments = runInterruptible {
+                        TranscriptRunner(
+                            generate = { after, onText ->
+                                val parts = JSONArray()
+                                    .put(JSONObject().put("file_data", JSONObject().put("mime_type", file.mimeType).put("file_uri", file.uri)))
+                                    .put(JSONObject().put("text", NotesPrompts.transcriptRequest(after)))
+                                client.generate(GeminiClient.MODELS, NotesPrompts.TRANSCRIPT_SYSTEM, parts,
+                                    NotesPrompts.transcriptSchema, maxOutputTokens = 8_192, thinking = "low", onText = onText)
+                            },
+                            persist = { added, all, complete -> runBlocking {
+                                if (added.isNotEmpty()) dao.insertSegments(added.map { (ms, text) -> SegmentEntity(mediaUri = uri, startMs = ms, text = text) })
+                                checkpoint.save(media, all, complete)
+                                step(if (complete) "Transcript ready; ${all.size} lines saved" else "Transcribing; ${all.size} lines saved through ${stamp(all.last().first)}")
+                            } },
+                        ).run(media.durationMs, segments)
+                    }
+                } finally { withContext(NonCancellable + Dispatchers.IO) { client.delete(file) } }
+            } else step("Using the saved transcript; no new audio upload needed")
             if (segments.isEmpty()) throw IOException("No speech was found in this recording")
-            dao.deleteSegments(uri)
-            dao.insertSegments(segments.map { (ms, text) -> SegmentEntity(mediaUri = uri, startMs = ms, text = text) })
             RingLog.i("notes", "transcript: ${segments.size} lines")
-
-            step("Writing notes from ${segments.size} transcript lines")
+            stage = "Writing notes"
+            step("Writing notes from ${segments.size} saved transcript lines")
             val transcript = segments.joinToString("\n") { (ms, text) -> "[${stamp(ms)}] $text" }
-            val reply = client.generate(
+            var progressAt = 0L
+            val reply = runInterruptible { client.generate(
                 GeminiClient.MODELS,
                 NotesPrompts.NOTES_SYSTEM,
                 JSONArray().put(JSONObject().put("text", NotesPrompts.notesRequest(transcript))),
                 NotesPrompts.notesSchema,
                 maxOutputTokens = 32_768,
                 thinking = "medium",
-            )
+                onText = { text ->
+                    val now = System.nanoTime()
+                    if (now - progressAt > 2_000_000_000L) {
+                        progressAt = now
+                        runBlocking { step("Writing notes; ${text.length} characters received. The transcript is already saved") }
+                    }
+                },
+            ) }
             val parsed = SermonNotes.parse(reply.text)
             if (parsed == null || parsed.sections.isEmpty()) throw IOException("The notes came back unreadable. Try again")
             val row = dao.notes(uri)
@@ -197,45 +255,10 @@ class NotesService : Service() {
         } catch (e: CancellationException) {
             throw e
         } catch (t: Throwable) {
-            val reason = reasonFor(t)
+            val reason = "$stage failed: ${reasonFor(t)}"
             RingLog.e("notes", "failed: $reason", t)
             dao.setStatus(uri, NotesRepository.STATUS_FAILED, reason, System.currentTimeMillis())
         }
-    }
-
-    /**
-     * The timed transcript. A reply that stops at the output limit is carried on from its last
-     * line, up to [MAX_ROUNDS] calls; lines at or before the last time already held are dropped.
-     */
-    private fun transcribe(client: GeminiClient, file: GeminiClient.UploadedFile, durationMs: Long, onLines: (Int) -> Unit): List<Pair<Long, String>> {
-        val out = ArrayList<Pair<Long, String>>()
-        var after: String? = null
-        var lastMs = -1L
-        for (round in 1..MAX_ROUNDS) {
-            val parts = JSONArray()
-                .put(JSONObject().put("file_data", JSONObject().put("mime_type", file.mimeType).put("file_uri", file.uri)))
-                .put(JSONObject().put("text", NotesPrompts.transcriptRequest(after)))
-            val reply = client.generate(
-                GeminiClient.MODELS,
-                NotesPrompts.TRANSCRIPT_SYSTEM,
-                parts,
-                NotesPrompts.transcriptSchema,
-                maxOutputTokens = 65_536,
-                thinking = "low",
-            )
-            val lines = parseSegments(reply.text).filter { it.first > lastMs }
-            out += lines
-            if (lines.isNotEmpty()) lastMs = lines.last().first
-            onLines(out.size)
-            RingLog.i("notes", "transcript round $round: ${lines.size} lines, finish ${reply.finishReason}")
-            if (lines.isEmpty()) break
-            // 0.6.1: also carry on when the reply stopped early but the recording runs on more
-            // than two minutes past the last line, so the end of a sermon is never dropped.
-            val short = durationMs > 0 && lastMs < durationMs - SHORT_BY_MS
-            if (reply.finishReason != "MAX_TOKENS" && !short) break
-            after = stamp(lastMs)
-        }
-        return out
     }
 
     private class Source(val stream: InputStream, val size: Long, val close: () -> Unit)
@@ -292,7 +315,7 @@ class NotesService : Service() {
         t is GeminiClient.GeminiException && t.code == 429 -> "Google's limit for this key is used up for now. Try again later"
         t is GeminiClient.GeminiException && t.code >= 500 -> "Google is busy. Try again in a few minutes"
         t is GeminiClient.GeminiException -> "Google said: ${t.message.orEmpty().take(160)}"
-        t is java.net.SocketTimeoutException -> "Google took too long to answer. Try again in a few minutes"
+        t is java.net.SocketTimeoutException -> "Google did not finish this section in time. Saved transcript lines are kept; try again to continue"
         t is java.net.UnknownHostException || t is javax.net.ssl.SSLException || t is java.net.ConnectException ||
             t is java.net.SocketException -> "The connection dropped. Try again on Wi-Fi"
         t is IOException && t.message.orEmpty().let { it.contains(" 401") || it.contains(" 403") || it.contains("authError") } ->
@@ -326,14 +349,16 @@ class NotesService : Service() {
             .build()
     }
 
-    private fun goForeground(text: String) {
+    private fun goForeground(text: String): Boolean {
         channel()
         val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC else 0
         try {
             ServiceCompat.startForeground(this, NOTIFICATION_ID, build(text), type)
+            return true
         } catch (t: Throwable) {
             // Past the daily allowance Android refuses; the job is marked and the service ends.
             RingLog.e("notes", "could not run in the foreground", t)
+            return false
         }
     }
 
@@ -352,8 +377,6 @@ class NotesService : Service() {
         const val EXTRA_URI = "app.lumen.player.notes.uri"
         private const val CHANNEL = "notes"
         private const val NOTIFICATION_ID = 4107
-        private const val MAX_ROUNDS = 6
-        private const val SHORT_BY_MS = 120_000L
         private const val JOB_CEILING_MS = 60 * 60_000L
 
         fun isPermissionNeeded(context: Context): Boolean =

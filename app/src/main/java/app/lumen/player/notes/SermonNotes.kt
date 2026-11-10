@@ -79,7 +79,7 @@ object NotesPrompts {
         append("Include every spoken word: talk, readings, prayers and announcements. ")
         append("Where people sing, write one segment \"[singing]\" instead of the words. ")
         append("Where a word cannot be made out, write [unclear]. ")
-        append("Do not leave gaps and do not repeat segments.")
+        append("Do not leave gaps and do not repeat segments. If the audio ends in silence or music, include one [no speech] segment at the recording end time to show that the tail was covered.")
         if (afterTime != null) {
             append(" The transcript up to $afterTime is already done: return only the segments that start after $afterTime, to the end of the recording.")
         }

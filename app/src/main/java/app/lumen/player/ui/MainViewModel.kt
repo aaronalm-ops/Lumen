@@ -1524,6 +1524,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         geminiKeyHint.value = notesRepo.keyHint()
     }
 
+    /** 0.9.0: the Anthropic key; with it, Claude Sonnet writes sermon notes. */
+    val claudeKeyHint = MutableStateFlow(notesRepo.claudeKeyHint())
+
+    fun saveClaudeKey(key: String) {
+        notesRepo.setClaudeKey(key)
+        claudeKeyHint.value = notesRepo.claudeKeyHint()
+    }
+
     /** Plays [item] from [ms]: a seek when it is already loaded, otherwise a queue of one starting there. */
     fun playAt(item: LibraryItem, ms: Long) {
         if (item.media.isYtm) return

@@ -171,6 +171,13 @@ class PositionStore(context: Context, private val dao: ProgressDao) {
     /** The last [n] distinct items, most recent first. */
     suspend fun recent(n: Int): List<ProgressEntity> = dao.all().distinctBy { it.uri }.take(n)
 
+    /** 0.9.0: the latest saved place per uri, for Android Auto's played markers and Carry on. */
+    suspend fun latestByUri(): Map<String, ProgressEntity> {
+        val out = LinkedHashMap<String, ProgressEntity>()
+        dao.all().forEach { if (it.uri !in out) out[it.uri] = it }
+        return out
+    }
+
     suspend fun dumpTable(): String {
         val rows = dao.all()
         if (rows.isEmpty()) return "(progress table is empty)\n"

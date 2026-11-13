@@ -3,6 +3,7 @@ package app.lumen.player.playback
 import android.app.PendingIntent
 import android.content.Intent
 import android.net.Uri
+import android.os.Bundle
 import android.os.SystemClock
 import androidx.media3.cast.CastPlayer
 import androidx.media3.cast.RemoteCastPlayer
@@ -26,6 +27,9 @@ import androidx.media3.session.MediaLibraryService.LibraryParams
 import androidx.media3.session.MediaLibraryService.MediaLibrarySession
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
+import androidx.media3.session.SessionCommand
+import androidx.media3.session.SessionResult
+import app.lumen.player.car.CarLibrary
 import app.lumen.player.LumenApp
 import app.lumen.player.MainActivity
 import app.lumen.player.cast.LumenCastConverter
@@ -88,6 +92,9 @@ class PlaybackService : MediaLibraryService() {
         /** 0.5.0: a player that reaches READY this close to the handed-over position ends the handover. */
         private const val HANDOVER_TOLERANCE_MS = 5_000L
 
+        const val CMD_SPEED = "lumen.car.SPEED"
+        const val CMD_MARK = "lumen.car.MARK"
+        const val CMD_SLEEP_END = "lumen.car.SLEEP_END"
         const val ROOT_ID = "root"
         const val CONTINUE_ID = "continue"
         const val LABELS_ID = "labels"
@@ -170,6 +177,9 @@ class PlaybackService : MediaLibraryService() {
     private lateinit var mediaRepo: MediaRepository
     private lateinit var labelRepo: LabelRepository
     private lateinit var settingsRepo: SettingsRepository
+
+    /** 0.9.0: the Android Auto browse tree, search and car-only queue requests. */
+    private lateinit var car: CarLibrary
     private var session: MediaLibrarySession? = null
     private val scope = CoroutineScope(
         SupervisorJob() + Dispatchers.Main.immediate +
@@ -237,6 +247,10 @@ class PlaybackService : MediaLibraryService() {
         mediaRepo = app.media
         labelRepo = app.labels
         settingsRepo = app.settings
+        car = CarLibrary(this, mediaRepo, labelRepo, store, app.notesRepo) { media ->
+            val ids = labelRepo.labelIdsFor(media.uri)
+            itemForMedia(media, ids, ids.mapNotNull { labelRepo.byId(it)?.name })
+        }
         RingLog.i("service", "onCreate")
 
         val audioAttributes = AudioAttributes.Builder()
@@ -273,7 +287,7 @@ class PlaybackService : MediaLibraryService() {
 
         session = MediaLibrarySession.Builder(this, player, SessionCallback())
             .setSessionActivity(sessionActivity)
-            .setMediaButtonPreferences(mediaButtonPreferences(10, 30))
+            .setMediaButtonPreferences(mediaButtonPreferences(10, 30, 1.0f))
             .build()
 
         observeSettings()
@@ -331,10 +345,11 @@ class PlaybackService : MediaLibraryService() {
             // 0.6.1: lock screen, notification, widget and car buttons follow the item. A sermon
             // gets back and forward by the skip lengths; a song gets the system's previous and
             // next, so a playlist can be skipped from the lock screen.
-            combine(settingsRepo.settings, currentSpeech) { s, speech -> Triple(s.skipBackSeconds, s.skipForwardSeconds, speech) }
+            // 0.9.0: a sermon also gets Speed, Mark this moment and Sleep at the end (car overflow).
+            combine(settingsRepo.settings, currentSpeech) { s, speech -> ButtonKey(s.skipBackSeconds, s.skipForwardSeconds, s.speed, speech) }
                 .distinctUntilChanged()
-                .collect { (back, forward, speech) ->
-                    session?.setMediaButtonPreferences(if (speech) mediaButtonPreferences(back, forward) else emptyList())
+                .collect { (back, forward, speed, speech) ->
+                    session?.setMediaButtonPreferences(if (speech) mediaButtonPreferences(back, forward, speed) else emptyList())
                     RingLog.i("service", "buttons for ${if (speech) "speech" else "music"}")
                 }
         }
@@ -606,7 +621,9 @@ class PlaybackService : MediaLibraryService() {
      * Seek back and seek forward take the two slots the system would otherwise give to previous
      * and next, on the notification, the lock screen, Bluetooth displays and Android Auto.
      */
-    private fun mediaButtonPreferences(backSeconds: Int, forwardSeconds: Int): List<CommandButton> {
+    private data class ButtonKey(val back: Int, val forward: Int, val speed: Float, val speech: Boolean)
+
+    private fun mediaButtonPreferences(backSeconds: Int, forwardSeconds: Int, speed: Float): List<CommandButton> {
         val backIcon = when (backSeconds) {
             5 -> CommandButton.ICON_SKIP_BACK_5
             15 -> CommandButton.ICON_SKIP_BACK_15
@@ -629,7 +646,62 @@ class PlaybackService : MediaLibraryService() {
             .setPlayerCommand(Player.COMMAND_SEEK_FORWARD)
             .setSlots(CommandButton.SLOT_FORWARD)
             .build()
-        return listOf(back, forward)
+        val speedIcon = when {
+            speed >= 1.9f -> CommandButton.ICON_PLAYBACK_SPEED_2_0
+            speed >= 1.7f -> CommandButton.ICON_PLAYBACK_SPEED_1_8
+            speed >= 1.4f -> CommandButton.ICON_PLAYBACK_SPEED_1_5
+            speed >= 1.1f -> CommandButton.ICON_PLAYBACK_SPEED_1_2
+            else -> CommandButton.ICON_PLAYBACK_SPEED_1_0
+        }
+        val speedButton = CommandButton.Builder(speedIcon)
+            .setDisplayName("Speed ${speedLabel(speed)}")
+            .setSessionCommand(SessionCommand(CMD_SPEED, Bundle.EMPTY))
+            .setSlots(CommandButton.SLOT_OVERFLOW)
+            .build()
+        val mark = CommandButton.Builder(CommandButton.ICON_BOOKMARK_UNFILLED)
+            .setDisplayName("Mark this moment")
+            .setSessionCommand(SessionCommand(CMD_MARK, Bundle.EMPTY))
+            .setSlots(CommandButton.SLOT_OVERFLOW)
+            .build()
+        val sleep = CommandButton.Builder(CommandButton.ICON_UNDEFINED)
+            .setCustomIconResId(app.lumen.player.R.drawable.ic_car_sleep)
+            .setDisplayName("Sleep at the end")
+            .setSessionCommand(SessionCommand(CMD_SLEEP_END, Bundle.EMPTY))
+            .setSlots(CommandButton.SLOT_OVERFLOW)
+            .build()
+        return listOf(back, forward, speedButton, mark, sleep)
+    }
+
+    private fun speedLabel(speed: Float): String =
+        if (speed == speed.toInt().toFloat()) "${speed.toInt()}.0x" else "${"%.2f".format(java.util.Locale.ROOT, speed).trimEnd('0')}x"
+
+    /** 0.9.0: car and notification buttons for sermons; each confirms nothing and changes one thing. */
+    private fun handleCarCommand(action: String): SessionResult {
+        val item = player.currentMediaItem ?: return SessionResult(SessionResult.RESULT_ERROR_BAD_VALUE)
+        when (action) {
+            CMD_SPEED -> {
+                val steps = listOf(1.0f, 1.25f, 1.5f, 1.75f, 2.0f)
+                val now = settings.speed
+                val next = steps.firstOrNull { it > now + 0.01f } ?: steps.first()
+                if (!castActive) player.setPlaybackSpeed(next)
+                scope.launch { settingsRepo.setSpeed(next) }
+                RingLog.i("car", "speed $next")
+            }
+            CMD_MARK -> {
+                val uri = MediaItems.uriOf(item)
+                val at = player.currentPosition.coerceAtLeast(0L)
+                scope.launch { mediaRepo.addBookmark(uri, at) }
+                RingLog.i("car", "marked $at")
+            }
+            CMD_SLEEP_END -> {
+                val left = (player.duration - player.currentPosition).coerceAtLeast(0L)
+                val speed = player.playbackParameters.speed.coerceAtLeast(0.5f)
+                scope.launch { settingsRepo.setSleepUntil(System.currentTimeMillis() + (left / speed).toLong()) }
+                RingLog.i("car", "sleep at the end of this recording")
+            }
+            else -> return SessionResult(SessionResult.RESULT_ERROR_NOT_SUPPORTED)
+        }
+        return SessionResult(SessionResult.RESULT_SUCCESS)
     }
 
     // Progress persistence. Reads of the player must happen on the main thread, so the snapshot is
@@ -1227,14 +1299,66 @@ class PlaybackService : MediaLibraryService() {
 
     private inner class SessionCallback : MediaLibrarySession.Callback {
 
-        /** Controllers send items without a URI across the binder; put it back from the id. */
+        /** 0.9.0: custom buttons (Speed, Mark, Sleep at the end) for every controller, the car included. */
+        override fun onConnect(session: MediaSession, controller: MediaSession.ControllerInfo): MediaSession.ConnectionResult {
+            val commands = MediaSession.ConnectionResult.DEFAULT_SESSION_AND_LIBRARY_COMMANDS.buildUpon()
+                .add(SessionCommand(CMD_SPEED, Bundle.EMPTY))
+                .add(SessionCommand(CMD_MARK, Bundle.EMPTY))
+                .add(SessionCommand(CMD_SLEEP_END, Bundle.EMPTY))
+                .build()
+            return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
+                .setAvailableSessionCommands(commands)
+                .build()
+        }
+
+        override fun onCustomCommand(
+            session: MediaSession,
+            controller: MediaSession.ControllerInfo,
+            customCommand: SessionCommand,
+            args: Bundle,
+        ): ListenableFuture<SessionResult> = Futures.immediateFuture(handleCarCommand(customCommand.customAction))
+
+        /**
+         * Controllers send items without a URI across the binder; put it back from the id.
+         * 0.9.0: car-only ids (Play all, Shuffle, a line found in a transcript) and voice
+         * searches become real items first.
+         */
         override fun onAddMediaItems(
             mediaSession: MediaSession,
             controller: MediaSession.ControllerInfo,
             mediaItems: MutableList<MediaItem>,
         ): ListenableFuture<MutableList<MediaItem>> {
-            val resolved = mediaItems.map { resolve(it) }.toMutableList()
-            return Futures.immediateFuture(resolved)
+            if (mediaItems.none { needsExpansion(it) }) {
+                return Futures.immediateFuture(mediaItems.map { resolve(it) }.toMutableList())
+            }
+            val future = SettableFuture.create<MutableList<MediaItem>>()
+            scope.launch {
+                try {
+                    val out = ArrayList<MediaItem>()
+                    for (item in mediaItems) {
+                        out += if (needsExpansion(item)) expandRequest(item)?.items.orEmpty() else listOf(item)
+                    }
+                    future.set(out.map { resolve(it) }.toMutableList())
+                } catch (t: Throwable) {
+                    RingLog.e("session", "add items failed", t)
+                    future.setException(t)
+                }
+            }
+            return future
+        }
+
+        private fun needsExpansion(item: MediaItem): Boolean =
+            CarLibrary.isCarOnly(item.mediaId) || (item.mediaId.isEmpty() && item.requestMetadata.searchQuery != null)
+
+        /** A car-only id or a voice search as a queue; an empty search resumes the last item. */
+        private suspend fun expandRequest(item: MediaItem): CarLibrary.Expanded? {
+            if (CarLibrary.isCarOnly(item.mediaId)) return car.expand(item.mediaId)
+            val query = item.requestMetadata.searchQuery.orEmpty()
+            RingLog.i("session", "voice search \"$query\"")
+            car.bestFor(query)?.let { return it }
+            val last = store.lastItem() ?: return null
+            val media = mediaRepo.byUri(last.uri) ?: return null
+            return CarLibrary.Expanded(listOf(itemFor(media)), 0, PositionStore.resumePosition(last))
         }
 
         /** Same as above, but also looks up the stored position for the first item. */
@@ -1245,6 +1369,27 @@ class PlaybackService : MediaLibraryService() {
             startIndex: Int,
             startPositionMs: Long,
         ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
+            // 0.9.0: Play all, Shuffle, a transcript line or a voice search from the car.
+            if (mediaItems.size == 1 && needsExpansion(mediaItems[0])) {
+                val expanded = SettableFuture.create<MediaSession.MediaItemsWithStartPosition>()
+                scope.launch {
+                    try {
+                        val request = expandRequest(mediaItems[0])
+                        if (request == null || request.items.isEmpty()) {
+                            expanded.setException(UnsupportedOperationException("Nothing to play for this request"))
+                            return@launch
+                        }
+                        val items = request.items.map { resolve(it) }
+                        val position = if (request.startPositionMs != C.TIME_UNSET) request.startPositionMs else startPositionFor(items[request.startIndex])
+                        RingLog.i("session", "car request ${mediaItems[0].mediaId.take(40)} -> ${items.size} items at $position")
+                        expanded.set(MediaSession.MediaItemsWithStartPosition(items, request.startIndex, position))
+                    } catch (t: Throwable) {
+                        RingLog.e("session", "car request failed", t)
+                        expanded.setException(t)
+                    }
+                }
+                return expanded
+            }
             val resolved = mediaItems.map { resolve(it) }
             val future = SettableFuture.create<MediaSession.MediaItemsWithStartPosition>()
             if (resolved.isEmpty() || startPositionMs != C.TIME_UNSET) {
@@ -1267,20 +1412,28 @@ class PlaybackService : MediaLibraryService() {
             }
 
             scope.launch {
-                // Speech resumes at saved minus 3 s; music starts at the top. An item without the
-                // speech extra and without a media row (a Phase 0 uri) resumes, as Phase 0 did.
-                // 0.4.0, item 4: the resume extra decides first, so a voice note over three
-                // minutes resumes though it plays in the music layout.
-                val resume = MediaItems.resumeOrNull(first) ?: MediaItems.speechOrNull(first) ?: run {
-                    val (media, names) = resolveMedia(first)
-                    if (media == null) true else MediaRepository.resumes(media, names, settings.layoutOverrides[uri])
-                }
-                val saved = if (resume) store.latestFor(uri, MediaItems.fingerprint(first)) else null
-                val position = if (saved == null) C.TIME_UNSET else PositionStore.resumePosition(saved)
-                RingLog.i("session", "setMediaItems uri=$uri resume=$resume resumeAt=$position")
+                val position = startPositionFor(first)
                 future.set(MediaSession.MediaItemsWithStartPosition(resolved, index, position))
             }
             return future
+        }
+
+        /**
+         * Speech resumes at saved minus 3 s; music starts at the top. An item without the speech
+         * extra and without a media row (a Phase 0 uri) resumes, as Phase 0 did. 0.4.0, item 4:
+         * the resume extra decides first, so a voice note over three minutes resumes though it
+         * plays in the music layout.
+         */
+        private suspend fun startPositionFor(first: MediaItem): Long {
+            val uri = MediaItems.uriOf(first)
+            val resume = MediaItems.resumeOrNull(first) ?: MediaItems.speechOrNull(first) ?: run {
+                val (media, names) = resolveMedia(first)
+                if (media == null) true else MediaRepository.resumes(media, names, settings.layoutOverrides[uri])
+            }
+            val saved = if (resume) store.latestFor(uri, MediaItems.fingerprint(first)) else null
+            val position = if (saved == null) C.TIME_UNSET else PositionStore.resumePosition(saved)
+            RingLog.i("session", "setMediaItems uri=$uri resume=$resume resumeAt=$position")
+            return position
         }
 
         /**
@@ -1328,7 +1481,7 @@ class PlaybackService : MediaLibraryService() {
             return future
         }
 
-        // Android Auto browse tree, served from Room.
+        // Android Auto browse tree, served from Room. 0.9.0: built by CarLibrary.
 
         override fun onGetLibraryRoot(
             session: MediaLibrarySession,
@@ -1336,7 +1489,8 @@ class PlaybackService : MediaLibraryService() {
             params: LibraryParams?,
         ): ListenableFuture<LibraryResult<MediaItem>> {
             RingLog.i("library", "root requested by ${browser.packageName}")
-            return Futures.immediateFuture(LibraryResult.ofItem(MediaItems.folder(ROOT_ID, "Lumen"), params))
+            val hints = LibraryParams.Builder().setExtras(car.rootExtras()).build()
+            return Futures.immediateFuture(LibraryResult.ofItem(car.rootItem(), hints))
         }
 
         override fun onGetChildren(
@@ -1351,7 +1505,7 @@ class PlaybackService : MediaLibraryService() {
             val future = SettableFuture.create<LibraryResult<ImmutableList<MediaItem>>>()
             scope.launch {
                 try {
-                    val children = LibraryPage.slice(childrenOf(parentId), page, pageSize)
+                    val children = LibraryPage.slice(car.children(parentId), page, pageSize)
                     RingLog.i("library", "${browser.packageName}: $parentId page=$page size=$pageSize returned=${children.size}")
                     future.set(LibraryResult.ofItemList(ImmutableList.copyOf(children), params))
                 } catch (t: Throwable) {
@@ -1370,16 +1524,7 @@ class PlaybackService : MediaLibraryService() {
             val future = SettableFuture.create<LibraryResult<MediaItem>>()
             scope.launch {
                 try {
-                    val item = when {
-                        mediaId == ROOT_ID -> MediaItems.folder(ROOT_ID, "Lumen")
-                        mediaId == CONTINUE_ID -> MediaItems.folder(CONTINUE_ID, "Continue")
-                        mediaId == LABELS_ID -> MediaItems.folder(LABELS_ID, "Playlists")
-                        mediaId == SERMONS_ID -> MediaItems.folder(SERMONS_ID, "Sermons")
-                        mediaId == RECENT_ID -> MediaItems.folder(RECENT_ID, "Recent")
-                        mediaId.startsWith(LABEL_PREFIX) -> mediaId.removePrefix(LABEL_PREFIX).toLongOrNull()
-                            ?.let { labelRepo.byId(it) }?.let { MediaItems.folder(mediaId, it.name) }
-                        else -> mediaRepo.byUri(mediaId)?.let { itemFor(it) }
-                    }
+                    val item = car.item(mediaId)
                     if (item == null) future.set(LibraryResult.ofError(LibraryResult.RESULT_ERROR_BAD_VALUE))
                     else future.set(LibraryResult.ofItem(item, null))
                 } catch (t: Throwable) {
@@ -1390,46 +1535,57 @@ class PlaybackService : MediaLibraryService() {
             return future
         }
 
+        /** 0.9.0: the car's search (keyboard or voice): titles, then lines said in transcripts. */
+        private val searchResults = java.util.concurrent.ConcurrentHashMap<String, List<MediaItem>>()
+
+        override fun onSearch(
+            session: MediaLibrarySession,
+            browser: MediaSession.ControllerInfo,
+            query: String,
+            params: LibraryParams?,
+        ): ListenableFuture<LibraryResult<Void>> {
+            val future = SettableFuture.create<LibraryResult<Void>>()
+            scope.launch {
+                try {
+                    val results = car.search(query)
+                    searchResults[query] = results
+                    RingLog.i("library", "search \"$query\": ${results.size} results")
+                    session.notifySearchResultChanged(browser, query, results.size, params)
+                    future.set(LibraryResult.ofVoid())
+                } catch (t: Throwable) {
+                    RingLog.e("library", "search failed", t)
+                    future.set(LibraryResult.ofError(LibraryResult.RESULT_ERROR_UNKNOWN))
+                }
+            }
+            return future
+        }
+
+        override fun onGetSearchResult(
+            session: MediaLibrarySession,
+            browser: MediaSession.ControllerInfo,
+            query: String,
+            page: Int,
+            pageSize: Int,
+            params: LibraryParams?,
+        ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> {
+            if (page < 0 || pageSize <= 0) return Futures.immediateFuture(LibraryResult.ofError(LibraryResult.RESULT_ERROR_BAD_VALUE))
+            val future = SettableFuture.create<LibraryResult<ImmutableList<MediaItem>>>()
+            scope.launch {
+                try {
+                    val results = searchResults[query] ?: car.search(query).also { searchResults[query] = it }
+                    future.set(LibraryResult.ofItemList(ImmutableList.copyOf(LibraryPage.slice(results, page, pageSize)), params))
+                } catch (t: Throwable) {
+                    RingLog.e("library", "search results failed", t)
+                    future.set(LibraryResult.ofError(LibraryResult.RESULT_ERROR_UNKNOWN))
+                }
+            }
+            return future
+        }
+
         private suspend fun itemFor(media: MediaEntity): MediaItem {
             val ids = labelRepo.labelIdsFor(media.uri)
             val names = ids.mapNotNull { labelRepo.byId(it)?.name }
             return itemForMedia(media, ids, names)
-        }
-
-        private suspend fun childrenOf(parentId: String): List<MediaItem> = when {
-            parentId == ROOT_ID -> listOf(
-                MediaItems.folder(CONTINUE_ID, "Continue"),
-                MediaItems.folder(LABELS_ID, "Playlists"),
-                MediaItems.folder(SERMONS_ID, "Sermons"),
-                MediaItems.folder(RECENT_ID, "Recent"),
-            )
-            parentId == CONTINUE_ID -> {
-                val last = store.lastItem()
-                val media = last?.let { mediaRepo.byUri(it.uri) }
-                if (media != null && !YtmLink.isYtm(media.uri)) listOf(itemFor(media)) else emptyList()
-            }
-            parentId == LABELS_ID -> labelRepo.all().map { MediaItems.folder(LABEL_PREFIX + it.id, it.name) }
-            parentId == SERMONS_ID -> {
-                val all = mediaRepo.all()
-                val sermons = labelRepo.byName(LabelRepository.SERMONS)?.let { labelRepo.mediaUrisFor(it.id) }?.toSet() ?: emptySet()
-                all.filter { (it.durationMs > MediaRepository.SPEECH_THRESHOLD_MS || it.uri in sermons) && !YtmLink.isYtm(it.uri) }
-                    .sortedByDescending { it.dateAdded }
-                    .distinctBy { it.fingerprint }
-                    .map { itemFor(it) }
-            }
-            parentId == RECENT_ID -> {
-                val rows = store.recent(8)
-                rows.filterNot { YtmLink.isYtm(it.uri) }.mapNotNull { mediaRepo.byUri(it.uri) }.distinctBy { it.fingerprint }.map { itemFor(it) }
-            }
-            parentId.startsWith(LABEL_PREFIX) -> {
-                val id = parentId.removePrefix(LABEL_PREFIX).toLongOrNull()
-                if (id == null) emptyList()
-                // 0.5.0: YouTube Music rows play in YouTube Music, so Android Auto never lists them.
-                else labelRepo.mediaUrisFor(id).filterNot { YtmLink.isYtm(it) }.mapNotNull { mediaRepo.byUri(it) }
-                    .distinctBy { it.fingerprint }
-                    .map { itemFor(it) }
-            }
-            else -> emptyList()
         }
 
         private fun resolve(item: MediaItem): MediaItem {

@@ -46,7 +46,7 @@ fun AndroidAutoScreen(back: () -> Unit, shareDiagnostics: () -> Unit) {
             item {
                 Text("Listen in the car", style = Lumen.type.displayS, color = c.text)
                 Spacer(Modifier.height(8.dp))
-                Text("Lumen offers Continue, Playlists, Sermons and Recent through Android Auto. Phone files and connected Drive recordings play through Lumen. YouTube Music plays through its own Android Auto app.", style = Lumen.type.body, color = c.text2)
+                Text("Lumen offers Carry on, Sermons, Playlists and Recent in Android Auto, with search by title or by what was said. Sermons show what is new, what you have started and what you have finished; a sermon has Speed, Mark this moment and Sleep at the end in the car. Phone files and connected Drive recordings play through Lumen. YouTube Music plays through its own Android Auto app.", style = Lumen.type.body, color = c.text2)
             }
             item {
                 ListCard {
@@ -69,7 +69,7 @@ fun AndroidAutoScreen(back: () -> Unit, shareDiagnostics: () -> Unit) {
             }
             item {
                 Text("Check playback", style = Lumen.type.bodyStrong, color = c.text)
-                Text("Open Lumen on the phone once and scan your files or connect Drive. In the car, open Lumen, choose a recording, then check play, pause, seek and resume. If Lumen appears but its library does not load, share diagnostics after trying it.", style = Lumen.type.body, color = c.text2)
+                Text("Open Lumen on the phone once and scan your files or connect Drive. In the car, open Lumen, choose a recording, then check play, pause, seek and resume. To carry on automatically when the car connects, turn on the Android Auto setting that starts media automatically; Lumen then resumes your last recording. If Lumen appears but its library does not load, share diagnostics after trying it.", style = Lumen.type.body, color = c.text2)
                 Spacer(Modifier.height(8.dp))
                 SecondaryPill("Share diagnostics", onClick = shareDiagnostics)
                 Text("Lumen ${BuildConfig.VERSION_NAME}", style = Lumen.type.bodyS, color = c.text3)

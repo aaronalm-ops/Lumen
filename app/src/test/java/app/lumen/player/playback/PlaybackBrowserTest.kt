@@ -51,12 +51,20 @@ class PlaybackBrowserTest {
             val root = await(browser.getLibraryRoot(null))
             assertEquals("Lumen", root.value!!.mediaMetadata.title)
             val roots = await(browser.getChildren(PlaybackService.ROOT_ID, 0, 10, null)).value!!
-            assertEquals(listOf("Continue", "Playlists", "Sermons", "Recent"), roots.map { it.mediaMetadata.title.toString() })
+            // 0.9.0: Carry on, Sermons, Playlists, Recent.
+            assertEquals(listOf("Carry on", "Sermons", "Playlists", "Recent"), roots.map { it.mediaMetadata.title.toString() })
             val parent = PlaybackService.LABEL_PREFIX + labelId
-            assertEquals("First", await(browser.getChildren(parent, 0, 1, null)).value!!.single().mediaMetadata.title)
-            assertEquals("Second", await(browser.getChildren(parent, 1, 1, null)).value!!.single().mediaMetadata.title)
-            assertTrue(await(browser.getChildren(parent, 2, 1, null)).value!!.isEmpty())
+            // Play all and Shuffle head every playlist; YouTube Music rows stay out; order is kept.
+            assertEquals("Play all", await(browser.getChildren(parent, 0, 1, null)).value!!.single().mediaMetadata.title)
+            assertEquals("Shuffle", await(browser.getChildren(parent, 1, 1, null)).value!!.single().mediaMetadata.title)
+            assertEquals("First", await(browser.getChildren(parent, 2, 1, null)).value!!.single().mediaMetadata.title)
+            assertEquals("Second", await(browser.getChildren(parent, 3, 1, null)).value!!.single().mediaMetadata.title)
+            assertTrue(await(browser.getChildren(parent, 4, 1, null)).value!!.isEmpty())
             assertNull(await(browser.getItem("missing")).value)
+            // Search by title.
+            await(browser.search("Second", null))
+            val hits = await(browser.getSearchResult("Second", 0, 10, null)).value!!
+            assertEquals(listOf("Second"), hits.map { it.mediaMetadata.title.toString() })
         } finally {
             browser.release()
             service.destroy()

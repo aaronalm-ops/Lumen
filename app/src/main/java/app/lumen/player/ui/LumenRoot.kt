@@ -163,6 +163,7 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
     val justMarked by vm.justMarked.collectAsState()
     val lastRemoved by vm.lastRemoved.collectAsState()
     val geminiKeyHint by vm.geminiKeyHint.collectAsState()
+    val claudeKeyHint by vm.claudeKeyHint.collectAsState()
     val transcriptHits by vm.transcriptHits.collectAsState()
 
     // Kids lock forces Now Playing open; nothing else can be reached until the corner is held.
@@ -397,6 +398,7 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
                     backupBusy = backupBusy,
                     ytmAccess = ytmAccess,
                     notesKeyHint = geminiKeyHint,
+                    claudeKeyHint = claudeKeyHint,
                     actions = SettingsActions(
                         back = { vm.screen.value = Screen.Home },
                         scanPhone = actions.scanPhone,
@@ -428,6 +430,7 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
                         openGeminiKeyPage = actions.openGeminiKeyPage,
                         importYouTube = { vm.openYtImport() },
                         openAndroidAuto = { vm.screen.value = Screen.AndroidAuto },
+                        saveClaudeKey = vm::saveClaudeKey,
                     ),
                 )
                 Screen.AndroidAuto -> AndroidAutoScreen(

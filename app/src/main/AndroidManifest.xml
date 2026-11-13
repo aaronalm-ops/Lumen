@@ -124,6 +124,12 @@
             android:name=".widget.WidgetActionReceiver"
             android:exported="false" />
 
+        <!-- 0.9.0: read-only tiles and covers for Android Auto (see CarArtProvider). -->
+        <provider
+            android:name=".car.CarArtProvider"
+            android:authorities="${applicationId}.art"
+            android:exported="true" />
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

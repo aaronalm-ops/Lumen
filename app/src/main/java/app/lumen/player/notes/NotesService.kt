@@ -61,6 +61,9 @@ class NotesService : Service() {
 
     internal var createClient: (String) -> GeminiClient = { GeminiClient(it) }
 
+    /** 0.9.0: notes are written by Claude Sonnet when an Anthropic key is saved. */
+    internal var createClaude: (String) -> ClaudeClient = { ClaudeClient(it) }
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val queue = Channel<String>(Channel.UNLIMITED)
     private val pending = LinkedHashSet<String>()
@@ -185,7 +188,15 @@ class NotesService : Service() {
                 dao.deleteSegments(uri)
                 checkpoint.save(media, emptyList(), false)
             }
-            if (savedState?.complete != true && !legacyComplete) {
+            // 0.9.0: Gemini 3.5 Transcribe in 20-minute parts first; null means that path is not
+            // available for this file (format, model), and the whole-file path below runs.
+            val sliced = if (savedState?.complete != true && !legacyComplete) {
+                stage = "Transcription"
+                transcribeSliced(app, client, media, checkpoint, segments, savedState?.slicedThroughMs ?: -1L, { step(it) }, recovering)
+            } else null
+            if (sliced != null) {
+                segments = sliced
+            } else if (savedState?.complete != true && !legacyComplete) {
                 stage = "Upload"
                 step("Uploading 0%" + if (segments.isNotEmpty()) "; saved transcript resumes at ${stamp(segments.last().first)}" else "")
                 val source = runInterruptible { openSource(app, media) }
@@ -203,6 +214,19 @@ class NotesService : Service() {
                     step("Google is preparing the recording")
                     runInterruptible { client.waitUntilActive(file) { elapsed -> runBlocking { step("Google is preparing the recording; ${elapsed / 1000} seconds elapsed") } } }
                     stage = "Transcription"
+                    // 0.9.0: a fresh recording short enough for one Transcribe request goes there first.
+                    val direct = if (segments.isEmpty() && media.durationMs in 1..TRANSCRIBE_DIRECT_MAX_MS) {
+                        step("Transcribing with Google's speech model")
+                        runInterruptible { transcribeOrNull(client, file, recovering) }
+                            ?.let { result -> linesFrom(result, 0L, media.durationMs) }
+                            ?.takeIf { it.isNotEmpty() }
+                    } else null
+                    if (direct != null) {
+                        dao.insertSegments(direct.map { (ms, text) -> SegmentEntity(mediaUri = uri, startMs = ms, text = text) })
+                        checkpoint.save(media, direct, true)
+                        step("Transcript ready; ${direct.size} lines saved")
+                        segments = direct
+                    } else {
                     step("Transcribing; ${segments.size} lines saved. Text appears in Transcript as it arrives")
                     segments = runInterruptible {
                         TranscriptRunner(
@@ -220,6 +244,7 @@ class NotesService : Service() {
                             } },
                         ).run(media.durationMs, segments)
                     }
+                    }
                 } finally { withContext(NonCancellable + Dispatchers.IO) { client.delete(file) } }
             } else step("Using the saved transcript; no new audio upload needed")
             if (segments.isEmpty()) throw IOException("No speech was found in this recording")
@@ -228,7 +253,24 @@ class NotesService : Service() {
             step("Writing notes from ${segments.size} saved transcript lines")
             val transcript = segments.joinToString("\n") { (ms, text) -> "[${stamp(ms)}] $text" }
             var progressAt = 0L
-            val reply = runInterruptible { client.generate(
+            val claudeKey = app.notesRepo.claudeKey()
+            val reply = if (claudeKey.isNotBlank()) {
+                // 0.9.0: Claude Sonnet writes the notes from the saved transcript text alone.
+                step("Claude is writing notes from ${segments.size} saved transcript lines")
+                runInterruptible { createClaude(claudeKey).writeNotes(
+                    NotesPrompts.NOTES_SYSTEM,
+                    NotesPrompts.notesRequest(transcript),
+                    NotesPrompts.notesSchema,
+                    onRetry = { retry -> runBlocking { step("Claude is busy (HTTP ${retry.code}). Retrying in ${(retry.delayMs + 999) / 1000}s; the transcript is saved") } },
+                    onProgress = { chars ->
+                        val now = System.nanoTime()
+                        if (now - progressAt > 2_000_000_000L) {
+                            progressAt = now
+                            runBlocking { step("Claude is writing notes; $chars characters so far. The transcript is already saved") }
+                        }
+                    },
+                ) }
+            } else runInterruptible { client.generate(
                 GeminiClient.MODELS,
                 NotesPrompts.NOTES_SYSTEM,
                 JSONArray().put(JSONObject().put("text", NotesPrompts.notesRequest(transcript))),
@@ -264,6 +306,128 @@ class NotesService : Service() {
             val reason = "$stage failed: ${reasonFor(t)}"
             RingLog.e("notes", "failed: $reason", t)
             dao.setStatus(uri, NotesRepository.STATUS_FAILED, reason, System.currentTimeMillis())
+        }
+    }
+
+    /** 0.9.0: Transcribe on an uploaded file, or null when that model cannot take it (the Flash path runs). */
+    private fun transcribeOrNull(client: GeminiClient, file: GeminiClient.UploadedFile, onRetry: (GeminiClient.Retry) -> Unit): GeminiClient.Transcription? =
+        try {
+            client.transcribe(file, onRetry)
+        } catch (e: GeminiClient.GeminiException) {
+            if (e.code == 401 || e.code == 403) throw e
+            RingLog.w("notes", "${GeminiClient.TRANSCRIBE_MODEL} unavailable (HTTP ${e.code}); using the Flash transcript path")
+            null
+        }
+
+    private fun linesFrom(result: GeminiClient.Transcription, offsetMs: Long, lengthMs: Long): List<Pair<Long, String>> =
+        if (result.words.isNotEmpty()) TranscriptLines.group(result.words, offsetMs)
+        else TranscriptLines.spread(result.text, offsetMs, lengthMs)
+
+    /**
+     * 0.9.0: the recording in parts of about 20 minutes, each uploaded, transcribed with word
+     * times by Gemini 3.5 Transcribe, saved, then deleted from Google. Progress is kept per part,
+     * so a retry continues after the last finished part. Returns null, before uploading anything,
+     * when the file cannot be cut (format) or Transcribe is unavailable; the caller then uses the
+     * whole-file path.
+     */
+    private suspend fun transcribeSliced(
+        app: LumenApp,
+        client: GeminiClient,
+        media: MediaEntity,
+        checkpoint: TranscriptCheckpoint,
+        saved: List<Pair<Long, String>>,
+        slicedThroughMs: Long,
+        step: suspend (String) -> Unit,
+        recovering: (GeminiClient.Retry) -> Unit,
+    ): List<Pair<Long, String>>? {
+        if (!AudioSlicer.canTry(media.mime, media.title)) return null
+        val dao = app.notesRepo.dao
+        var temp: File? = null
+        try {
+            val localPath: String? = when {
+                media.offlinePath?.let { File(it).exists() } == true -> media.offlinePath
+                media.uri.startsWith(DriveRepository.URI_PREFIX) -> {
+                    val target = File(cacheDir, "notes-source.audio").also { temp = it }
+                    step("Downloading the recording from Drive")
+                    val source = runInterruptible { openSource(app, media) }
+                    try {
+                        runInterruptible {
+                            target.outputStream().use { out ->
+                                val buffer = ByteArray(64 * 1024)
+                                var copied = 0L
+                                var shown = -1
+                                while (true) {
+                                    val n = source.stream.read(buffer)
+                                    if (n < 0) break
+                                    out.write(buffer, 0, n)
+                                    copied += n
+                                    val pct = if (source.size > 0) (copied * 100 / source.size).toInt() else 0
+                                    if (pct >= shown + 10) { shown = pct; runBlocking { step("Downloading the recording from Drive $pct%") } }
+                                }
+                            }
+                        }
+                    } finally { source.close() }
+                    target.path
+                }
+                media.uri.startsWith("file:") -> Uri.parse(media.uri).path
+                else -> null
+            }
+            val context = this
+            val slicer = AudioSlicer { extractor ->
+                if (localPath != null) extractor.setDataSource(localPath)
+                else extractor.setDataSource(context, Uri.parse(media.uri), null)
+            }
+            val total = runInterruptible { slicer.durationMs() }.takeIf { it > 0 } ?: return null
+            val resumeFrom = if (slicedThroughMs >= 0 && saved.isNotEmpty()) slicedThroughMs else 0L
+            val lines = if (resumeFrom > 0) saved.toMutableList() else mutableListOf()
+            var replaced = resumeFrom > 0 || saved.isEmpty()
+            val plan = AudioSlicer.plan(total, resumeFrom)
+            val firstPart = AudioSlicer.plan(total, 0L).size - plan.size
+            val parts = firstPart + plan.size
+            for ((i, range) in plan.withIndex()) {
+                val part = firstPart + i + 1
+                val (from, to) = range
+                step("Preparing part $part of $parts")
+                val out = File(cacheDir, "notes-slice-$part.audio")
+                val slice = runInterruptible { slicer.cut(from, to, out) }
+                if (slice == null) {
+                    if (i == 0 && lines.isEmpty()) return null
+                    break
+                }
+                try {
+                    var shown = -1
+                    val uploaded = runInterruptible {
+                        slice.file.inputStream().use { input ->
+                            client.upload(input, slice.file.length(), slice.mimeType, "${media.title} part $part") { fraction ->
+                                val pct = (fraction * 100).toInt()
+                                if (pct >= shown + 10) { shown = pct; runBlocking { step("Uploading part $part of $parts, $pct%") } }
+                            }
+                        }
+                    }
+                    val result = try {
+                        runInterruptible { client.waitUntilActive(uploaded) }
+                        step("Transcribing part $part of $parts; ${lines.size} lines saved")
+                        runInterruptible { if (i == 0 && lines.isEmpty()) transcribeOrNull(client, uploaded, recovering) else client.transcribe(uploaded, recovering) }
+                    } finally { withContext(NonCancellable + Dispatchers.IO) { client.delete(uploaded) } }
+                    if (result == null) return null
+                    val after = lines.lastOrNull()?.first ?: -1L
+                    val added = linesFrom(result, slice.startMs, slice.endMs - slice.startMs).filter { it.first > after }
+                    if (!replaced) {
+                        // Lines from the older Flash path are replaced by this transcript.
+                        dao.deleteSegments(media.uri)
+                        replaced = true
+                    }
+                    if (added.isNotEmpty()) dao.insertSegments(added.map { (ms, text) -> SegmentEntity(mediaUri = media.uri, startMs = ms, text = text) })
+                    lines += added
+                    checkpoint.save(media, lines, false, to)
+                    step("Part $part of $parts transcribed; ${lines.size} lines saved")
+                } finally { out.delete() }
+            }
+            checkpoint.save(media, lines, true, total)
+            step("Transcript ready; ${lines.size} lines saved")
+            return lines
+        } finally {
+            temp?.delete()
         }
     }
 
@@ -315,6 +479,13 @@ class NotesService : Service() {
     }
 
     private fun reasonFor(t: Throwable): String = when {
+        // 0.9.0: Claude writes the notes when an Anthropic key is saved.
+        t is ClaudeClient.ClaudeException && (t.code == 401 || t.code == 403) -> "Anthropic refused the Claude key. Check it in Settings"
+        t is ClaudeClient.ClaudeException && t.message.orEmpty().contains("credit", ignoreCase = true) ->
+            "Your Anthropic credit balance is too low for Claude notes. Top up, or remove the Claude key to use Gemini"
+        t is ClaudeClient.ClaudeException && t.code == 429 -> "Claude's rate limit is reached for now. The transcript is saved; try again in a minute"
+        t is ClaudeClient.ClaudeException && t.code >= 500 -> "Claude is busy (HTTP ${t.code}). The transcript is saved; try again later"
+        t is ClaudeClient.ClaudeException -> "Claude said: ${t.message.orEmpty().take(160)}"
         t is GeminiClient.GeminiException && (t.code == 400 && t.message.orEmpty().contains("key", ignoreCase = true)) ->
             "Google refused the Gemini key. Check it in Settings"
         t is GeminiClient.GeminiException && (t.code == 401 || t.code == 403) -> "Google refused the Gemini key. Check it in Settings"
@@ -384,6 +555,9 @@ class NotesService : Service() {
         private const val CHANNEL = "notes"
         private const val NOTIFICATION_ID = 4107
         private const val JOB_CEILING_MS = 60 * 60_000L
+
+        /** 0.9.0: one Transcribe request with word times takes up to 30 minutes of audio. */
+        private const val TRANSCRIBE_DIRECT_MAX_MS = 29 * 60_000L
 
         fun isPermissionNeeded(context: Context): Boolean =
             Build.VERSION.SDK_INT >= 33 &&

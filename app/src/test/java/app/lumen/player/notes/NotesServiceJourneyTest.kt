@@ -76,7 +76,7 @@ class NotesServiceJourneyTest {
                             val call = transcriptions.incrementAndGet()
                             if (call == 1) {
                                 "data: ${event("[{\"t\":\"00:00\",\"s\":\"First spoken line\"}]")}\n\ndata: {\"error\":{\"code\":503,\"message\":\"Synthetic busy interruption\"}}\n\n"
-                            } else if (call <= 4) {
+                            } else if (call <= 2 * GeminiClient.MODELS.size) {
                                 val code = 503
                                 "data: {\"error\":{\"code\":$code,\"message\":\"Synthetic provider interruption\"}}\n\n"
                             } else {
@@ -95,7 +95,7 @@ class NotesServiceJourneyTest {
         fun runService(): NotesEntity {
             val controller = Robolectric.buildService(NotesService::class.java).create()
             val service = controller.get()
-            service.createClient = { GeminiClient(it, base, 15_000, waitBeforeRetry = {}) }
+            service.createClient = { GeminiClient(it, base, 15_000, waitBeforeRetry = {}, busyAttemptsPerModel = 2) }
             try {
                 val now = System.currentTimeMillis()
                 runBlocking {
@@ -128,7 +128,7 @@ class NotesServiceJourneyTest {
             assertEquals(2, uploads.get())
             assertEquals(NotesRepository.STATUS_DONE, runService().status)
             assertEquals("Writing notes again uploaded the audio", 2, uploads.get())
-            assertEquals(5, transcriptions.get())
+            assertEquals(2 * GeminiClient.MODELS.size + 1, transcriptions.get())
         } finally { server.stop(0) }
     }
 

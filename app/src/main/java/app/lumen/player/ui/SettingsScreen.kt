@@ -94,6 +94,8 @@ class SettingsActions(
     val openGeminiKeyPage: () -> Unit,
     val importYouTube: () -> Unit,
     val openAndroidAuto: () -> Unit,
+    /** 0.9.0: saves the Anthropic key for Claude-written notes; blank removes it. */
+    val saveClaudeKey: (String) -> Unit = {},
 )
 
 /** Settings, light: one list under mono labels, no row icons. */
@@ -116,6 +118,8 @@ fun SettingsScreen(
     /** 0.6.0: the last four characters of the saved Gemini key, empty when none is saved. */
     notesKeyHint: String,
     actions: SettingsActions,
+    /** 0.9.0: the last four characters of the saved Anthropic key, empty when none is saved. */
+    claudeKeyHint: String = "",
 ) {
     val c = Lumen.colours
     val picked = folders.filter { !it.isMediaStore && !it.isDrive && !it.isYtm }
@@ -304,11 +308,41 @@ fun SettingsScreen(
                         KeyField(onSave = actions.saveGeminiKey)
                     }
                     HorizontalDivider(color = c.divider, thickness = 1.dp, modifier = Modifier.padding(horizontal = 14.dp))
+                    // 0.9.0: Claude Sonnet writes the notes from the transcript when this key is saved.
+                    val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
+                    Row(
+                        Modifier.fillMaxWidth().heightIn(min = RowHeight).padding(start = 14.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Claude key", style = Lumen.type.bodyStrong, color = c.text)
+                            Text(
+                                if (claudeKeyHint.isNotBlank()) {
+                                    "Saved, ending $claudeKeyHint. Claude Sonnet writes the notes from the transcript; Gemini still makes the transcript"
+                                } else {
+                                    "Optional. With an Anthropic key, Claude Sonnet writes the notes, about US\$0.11 for an hour-long sermon"
+                                },
+                                style = Lumen.type.bodyS,
+                                color = c.text2,
+                                maxLines = 3,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        if (claudeKeyHint.isNotBlank()) {
+                            TextAction("Remove", danger = true, onClick = { actions.saveClaudeKey("") })
+                        } else {
+                            TextAction("Get a key", onClick = { runCatching { uriHandler.openUri("https://platform.claude.com/settings/keys") } })
+                        }
+                    }
+                    if (claudeKeyHint.isBlank()) {
+                        KeyField(onSave = actions.saveClaudeKey)
+                    }
+                    HorizontalDivider(color = c.divider, thickness = 1.dp, modifier = Modifier.padding(horizontal = 14.dp))
                     Text(
-                        "Tap Notes on a sermon in Now Playing. On Wi-Fi, Lumen uploads the recording to Google, " +
-                            "gets a timed transcript, deletes the recording from Google, then writes notes from the " +
-                            "transcript alone: only what was said. On Google's free tier, Google may use what you send " +
-                            "to improve its products.",
+                        "Tap Notes on a sermon in Now Playing. On Wi-Fi, Lumen sends the recording to Google in " +
+                            "parts of about 20 minutes, gets a timed transcript, deletes each part from Google, then writes " +
+                            "notes from the transcript alone: only what was said. With a Claude key, only the transcript " +
+                            "text goes to Anthropic. On Google's free tier, Google may use what you send to improve its products.",
                         style = Lumen.type.bodyS,
                         color = c.text2,
                         modifier = Modifier.padding(14.dp),

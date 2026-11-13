@@ -9,7 +9,8 @@ import java.security.MessageDigest
 /** Local processing state only. A completion flag is valid only for the exact saved segments. */
 internal class TranscriptCheckpoint(context: Context) {
     private val preferences = context.getSharedPreferences("transcript_checkpoints", Context.MODE_PRIVATE)
-    data class State(val complete: Boolean)
+    /** [slicedThroughMs]: 0.9.0, how far the sliced transcriber has finished; -1 for other paths. */
+    data class State(val complete: Boolean, val slicedThroughMs: Long = -1L)
 
     fun hasRecord(uri: String): Boolean = preferences.contains(key(uri))
 
@@ -17,12 +18,12 @@ internal class TranscriptCheckpoint(context: Context) {
         val json = runCatching { JSONObject(preferences.getString(key(media.uri), "").orEmpty()) }.getOrNull() ?: return null
         if (json.optString("source") != source(media)) return null
         val matches = json.optInt("count") == lines.size && json.optLong("last", -1) == (lines.lastOrNull()?.startMs ?: -1L)
-        return State(json.optBoolean("complete") && matches)
+        return State(json.optBoolean("complete") && matches, if (matches) json.optLong("sliced", -1L) else -1L)
     }
 
-    fun save(media: MediaEntity, lines: List<Pair<Long, String>>, complete: Boolean) {
+    fun save(media: MediaEntity, lines: List<Pair<Long, String>>, complete: Boolean, slicedThroughMs: Long = -1L) {
         val json = JSONObject().put("source", source(media)).put("count", lines.size)
-            .put("last", lines.lastOrNull()?.first ?: -1L).put("complete", complete)
+            .put("last", lines.lastOrNull()?.first ?: -1L).put("complete", complete).put("sliced", slicedThroughMs)
         preferences.edit().putString(key(media.uri), json.toString()).commit()
     }
 

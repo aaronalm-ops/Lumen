@@ -39,6 +39,16 @@ class NotesRepository(
         RingLog.i("notes", if (key.isBlank()) "Gemini key removed" else "Gemini key saved")
     }
 
+    /** 0.9.0: the Anthropic key for writing notes with Claude Sonnet; blank means Gemini writes them. */
+    fun claudeKey(): String = secrets.getString(KEY_CLAUDE, "").orEmpty()
+
+    fun claudeKeyHint(): String = claudeKey().takeLast(4)
+
+    fun setClaudeKey(key: String) {
+        secrets.edit().putString(KEY_CLAUDE, key.trim()).apply()
+        RingLog.i("notes", if (key.isBlank()) "Claude key removed" else "Claude key saved")
+    }
+
     fun notes(uri: String): Flow<NotesEntity?> = dao.notesFlow(uri)
 
     fun segments(uri: String): Flow<List<SegmentEntity>> = dao.segmentsFlow(uri)
@@ -93,6 +103,7 @@ class NotesRepository(
         const val STATUS_DONE = "done"
         const val STATUS_FAILED = "failed"
         private const val KEY_GEMINI = "gemini_api_key"
+        private const val KEY_CLAUDE = "anthropic_api_key"
         private const val SEARCH_LIMIT = 60
     }
 }

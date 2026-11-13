@@ -1,5 +1,23 @@
 # Lumen
 
+## 0.9.0: reliable transcripts, Claude notes and a new Android Auto
+
+### Transcripts (Gemini 3.5 Transcribe)
+- Diagnostics from 13 Nov 2026 showed `gemini-3.8-flash` answering HTTP 503 "high demand" and Lumen giving up after one quick retry per model.
+- New path: the recording is cut on the phone into parts of about 20 minutes (MP3 frames copied as they are, AAC frames given ADTS headers; no re-encoding), each part is uploaded, transcribed by `gemini-3.5-transcribe` through the Interactions API with word timestamps (30-minute limit per request), saved, and deleted from Google. Words become lines at sentence ends, pauses, speaker changes or every 20 seconds. A retry continues after the last finished part. Drive recordings are downloaded to the cache first and removed afterwards.
+- Other formats, or Transcribe being unavailable (HTTP 400/404), fall back to the Flash path. Recordings under 29 minutes on that path try Transcribe once on the whole file first.
+- Busy answers (HTTP 5xx) are now retried patiently: up to four attempts per model with waits of 8, 16, 32 and 60 seconds, across `gemini-3.8-flash`, `gemini-3.7-flash` and `gemini-3.6-flash`. Server waits up to 90 seconds are honoured. The notification shows each wait.
+
+### Notes by Claude Sonnet (optional)
+- Settings, Sermon notes, Claude key. With an Anthropic key, `claude-sonnet-5-5` writes the notes from the saved transcript text through the Messages API (streamed; the notes JSON is the input of a forced `save_notes` tool, so it always matches the schema). Audio never goes to Anthropic. 429, 5xx and 529 are retried with backoff; a refused key or low credit is shown plainly. Without the key, Gemini writes the notes as before.
+
+### Android Auto
+- Tabs: Carry on (up to five unfinished sermons with time left), Sermons (grouped Carry on, New, This month, Older), Playlists (a grid of Lumen tiles) and Recent.
+- Played, part-played and unplayed markers on recordings. Covers and Lumen tiles are served to the car by `CarArtProvider` (read-only; only generated tiles and cached covers).
+- Every playlist starts with Play all and Shuffle. Search finds titles and lines said in transcripts; a transcript hit starts at that moment. "Play ... on Lumen" plays the best match, or resumes the last recording when nothing matches.
+- Sermons get Speed (1.0 to 2.0x), Mark this moment (a bookmark) and Sleep at the end in the car's overflow, and in other system media controls that show custom actions.
+- Starting automatically when the car connects uses Android Auto's own setting; Lumen's resumption then continues the last recording.
+
 ## 0.8.8: 0.8.7 released
 
 - 0.8.7's code was correct (the real-session test passed), but its new reflection test could not allocate the abstract `Timeline` parameter, so the tag build stopped before publishing. The test now passes `Timeline.EMPTY`. No app code changes from 0.8.7.

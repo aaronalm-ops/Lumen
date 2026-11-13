@@ -24,7 +24,7 @@ class GeminiRecoveryTest {
         }
         val notices = mutableListOf<GeminiClient.Retry>()
         val delays = mutableListOf<Long>()
-        val reply = generate(GeminiClient("fixture-key", base, waitBeforeRetry = { delays += it }), notices)
+        val reply = generate(GeminiClient("fixture-key", base, busyAttemptsPerModel = 2, backoffBaseMs = 1_000L, waitBeforeRetry = { delays += it }), notices)
         assertEquals("fallback", reply.model)
         assertEquals(listOf(false, true), notices.map { it.switchingModel })
         assertEquals(listOf("primary", "primary", "fallback"), paths.map { it.substringAfter("models/").substringBefore(":") })
@@ -37,7 +37,7 @@ class GeminiRecoveryTest {
             else success(exchange)
         }
         val delays = mutableListOf<Long>()
-        assertEquals("primary", generate(GeminiClient("fixture-key", base, waitBeforeRetry = { delays += it })).model)
+        assertEquals("primary", generate(GeminiClient("fixture-key", base, busyAttemptsPerModel = 2, backoffBaseMs = 1_000L, waitBeforeRetry = { delays += it })).model)
         assertEquals(listOf(5_000L), delays)
     }
 
@@ -45,7 +45,7 @@ class GeminiRecoveryTest {
         handler.respond = { exchange, _ -> error(exchange, 503) }
         val notices = mutableListOf<GeminiClient.Retry>()
         val failed = assertThrows(GeminiClient.GeminiException::class.java) {
-            generate(GeminiClient("fixture-key", base, waitBeforeRetry = {}), notices)
+            generate(GeminiClient("fixture-key", base, busyAttemptsPerModel = 2, backoffBaseMs = 1_000L, waitBeforeRetry = {}), notices)
         }
         assertEquals(503, failed.code)
         assertEquals(4, handler.count.get())
@@ -56,7 +56,7 @@ class GeminiRecoveryTest {
         for (code in listOf(400, 401, 403, 429)) fixture { base, handler ->
             handler.respond = { exchange, _ -> error(exchange, code) }
             assertThrows(GeminiClient.GeminiException::class.java) {
-                generate(GeminiClient("fixture-key", base, waitBeforeRetry = { fail("Non-retryable error retried") }))
+                generate(GeminiClient("fixture-key", base, busyAttemptsPerModel = 2, backoffBaseMs = 1_000L, waitBeforeRetry = { fail("Non-retryable error retried") }))
             }
             assertEquals(1, handler.count.get())
         }
@@ -65,7 +65,7 @@ class GeminiRecoveryTest {
     @Test fun `long server retry-after does not turn into a hidden long-running job`() = fixture { base, handler ->
         handler.respond = { exchange, _ -> exchange.responseHeaders.add("Retry-After", "120"); error(exchange, 503) }
         assertThrows(GeminiClient.GeminiException::class.java) {
-            generate(GeminiClient("fixture-key", base, waitBeforeRetry = { fail("Ignored long Retry-After") }))
+            generate(GeminiClient("fixture-key", base, busyAttemptsPerModel = 2, backoffBaseMs = 1_000L, waitBeforeRetry = { fail("Ignored long Retry-After") }))
         }
         assertEquals(1, handler.count.get())
     }

@@ -108,11 +108,8 @@ class PlaybackService : MediaLibraryService() {
 
         override fun addListener(listener: Player.Listener) {
             val wrapped = listeners.getOrPut(listener) {
-                object : Player.Listener by listener {
-                    override fun onMediaMetadataChanged(mediaMetadata: MediaMetadata) {
-                        listener.onMediaMetadataChanged(artwork.metadata(mediaMetadata))
-                    }
-                }
+                // 0.8.7: every callback forwarded explicitly (see BrandedListener).
+                BrandedListener(listener) { artwork.metadata(it) }
             }
             super.addListener(wrapped)
         }

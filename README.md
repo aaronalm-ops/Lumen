@@ -1,5 +1,10 @@
 # Lumen
 
+## 0.8.7: player state fix
+
+- Fixes 0.8.6's frozen player: tapping an item played audio, but the app, notification and car kept showing Play, the seeker stood still and pause did nothing. The 0.8.6 artwork wrapper used Kotlin `by` delegation over `Player.Listener`; Kotlin does not delegate Java default methods, so every callback except metadata was dropped for the session and for Lumen's own listener (position saving, sleep timer, stop after sermon, fades).
+- `BrandedListener` now forwards all 37 Media3 1.11.1 listener callbacks explicitly and brands only the metadata. `PlayerListenerForwardingTest` fails if a callback is missing, and checks the real service session reports play and pause.
+
 ## 0.8.6: fixed Lumen palette and automatic transcription recovery
 
 - Aaron's fixed-palette rule: covers never change the surrounding app colours or style. Existing cached tints are ignored, new art caching no longer extracts a palette, and original artwork remains in its own artwork block. The mini player and widget retain their existing product colours.

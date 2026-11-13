@@ -3,6 +3,7 @@ package app.lumen.player.playback
 import android.os.Looper
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
+import androidx.media3.common.Timeline
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.MediaLibraryService.MediaLibrarySession
 import app.lumen.player.LumenApp
@@ -39,6 +40,8 @@ class PlayerListenerForwardingTest {
         type == java.lang.Float.TYPE -> 0.5f
         type == MediaMetadata::class.java -> MediaMetadata.Builder().setTitle("source").build()
         type == List::class.java -> emptyList<Any>()
+        // Timeline is abstract, so it cannot be allocated like the other parameter types.
+        type == Timeline::class.java -> Timeline.EMPTY
         type.isInterface -> Proxy.newProxyInstance(type.classLoader, arrayOf(type)) { _, _, _ -> null }
         else -> unsafe.javaClass.getMethod("allocateInstance", Class::class.java).invoke(unsafe, type)!!
     }

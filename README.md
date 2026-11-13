@@ -1,5 +1,9 @@
 # Lumen
 
+## 0.8.8: 0.8.7 released
+
+- 0.8.7's code was correct (the real-session test passed), but its new reflection test could not allocate the abstract `Timeline` parameter, so the tag build stopped before publishing. The test now passes `Timeline.EMPTY`. No app code changes from 0.8.7.
+
 ## 0.8.7: player state fix
 
 - Fixes 0.8.6's frozen player: tapping an item played audio, but the app, notification and car kept showing Play, the seeker stood still and pause did nothing. The 0.8.6 artwork wrapper used Kotlin `by` delegation over `Player.Listener`; Kotlin does not delegate Java default methods, so every callback except metadata was dropped for the session and for Lumen's own listener (position saving, sleep timer, stop after sermon, fades).

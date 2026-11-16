@@ -696,7 +696,9 @@ class PlaybackService : MediaLibraryService() {
             CMD_SLEEP_END -> {
                 val left = (player.duration - player.currentPosition).coerceAtLeast(0L)
                 val speed = player.playbackParameters.speed.coerceAtLeast(0.5f)
-                scope.launch { settingsRepo.setSleepUntil(System.currentTimeMillis() + (left / speed).toLong()) }
+                // As in the app's Sleep sheet: the service pauses at the item's end whatever the
+                // clock says; the extra half hour only keeps the tile on "End" through back skips.
+                scope.launch { settingsRepo.setSleepUntil(System.currentTimeMillis() + (left / speed).toLong() + 30 * 60_000L) }
                 RingLog.i("car", "sleep at the end of this recording")
             }
             else -> return SessionResult(SessionResult.RESULT_ERROR_NOT_SUPPORTED)

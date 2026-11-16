@@ -18,6 +18,10 @@
 - Sermons get Speed (1.0 to 2.0x), Mark this moment (a bookmark) and Sleep at the end in the car's overflow, and in other system media controls that show custom actions.
 - Starting automatically when the car connects uses Android Auto's own setting; Lumen's resumption then continues the last recording.
 
+### Checked on a computer before release (16 Nov 2026)
+- First compile with the Android SDK: no compile errors, all 61 unit tests passed, and the release build (with shrinking) assembled.
+- Review fixes: if Transcribe answers a first part with no text at all (for example an unexpected reply shape), Lumen now uses the Flash path instead of failing with "No speech was found". The car's Sleep at the end keeps the Sleep tile on "End" through back skips, the same way the app's Sleep sheet does.
+
 ## 0.8.8: 0.8.7 released
 
 - 0.8.7's code was correct (the real-session test passed), but its new reflection test could not allocate the abstract `Timeline` parameter, so the tag build stopped before publishing. The test now passes `Timeline.EMPTY`. No app code changes from 0.8.7.

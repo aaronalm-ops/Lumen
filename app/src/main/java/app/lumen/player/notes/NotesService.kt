@@ -410,6 +410,12 @@ class NotesService : Service() {
                         runInterruptible { if (i == 0 && lines.isEmpty()) transcribeOrNull(client, uploaded, recovering) else client.transcribe(uploaded, recovering) }
                     } finally { withContext(NonCancellable + Dispatchers.IO) { client.delete(uploaded) } }
                     if (result == null) return null
+                    // An empty first answer means this path did not work for the file (an unexpected
+                    // reply shape, say); the Flash path runs instead of reporting "no speech".
+                    if (i == 0 && lines.isEmpty() && result.text.isBlank() && result.words.isEmpty()) {
+                        RingLog.w("notes", "${GeminiClient.TRANSCRIBE_MODEL} returned no text for part $part; using the Flash transcript path")
+                        return null
+                    }
                     val after = lines.lastOrNull()?.first ?: -1L
                     val added = linesFrom(result, slice.startMs, slice.endMs - slice.startMs).filter { it.first > after }
                     if (!replaced) {
@@ -422,6 +428,11 @@ class NotesService : Service() {
                     checkpoint.save(media, lines, false, to)
                     step("Part $part of $parts transcribed; ${lines.size} lines saved")
                 } finally { out.delete() }
+            }
+            if (lines.isEmpty()) {
+                checkpoint.save(media, lines, false)
+                RingLog.w("notes", "sliced transcript is empty; using the Flash transcript path")
+                return null
             }
             checkpoint.save(media, lines, true, total)
             step("Transcript ready; ${lines.size} lines saved")

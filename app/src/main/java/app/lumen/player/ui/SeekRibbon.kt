@@ -34,7 +34,13 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.drawText
+import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.unit.sp
+import app.lumen.player.playback.RepeatLoop
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import kotlin.math.PI
@@ -54,6 +60,8 @@ fun Scrubber(
     isPlaying: Boolean = false,
     mediaKey: String = "",
     chapterPositions: List<Long> = emptyList(),
+    /** 0.9.1: an A to B section, drawn as a shaded band with small A and B marks. */
+    loop: RepeatLoop.Section? = null,
     onSeek: (Long) -> Unit,
 ) {
     val c = Lumen.colours
@@ -77,6 +85,7 @@ fun Scrubber(
     val radius by animateFloatAsState(if (pressed) 9f else if (held) 7f else 5f, tween(160), label = "seekSize")
     val energy by animateFloatAsState(if (isPlaying && usable && !dragging) 1f else 0f, tween(260), label = "seekEnergy")
     // Removing the transition when paused avoids a perpetual idle frame loop. Compose honours animator scale.
+    val loopMarks = rememberTextMeasurer()
     val phase = if (isPlaying && usable) {
         val transition = rememberInfiniteTransition(label = "lightRibbon")
         val value by transition.animateFloat(0f, (2 * PI).toFloat(), infiniteRepeatable(tween(2_400, easing = LinearEasing)), label = "ribbonPhase")
@@ -111,6 +120,20 @@ fun Scrubber(
                     val end = size.width * fraction
                     val mid = size.height / 2
                     drawLine(c.line, Offset(0f, mid), Offset(size.width, mid), 2.dp.toPx(), StrokeCap.Round)
+                    // 0.9.1: the loop band sits under the ribbon; only A shows until the end is set.
+                    if (loop != null && duration > 0) {
+                        val markStyle = TextStyle(color = c.ice, fontSize = 9.sp)
+                        val ax = size.width * (loop.startMs.coerceIn(0L, duration).toFloat() / duration)
+                        val bx = loop.endMs?.let { size.width * (it.coerceIn(0L, duration).toFloat() / duration) }
+                        if (bx != null) {
+                            drawRect(c.ice.copy(alpha = 0.16f), Offset(ax, mid - 7.dp.toPx()), Size((bx - ax).coerceAtLeast(1f), 14.dp.toPx()))
+                        }
+                        listOfNotNull(ax to "A", bx?.let { it to "B" }).forEach { (x, label) ->
+                            drawLine(c.ice, Offset(x, mid - 7.dp.toPx()), Offset(x, mid + 7.dp.toPx()), 1.5.dp.toPx(), StrokeCap.Round)
+                            val measured = loopMarks.measure(label, markStyle)
+                            drawText(measured, topLeft = Offset((x - measured.size.width / 2f).coerceIn(0f, size.width - measured.size.width), 0f))
+                        }
+                    }
                     chapterPositions.filter { it > 0 && it < duration }.forEach { mark ->
                         val x = size.width * (mark.toFloat() / duration)
                         drawLine(c.text3.copy(alpha = 0.7f), Offset(x, mid - 4.dp.toPx()), Offset(x, mid + 4.dp.toPx()), 1.5.dp.toPx(), StrokeCap.Round)
@@ -134,7 +157,9 @@ fun Scrubber(
                     }
                 }
             },
-            modifier = Modifier.fillMaxWidth().height(TouchTarget).semantics { contentDescription = "Playback position" },
+            modifier = Modifier.fillMaxWidth().height(TouchTarget).semantics {
+                contentDescription = if (loop?.endMs != null) "Playback position, looping ${formatTime(loop.startMs)} to ${formatTime(loop.endMs)}" else "Playback position"
+            },
         )
         Row(Modifier.fillMaxWidth().height(30.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Text(formatTime(shown.toLong()), style = if (dragging || !thin) Lumen.type.timeL else Lumen.type.timeS, color = if (dragging) c.accentInk else c.text)

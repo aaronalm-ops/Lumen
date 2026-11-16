@@ -239,6 +239,10 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
         jumpToQueue = vm::jumpToQueue,
         remotePrevious = { vm.remoteSkip(forward = false) },
         remoteNext = { vm.remoteSkip(forward = true) },
+        setRepeatMode = vm::setRepeatMode,
+        loopStart = vm::loopStart,
+        loopEnd = vm::loopEnd,
+        loopClear = vm::loopClear,
     )
 
     val nowPlaying: @Composable (Boolean) -> Unit = { paned ->

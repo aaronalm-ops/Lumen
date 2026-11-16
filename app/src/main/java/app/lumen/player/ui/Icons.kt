@@ -170,6 +170,27 @@ object LumenIcons {
         }
     }
 
+    /** 0.9.1: Repeat this one: the repeat arrows around a small 1. */
+    val RepeatOne: ImageVector by lazy {
+        icon("repeat-one") {
+            stroke { moveTo(4f, 11f); lineTo(4f, 9f); arcTo(2f, 2f, 0f, false, true, 6f, 7f); lineTo(20f, 7f) }
+            stroke { moveTo(17.5f, 4.5f); lineTo(20f, 7f); lineTo(17.5f, 9.5f) }
+            stroke { moveTo(20f, 13f); lineTo(20f, 15f); arcTo(2f, 2f, 0f, false, true, 18f, 17f); lineTo(4f, 17f) }
+            stroke { moveTo(6.5f, 14.5f); lineTo(4f, 17f); lineTo(6.5f, 19.5f) }
+            stroke { moveTo(11f, 11f); lineTo(12.5f, 10f); lineTo(12.5f, 14f) }
+        }
+    }
+
+    /** 0.9.1: Loop a section: two marks with an arrow from the second back to the first. */
+    val LoopSection: ImageVector by lazy {
+        icon("loop-section") {
+            stroke { moveTo(5f, 6f); lineTo(5f, 18f) }
+            stroke { moveTo(19f, 6f); lineTo(19f, 18f) }
+            stroke { moveTo(16f, 15f); lineTo(16f, 12f); arcTo(4f, 4f, 0f, false, false, 8f, 12f); lineTo(8f, 15f) }
+            stroke { moveTo(6f, 13f); lineTo(8f, 15f); lineTo(10f, 13f) }
+        }
+    }
+
     val SkipPrevious: ImageVector by lazy {
         icon("skip-previous") {
             fill { moveTo(6f, 5f); lineTo(8.5f, 5f); lineTo(8.5f, 19f); lineTo(6f, 19f); close() }

@@ -1,5 +1,14 @@
 # Lumen
 
+## 0.9.1: Repeat and Loop a section
+
+- Repeat in Now Playing opens a short list in plain words: Off, Repeat queue, Repeat this one, Loop a section. The Repeat icon and the line under the transport show the current mode ("Repeating the queue", "Repeating this one", "Looping 12:30 to 14:05").
+- Loop a section: "Set start" keeps the current position; play on, open Repeat again and tap "Set end". Playback then loops between the two points. The loop is an ExoPlayer message at the end point that seeks back to the start, so nothing polls the position. The seeker shows the section as a shaded band with small A and B marks. "Clear loop" is in the same list. Choosing another repeat mode, moving to another item, seeking past the end or starting to cast ends the loop.
+- While a loop runs, Lumen does not save positions for that item, so the saved resume place stays where it was when the loop began. The loop is never remembered after the app closes.
+- Sermons: the More sheet has Repeat this one and Loop a section. Repeat this one overrides "Stop after a sermon" for that sermon; the sleep timer's end still pauses.
+- Songs get a Repeat button in Android Auto, the notification and the lock screen (repeat off, repeat all, repeat one icons). It cycles Off, All, One. Its session command is granted to every controller beside Speed, Mark and Sleep.
+- The repeat mode is remembered across app restarts.
+
 ## 0.9.0: reliable transcripts, Claude notes and a new Android Auto
 
 ### Transcripts (Gemini 3.5 Transcribe)

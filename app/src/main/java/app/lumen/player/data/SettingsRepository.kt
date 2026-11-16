@@ -62,6 +62,9 @@ data class Settings(
     val sleepHeldMs: Long = 0L,
     /** Download new sermons in the Drive folder on Wi-Fi after each listing. */
     val driveAutoKeep: Boolean = false,
+    // 0.9.1.
+    /** Off, Repeat queue or Repeat this one (Player.REPEAT_MODE_*), kept across restarts. Loops are never kept. */
+    val repeatMode: Int = androidx.media3.common.Player.REPEAT_MODE_OFF,
 ) {
     val driveConnected: Boolean get() = driveFolderId.isNotBlank()
 
@@ -127,6 +130,7 @@ class SettingsRepository(private val dao: ProgressDao) {
         const val KEY_APPEARANCE = "appearance"
         const val KEY_LEVEL_OUT = "level_out"
         const val KEY_TRIM_SILENCES = "trim_silences"
+        const val KEY_REPEAT = "repeat_mode"
         const val KEY_CROSSFADE = "crossfade_s"
         const val KEY_SKIP_BACK = "skip_back_s"
         const val KEY_SKIP_FORWARD = "skip_fwd_s"
@@ -197,6 +201,7 @@ class SettingsRepository(private val dao: ProgressDao) {
                 stopAfterSermon = map[KEY_STOP_AFTER_SERMON] != "0",
                 sleepHeldMs = map[KEY_SLEEP_HELD]?.toLongOrNull() ?: 0L,
                 driveAutoKeep = map[KEY_DRIVE_AUTO_KEEP] == "1",
+                repeatMode = app.lumen.player.playback.RepeatLoop.parseMode(map[KEY_REPEAT]),
             )
         }
     }
@@ -275,6 +280,9 @@ class SettingsRepository(private val dao: ProgressDao) {
     suspend fun setLevelOutVoices(on: Boolean) = put(KEY_LEVEL_OUT, if (on) "1" else "0")
 
     suspend fun setTrimSilences(on: Boolean) = put(KEY_TRIM_SILENCES, if (on) "1" else "0")
+
+    /** 0.9.1: the repeat mode, so it survives a restart. */
+    suspend fun setRepeatMode(mode: Int) = put(KEY_REPEAT, app.lumen.player.playback.RepeatLoop.parseMode(mode.toString()).toString())
 
     suspend fun setCrossfadeSeconds(seconds: Int) {
         val value = crossfadeChoices.minByOrNull { kotlin.math.abs(it - seconds) } ?: 0

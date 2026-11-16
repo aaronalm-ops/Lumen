@@ -141,6 +141,11 @@ class NowPlayingActions(
     /** 0.8.0: previous and next inside YouTube Music (its own songs), not Lumen's queue. */
     val remotePrevious: () -> Unit = {},
     val remoteNext: () -> Unit = {},
+    // 0.9.1: the Repeat list and Loop a section.
+    val setRepeatMode: (Int) -> Unit = {},
+    val loopStart: () -> Unit = {},
+    val loopEnd: () -> Unit = {},
+    val loopClear: () -> Unit = {},
 )
 
 /** The tabletop split, in this screen's own coordinates: the height above the hinge and the hinge itself. */
@@ -296,8 +301,10 @@ private fun SermonScreen(
                 isPlaying = player.isPlaying,
                 mediaKey = player.mediaId,
                 chapterPositions = timeline.filter { it.isChapter }.map { it.positionMs },
+                loop = player.loop,
                 onSeek = actions.seekTo,
             )
+            RepeatLine(player)
             Spacer(Modifier.height(if (roomy) 18.dp else 10.dp))
             SpeechTransport(player, settings, actions)
             Spacer(Modifier.height(if (roomy) 18.dp else 12.dp))
@@ -424,8 +431,10 @@ private fun TabletopLayout(
                 isPlaying = player.isPlaying,
                 mediaKey = player.mediaId,
                 chapterPositions = if (speech) timeline.filter { it.isChapter }.map { it.positionMs } else emptyList(),
+                loop = player.loop,
                 onSeek = actions.seekTo,
             )
+            if (speech) RepeatLine(player)
             Spacer(Modifier.height(8.dp))
         }
         // The hinge itself: left empty.
@@ -448,7 +457,7 @@ private fun TabletopLayout(
                 CompanionLinks(extras, timeline, actions, onChapters = { showChapters = !showChapters })
                 if (showChapters) Box(Modifier.fillMaxWidth().height(320.dp).padding(top = 8.dp)) { ChaptersTab(player, timeline, actions) }
             } else {
-                MusicTransport(player, actions)
+                MusicTransport(player, actions, openSheet)
                 Spacer(Modifier.height(12.dp))
                 MusicActions(player, settings, actions, openSheet, hideSleep = extras.noInterruptions)
                 UpNext(player)
@@ -514,9 +523,9 @@ private fun MusicTitle(player: PlayerState) {
 }
 
 
-/** Shuffle, previous, the 72 dp play button, next, repeat. */
+/** Shuffle, previous, the 72 dp play button, next, repeat. 0.9.1: Repeat opens the Repeat list. */
 @Composable
-private fun MusicTransport(player: PlayerState, actions: NowPlayingActions) {
+private fun MusicTransport(player: PlayerState, actions: NowPlayingActions, openSheet: (NowSheet) -> Unit) {
     val c = Lumen.colours
     Row(
         Modifier.fillMaxWidth(),
@@ -528,20 +537,50 @@ private fun MusicTransport(player: PlayerState, actions: NowPlayingActions) {
         PlayButton(isPlaying = player.isPlaying, enabled = player.hasItem || player.connected, size = 72.dp, onClick = actions.playPause)
         IconTap(LumenIcons.SkipNext, "Next", if (player.nextTitle != null) c.text else c.text3, size = 28.dp, enabled = player.nextTitle != null, onClick = actions.next)
         IconTap(
-            LumenIcons.Repeat,
-            when (player.repeat) {
-                Player.REPEAT_MODE_ONE -> "Repeat one"
-                Player.REPEAT_MODE_ALL -> "Repeat all"
-                else -> "Repeat off"
-            },
-            if (player.repeat != Player.REPEAT_MODE_OFF) c.ice else c.text3,
+            repeatIcon(player),
+            "Repeat: " + repeatName(player),
+            if (player.repeat != Player.REPEAT_MODE_OFF || player.loop != null) c.ice else c.text3,
             size = 20.dp,
-            onClick = actions.cycleRepeat,
+            enabled = player.connected,
+            onClick = { openSheet(NowSheet.REPEAT) },
         )
     }
-    if (player.repeat == Player.REPEAT_MODE_ONE) {
-        Text("Repeating this one", style = Lumen.type.labelS, color = c.text3, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(top = 4.dp))
+    RepeatLine(player)
+}
+
+/** 0.9.1: the icon for the current mode; a loop shows its own mark. */
+internal fun repeatIcon(player: PlayerState) = when {
+    player.loop != null -> LumenIcons.LoopSection
+    player.repeat == Player.REPEAT_MODE_ONE -> LumenIcons.RepeatOne
+    else -> LumenIcons.Repeat
+}
+
+/** 0.9.1: the current mode in plain words. */
+internal fun repeatName(player: PlayerState): String = when {
+    player.loop?.active == true -> "Loop a section"
+    player.loop != null -> "Loop start set"
+    player.repeat == Player.REPEAT_MODE_ONE -> "Repeat this one"
+    player.repeat == Player.REPEAT_MODE_ALL -> "Repeat queue"
+    else -> "Off"
+}
+
+/** 0.9.1: the line under the transport (or the sermon seeker) that says what repeats; nothing when off. */
+internal fun repeatLineText(player: PlayerState): String? {
+    val loop = player.loop
+    return when {
+        loop?.endMs != null -> "Looping ${formatTime(loop.startMs)} to ${formatTime(loop.endMs)}"
+        loop != null -> "Loop starts at ${formatTime(loop.startMs)}. Open Repeat to set the end"
+        player.repeat == Player.REPEAT_MODE_ONE -> "Repeating this one"
+        player.repeat == Player.REPEAT_MODE_ALL -> "Repeating the queue"
+        else -> null
     }
+}
+
+@Composable
+private fun RepeatLine(player: PlayerState) {
+    val text = repeatLineText(player) ?: return
+    val c = Lumen.colours
+    Text(text, style = Lumen.type.labelS, color = if (player.loop != null) c.ice else c.text3, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(top = 4.dp))
 }
 
 /**
@@ -579,9 +618,9 @@ private fun MusicLayout(
     MusicTitle(player)
     if (downloadProgress != null) ProgressLine(fraction = downloadProgress, thickness = 1.dp, modifier = Modifier.padding(top = 6.dp))
     Spacer(Modifier.height(10.dp))
-    Scrubber(positionMs = player.positionMs, durationMs = player.durationMs, enabled = player.hasItem, thin = true, isPlaying = player.isPlaying, mediaKey = player.mediaId, onSeek = actions.seekTo)
+    Scrubber(positionMs = player.positionMs, durationMs = player.durationMs, enabled = player.hasItem, thin = true, isPlaying = player.isPlaying, mediaKey = player.mediaId, loop = player.loop, onSeek = actions.seekTo)
     Spacer(Modifier.height(14.dp))
-    MusicTransport(player, actions)
+    MusicTransport(player, actions, openSheet)
     Spacer(Modifier.height(16.dp))
     MusicActions(player, settings, actions, openSheet, hideSleep = noInterruptions)
     if (player.casting) CastingNote()

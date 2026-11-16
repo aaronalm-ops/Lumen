@@ -19,6 +19,7 @@ import androidx.media3.common.PlayerTransferState
 import androidx.media3.common.Timeline
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.PlayerMessage
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.CommandButton
 import androidx.media3.session.LibraryResult
@@ -58,6 +59,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -95,6 +97,14 @@ class PlaybackService : MediaLibraryService() {
         const val CMD_SPEED = "lumen.car.SPEED"
         const val CMD_MARK = "lumen.car.MARK"
         const val CMD_SLEEP_END = "lumen.car.SLEEP_END"
+
+        /** 0.9.1: the car and notification Repeat button for music (Off, All, One). */
+        const val CMD_REPEAT = "lumen.car.REPEAT"
+
+        /** 0.9.1: Loop a section, sent by the app; the loop itself lives here, beside ExoPlayer. */
+        const val CMD_LOOP_START = "lumen.loop.START"
+        const val CMD_LOOP_END = "lumen.loop.END"
+        const val CMD_LOOP_CLEAR = "lumen.loop.CLEAR"
         const val ROOT_ID = "root"
         const val CONTINUE_ID = "continue"
         const val LABELS_ID = "labels"
@@ -210,6 +220,15 @@ class PlaybackService : MediaLibraryService() {
      */
     private val currentSpeech = MutableStateFlow(false)
 
+    /** 0.9.1: the player's repeat mode, for the music Repeat button and for saving it. */
+    private val repeatMode = MutableStateFlow(Player.REPEAT_MODE_OFF)
+
+    /** 0.9.1: the A to B section of the current item; null when there is none. Never saved. */
+    private var loop: RepeatLoop.Section? = null
+
+    /** 0.9.1: the ExoPlayer message at the loop's end that seeks back to its start. */
+    private var loopMessage: PlayerMessage? = null
+
     // 0.4.0, Smooth transitions: a fade through between music items using player volume only.
     // Never a second player, never on speech, voice notes, video or in Kids lock, never into
     // speech or a remote item. Every pause, seek, skip and non-automatic transition puts the
@@ -291,6 +310,18 @@ class PlaybackService : MediaLibraryService() {
             .build()
 
         observeSettings()
+        restoreRepeatMode()
+    }
+
+    /** 0.9.1: the repeat mode from the last session; a mode already chosen meanwhile wins. */
+    private fun restoreRepeatMode() {
+        scope.launch {
+            val saved = settingsRepo.settings.first().repeatMode
+            if (saved != Player.REPEAT_MODE_OFF && player.repeatMode == Player.REPEAT_MODE_OFF) {
+                player.repeatMode = saved
+                RingLog.i("service", "repeat mode restored: $saved")
+            }
+        }
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? {
@@ -346,10 +377,11 @@ class PlaybackService : MediaLibraryService() {
             // gets back and forward by the skip lengths; a song gets the system's previous and
             // next, so a playlist can be skipped from the lock screen.
             // 0.9.0: a sermon also gets Speed, Mark this moment and Sleep at the end (car overflow).
-            combine(settingsRepo.settings, currentSpeech) { s, speech -> ButtonKey(s.skipBackSeconds, s.skipForwardSeconds, s.speed, speech) }
+            // 0.9.1: a song gets a Repeat button (Off, All, One) beside the system's previous and next.
+            combine(settingsRepo.settings, currentSpeech, repeatMode) { s, speech, repeat -> ButtonKey(s.skipBackSeconds, s.skipForwardSeconds, s.speed, speech, repeat) }
                 .distinctUntilChanged()
-                .collect { (back, forward, speed, speech) ->
-                    session?.setMediaButtonPreferences(if (speech) mediaButtonPreferences(back, forward, speed) else emptyList())
+                .collect { (back, forward, speed, speech, repeat) ->
+                    session?.setMediaButtonPreferences(if (speech) mediaButtonPreferences(back, forward, speed) else listOf(repeatButton(repeat)))
                     RingLog.i("service", "buttons for ${if (speech) "speech" else "music"}")
                 }
         }
@@ -449,9 +481,14 @@ class PlaybackService : MediaLibraryService() {
         }
     }
 
-    /** 0.8.2: pause at the end of the item for the sleep timer, or after a sermon when that is set. */
+    /**
+     * 0.8.2: pause at the end of the item for the sleep timer, or after a sermon when that is set.
+     * 0.9.1: Repeat this one asked for the sermon again, so stopping after it gives way; the sleep
+     * timer's end still pauses.
+     */
     private fun applyPauseAtEnd() {
-        exo.pauseAtEndOfMediaItems = sleepAtEnd || (currentSpeech.value && settings.stopAfterSermon)
+        val repeatingOne = player.repeatMode == Player.REPEAT_MODE_ONE
+        exo.pauseAtEndOfMediaItems = sleepAtEnd || (currentSpeech.value && settings.stopAfterSermon && !repeatingOne)
     }
 
     private fun scheduleSleep(endAt: Long) {
@@ -621,7 +658,21 @@ class PlaybackService : MediaLibraryService() {
      * Seek back and seek forward take the two slots the system would otherwise give to previous
      * and next, on the notification, the lock screen, Bluetooth displays and Android Auto.
      */
-    private data class ButtonKey(val back: Int, val forward: Int, val speed: Float, val speech: Boolean)
+    private data class ButtonKey(val back: Int, val forward: Int, val speed: Float, val speech: Boolean, val repeat: Int)
+
+    /** 0.9.1: the music Repeat button; its icon shows the current mode and a tap moves to the next. */
+    internal fun repeatButton(mode: Int): CommandButton {
+        val (icon, name) = when (mode) {
+            Player.REPEAT_MODE_ALL -> CommandButton.ICON_REPEAT_ALL to "Repeat queue"
+            Player.REPEAT_MODE_ONE -> CommandButton.ICON_REPEAT_ONE to "Repeat this one"
+            else -> CommandButton.ICON_REPEAT_OFF to "Repeat off"
+        }
+        return CommandButton.Builder(icon)
+            .setDisplayName(name)
+            .setSessionCommand(SessionCommand(CMD_REPEAT, Bundle.EMPTY))
+            .setSlots(CommandButton.SLOT_OVERFLOW)
+            .build()
+    }
 
     private fun mediaButtonPreferences(backSeconds: Int, forwardSeconds: Int, speed: Float): List<CommandButton> {
         val backIcon = when (backSeconds) {
@@ -677,6 +728,15 @@ class PlaybackService : MediaLibraryService() {
 
     /** 0.9.0: car and notification buttons for sermons; each confirms nothing and changes one thing. */
     private fun handleCarCommand(action: String): SessionResult {
+        when (action) {
+            CMD_REPEAT -> return cycleRepeat()
+            CMD_LOOP_START -> return setLoopStart()
+            CMD_LOOP_END -> return setLoopEnd()
+            CMD_LOOP_CLEAR -> {
+                clearLoop("cleared")
+                return SessionResult(SessionResult.RESULT_SUCCESS)
+            }
+        }
         val item = player.currentMediaItem ?: return SessionResult(SessionResult.RESULT_ERROR_BAD_VALUE)
         when (action) {
             CMD_SPEED -> {
@@ -704,6 +764,80 @@ class PlaybackService : MediaLibraryService() {
             else -> return SessionResult(SessionResult.RESULT_ERROR_NOT_SUPPORTED)
         }
         return SessionResult(SessionResult.RESULT_SUCCESS)
+    }
+
+    /** 0.9.1: the car and notification Repeat button: Off, All, One, then Off. A loop gives way to it. */
+    private fun cycleRepeat(): SessionResult {
+        val next = RepeatLoop.next(player.repeatMode)
+        clearLoop("repeat mode chosen")
+        player.repeatMode = next
+        RingLog.i("car", "repeat mode $next")
+        return SessionResult(SessionResult.RESULT_SUCCESS)
+    }
+
+    // 0.9.1: Loop a section. "Set start" keeps the current position; "Set end" closes the section,
+    // and an ExoPlayer message at the end seeks back to the start each time playback reaches it,
+    // so nothing polls the position. The loop belongs to the current item, ends with it, and
+    // holds position saves while it runs so the saved resume place is never overwritten.
+
+    private fun durationOrZero(): Long = player.duration.let { if (it == C.TIME_UNSET) 0L else it }
+
+    private fun setLoopStart(): SessionResult {
+        val item = player.currentMediaItem
+        if (item == null || castActive) return SessionResult(SessionResult.RESULT_ERROR_NOT_SUPPORTED)
+        val section = RepeatLoop.start(RepeatLoop.keyOf(item), player.currentPosition, durationOrZero())
+            ?: return SessionResult(SessionResult.RESULT_ERROR_BAD_VALUE)
+        disarmLoop()
+        publishLoop(section)
+        RingLog.i("loop", "start set at ${section.startMs}")
+        return SessionResult(SessionResult.RESULT_SUCCESS)
+    }
+
+    private fun setLoopEnd(): SessionResult {
+        val item = player.currentMediaItem
+        if (item == null || castActive) return SessionResult(SessionResult.RESULT_ERROR_NOT_SUPPORTED)
+        val section = RepeatLoop.end(loop, RepeatLoop.keyOf(item), player.currentPosition, durationOrZero())
+            ?: return SessionResult(SessionResult.RESULT_ERROR_BAD_VALUE)
+        // The last ordinary save, before the loop holds them.
+        save("loop set")
+        publishLoop(section)
+        armLoop(section)
+        exo.seekTo(section.startMs)
+        RingLog.i("loop", "looping ${section.startMs} to ${section.endMs}")
+        return SessionResult(SessionResult.RESULT_SUCCESS)
+    }
+
+    private fun armLoop(section: RepeatLoop.Section) {
+        disarmLoop()
+        val end = section.endMs ?: return
+        loopMessage = exo.createMessage { _, _ ->
+            val current = loop
+            if (current != null && current.active && RepeatLoop.keyOf(exo.currentMediaItem) == current.mediaId) {
+                exo.seekTo(current.startMs)
+            }
+        }
+            .setLooper(mainLooper)
+            .setPosition(exo.currentMediaItemIndex, end)
+            .setDeleteAfterDelivery(false)
+            .send()
+    }
+
+    private fun disarmLoop() {
+        loopMessage?.cancel()
+        loopMessage = null
+    }
+
+    private fun clearLoop(reason: String) {
+        if (loop == null && loopMessage == null) return
+        disarmLoop()
+        publishLoop(null)
+        RingLog.i("loop", "cleared: $reason")
+    }
+
+    /** Shares the loop with the app (Now Playing draws the band from these extras). */
+    private fun publishLoop(section: RepeatLoop.Section?) {
+        loop = section
+        session?.setSessionExtras(RepeatLoop.toExtras(section))
     }
 
     // Progress persistence. Reads of the player must happen on the main thread, so the snapshot is
@@ -742,6 +876,10 @@ class PlaybackService : MediaLibraryService() {
     }
 
     private fun save(reason: String) {
+        if (RepeatLoop.holdsSaves(loop, RepeatLoop.keyOf(player.currentMediaItem))) {
+            RingLog.i("store", "skipped $reason save: a loop is running")
+            return
+        }
         if (resumePending()) {
             RingLog.i("store", "skipped $reason save: resume position still pending")
             return
@@ -755,6 +893,10 @@ class PlaybackService : MediaLibraryService() {
     }
 
     private fun saveBlocking(reason: String) {
+        if (RepeatLoop.holdsSaves(loop, RepeatLoop.keyOf(player.currentMediaItem))) {
+            RingLog.i("store", "skipped $reason save: a loop is running")
+            return
+        }
         if (resumePending()) {
             RingLog.i("store", "skipped $reason save: resume position still pending")
             return
@@ -1064,6 +1206,8 @@ class PlaybackService : MediaLibraryService() {
             castHandoverId = if (kept.isEmpty()) null else kept[index].mediaId
             castHandoverTargetMs = position
             castActive = toRemote
+            // 0.9.1: a loop needs ExoPlayer's message, so it ends when playback moves to a receiver.
+            if (toRemote) clearLoop("casting")
             resetFade("cast")
             exo.volume = 1f
             RingLog.i("cast", "${if (toRemote) "to the receiver" else "back to the phone"}: ${kept.size} items, index $index at $position")
@@ -1213,6 +1357,11 @@ class PlaybackService : MediaLibraryService() {
                 }
                 // 0.5.0: no positions for YouTube Music items.
                 if (YtmLink.isYtm(uri)) return
+                // 0.9.1: a position inside a running loop never replaces the saved place.
+                if (RepeatLoop.holdsSaves(loop, RepeatLoop.keyOf(old))) {
+                    RingLog.i("store", "skipped left item save: a loop was running")
+                    return
+                }
                 val title = old.mediaMetadata.title?.toString() ?: uri
                 // The player's duration for that window, not the scanner's: the two can differ by
                 // a few ms and the progress key is uri|duration. Zero lets the store write into
@@ -1220,6 +1369,10 @@ class PlaybackService : MediaLibraryService() {
                 val duration = durationOf(oldPosition)
                 store.save(uri, title, oldPosition.positionMs.coerceAtLeast(0L), duration, "left item")
                 return
+            }
+            // 0.9.1: seeking past the loop's end leaves the section, so the loop ends.
+            if (reason == Player.DISCONTINUITY_REASON_SEEK && RepeatLoop.leftBySeek(loop, newPosition.positionMs)) {
+                clearLoop("seek past the end")
             }
             if (reason == Player.DISCONTINUITY_REASON_SEEK) {
                 save("seek")
@@ -1229,6 +1382,10 @@ class PlaybackService : MediaLibraryService() {
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
             RingLog.i("player", "item transition reason=$reason id=${mediaItem?.mediaId}")
+            // 0.9.1: a loop belongs to its item; only Repeat this one starting it again keeps it.
+            if (reason != Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT || RepeatLoop.onItemChanged(loop, mediaItem?.let { RepeatLoop.keyOf(it) }) == null) {
+                clearLoop("item changed")
+            }
             // 0.4.0: only an automatic transition out of a faded item fades in; every other
             // transition (skip, new queue, repeat) starts the new item at full volume.
             val fadedOut = fadeOutActive
@@ -1263,6 +1420,14 @@ class PlaybackService : MediaLibraryService() {
                 Player.MEDIA_ITEM_TRANSITION_REASON_SEEK -> onNewItem(mediaItem, lookUpPosition = true)
                 else -> onNewItem(mediaItem, lookUpPosition = false)
             }
+        }
+
+        /** 0.9.1: the repeat mode is kept across restarts and shown on the music Repeat button. */
+        override fun onRepeatModeChanged(mode: Int) {
+            repeatMode.value = mode
+            applyPauseAtEnd()
+            scope.launch { settingsRepo.setRepeatMode(mode) }
+            RingLog.i("player", "repeat mode $mode")
         }
 
         override fun onPlaybackStateChanged(playbackState: Int) {
@@ -1301,12 +1466,19 @@ class PlaybackService : MediaLibraryService() {
 
     private inner class SessionCallback : MediaLibrarySession.Callback {
 
-        /** 0.9.0: custom buttons (Speed, Mark, Sleep at the end) for every controller, the car included. */
+        /**
+         * 0.9.0: custom buttons (Speed, Mark, Sleep at the end) for every controller, the car included.
+         * 0.9.1: the music Repeat button, and the app's Loop a section commands.
+         */
         override fun onConnect(session: MediaSession, controller: MediaSession.ControllerInfo): MediaSession.ConnectionResult {
             val commands = MediaSession.ConnectionResult.DEFAULT_SESSION_AND_LIBRARY_COMMANDS.buildUpon()
                 .add(SessionCommand(CMD_SPEED, Bundle.EMPTY))
                 .add(SessionCommand(CMD_MARK, Bundle.EMPTY))
                 .add(SessionCommand(CMD_SLEEP_END, Bundle.EMPTY))
+                .add(SessionCommand(CMD_REPEAT, Bundle.EMPTY))
+                .add(SessionCommand(CMD_LOOP_START, Bundle.EMPTY))
+                .add(SessionCommand(CMD_LOOP_END, Bundle.EMPTY))
+                .add(SessionCommand(CMD_LOOP_CLEAR, Bundle.EMPTY))
                 .build()
             return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
                 .setAvailableSessionCommands(commands)

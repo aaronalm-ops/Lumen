@@ -45,6 +45,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.media3.common.Player
 import app.lumen.player.data.EqPreset
 import app.lumen.player.data.NotesEntity
 import app.lumen.player.data.SegmentEntity
@@ -53,6 +54,7 @@ import app.lumen.player.data.SettingsRepository
 import app.lumen.player.data.drive.isDrive
 import app.lumen.player.notes.NotesRepository
 import app.lumen.player.notes.SermonNotes
+import app.lumen.player.playback.RepeatLoop
 
 /**
  * 0.7.0: Now Playing redesign (Aaron, 2026-10-28: Option B for sermons, Option A for music).
@@ -75,7 +77,7 @@ data class SermonExtras(
     val noInterruptions: Boolean = false,
 )
 
-enum class NowSheet { MORE, SPEED, SLEEP, SOUND, QUEUE }
+enum class NowSheet { MORE, SPEED, SLEEP, SOUND, QUEUE, REPEAT }
 
 /** One action: a 64 dp tile, the icon over a word (or the current value, in ice). */
 @Composable
@@ -456,6 +458,53 @@ fun NowPlayingSheet(
                         }
                     }
                 }
+                NowSheet.REPEAT -> {
+                    // 0.9.1: one list in plain words; the chosen row has the check.
+                    SheetTitle("Repeat")
+                    val loop = player.loop
+                    ChoiceRow("Off", selected = loop == null && player.repeat == Player.REPEAT_MODE_OFF) {
+                        actions.setRepeatMode(Player.REPEAT_MODE_OFF)
+                        onSheet(null)
+                    }
+                    ChoiceRow("Repeat queue", detail = "Starts the queue again after the last item", selected = loop == null && player.repeat == Player.REPEAT_MODE_ALL) {
+                        actions.setRepeatMode(Player.REPEAT_MODE_ALL)
+                        onSheet(null)
+                    }
+                    ChoiceRow("Repeat this one", detail = "Plays this item again and again", selected = loop == null && player.repeat == Player.REPEAT_MODE_ONE) {
+                        actions.setRepeatMode(Player.REPEAT_MODE_ONE)
+                        onSheet(null)
+                    }
+                    val canLoop = player.hasItem && player.durationMs > 0 && !player.casting
+                    when {
+                        loop == null -> ChoiceRow(
+                            "Loop a section",
+                            detail = if (player.casting) "Not while casting" else "Set start at ${formatTime(player.positionMs)}",
+                            enabled = canLoop,
+                        ) {
+                            actions.loopStart()
+                            onSheet(null)
+                        }
+                        loop.endMs == null -> {
+                            val endOk = player.positionMs >= loop.startMs + RepeatLoop.MIN_LOOP_MS
+                            ChoiceRow(
+                                "Set end",
+                                detail = if (endOk) "Loop ${formatTime(loop.startMs)} to ${formatTime(player.positionMs)}"
+                                else "Play on past ${formatTime(loop.startMs + RepeatLoop.MIN_LOOP_MS)}, then set the end",
+                                enabled = canLoop && endOk,
+                            ) {
+                                actions.loopEnd()
+                                onSheet(null)
+                            }
+                        }
+                        else -> ChoiceRow("Loop a section", detail = "${formatTime(loop.startMs)} to ${formatTime(loop.endMs)}", selected = true) { onSheet(null) }
+                    }
+                    if (loop != null) {
+                        ChoiceRow("Clear loop", danger = true) {
+                            actions.loopClear()
+                            onSheet(null)
+                        }
+                    }
+                }
                 NowSheet.MORE -> {
                     SheetTitle(player.title.ifBlank { "More" })
                     if (speech) {
@@ -472,6 +521,17 @@ fun NowPlayingSheet(
                             onSheet(null)
                             actions.newChapter()
                         }
+                        // 0.9.1: sermons repeat from here (their screen has no transport Repeat).
+                        val repeatingOne = player.loop == null && player.repeat == Player.REPEAT_MODE_ONE
+                        MoreRow("Repeat this one", if (repeatingOne) "On" else "Off", enabled = player.hasItem) {
+                            actions.setRepeatMode(if (repeatingOne) Player.REPEAT_MODE_OFF else Player.REPEAT_MODE_ONE)
+                            onSheet(null)
+                        }
+                        MoreRow(
+                            "Loop a section",
+                            player.loop?.let { l -> l.endMs?.let { "${formatTime(l.startMs)} to ${formatTime(it)}" } ?: "Start ${formatTime(l.startMs)}" },
+                            enabled = player.hasItem && !player.casting,
+                        ) { onSheet(NowSheet.REPEAT) }
                     } else {
                         MoreRow("Speed", speedLabel(player.speed), enabled = !player.casting) { onSheet(NowSheet.SPEED) }
                     }

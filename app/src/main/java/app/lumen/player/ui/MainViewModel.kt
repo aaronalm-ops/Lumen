@@ -21,6 +21,8 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.MediaController
+import androidx.media3.session.SessionCommand
+import app.lumen.player.playback.RepeatLoop
 import androidx.media3.session.SessionToken
 import app.lumen.player.LumenApp
 import app.lumen.player.cast.CastAvailability
@@ -134,6 +136,8 @@ data class PlayerState(
     val casting: Boolean = false,
     /** 0.6.1: why the current item cannot play, in plain words; null when it plays. */
     val error: String? = null,
+    /** 0.9.1: the current item's A to B section (only the start while the end is not set yet). */
+    val loop: RepeatLoop.Section? = null,
 )
 
 /** 0.6.1 (red team round 2): a playback failure as one line the owner can act on. */
@@ -518,7 +522,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         val token = SessionToken(context, ComponentName(context, PlaybackService::class.java))
-        val future = MediaController.Builder(context, token).buildAsync()
+        // 0.9.1: the service shares the loop through its session extras; a change redraws the band.
+        val future = MediaController.Builder(context, token)
+            .setListener(object : MediaController.Listener {
+                override fun onExtrasChanged(controller: MediaController, extras: android.os.Bundle) {
+                    if (_controller.value === controller) refresh(controller)
+                }
+            })
+            .buildAsync()
         controllerFuture = future
         future.addListener(
             {
@@ -623,6 +634,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             ended = c.playbackState == Player.STATE_ENDED,
             casting = c.deviceInfo.playbackType == DeviceInfo.PLAYBACK_TYPE_REMOTE,
             error = c.playerError?.let { e -> describePlaybackError(e, item?.let { MediaItems.uriOf(it) } ?: "") },
+            loop = RepeatLoop.fromExtras(c.sessionExtras)?.takeIf { item != null && (item.mediaId.isEmpty() || it.mediaId == item.mediaId) },
         )
     }
 
@@ -897,12 +909,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         withController { it.seekToPrevious() }
     }
     fun toggleShuffle() = withController { it.shuffleModeEnabled = !it.shuffleModeEnabled }
-    fun cycleRepeat() = withController {
-        it.repeatMode = when (it.repeatMode) {
-            Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
-            Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
-            else -> Player.REPEAT_MODE_OFF
+    fun cycleRepeat() = withController { setRepeatOn(it, RepeatLoop.next(it.repeatMode)) }
+
+    /** 0.9.1: Off, Repeat queue or Repeat this one from the Repeat list; a loop gives way to it. */
+    fun setRepeatMode(mode: Int) = withController { setRepeatOn(it, mode) }
+
+    private fun setRepeatOn(c: MediaController, mode: Int) {
+        if (_player.value.loop != null) loopCommand(c, PlaybackService.CMD_LOOP_CLEAR)
+        c.repeatMode = mode
+    }
+
+    /** 0.9.1: Loop a section. The service keeps the loop beside ExoPlayer; these only ask. */
+    fun loopStart() = withController { loopCommand(it, PlaybackService.CMD_LOOP_START) }
+    fun loopEnd() = withController { loopCommand(it, PlaybackService.CMD_LOOP_END) }
+    fun loopClear() = withController { loopCommand(it, PlaybackService.CMD_LOOP_CLEAR) }
+
+    private fun loopCommand(c: MediaController, action: String) {
+        val command = SessionCommand(action, android.os.Bundle.EMPTY)
+        if (!c.isSessionCommandAvailable(command)) {
+            RingLog.w("ui", "loop command $action not available")
+            return
         }
+        c.sendCustomCommand(command, android.os.Bundle.EMPTY)
     }
 
     fun cycleSpeed() {

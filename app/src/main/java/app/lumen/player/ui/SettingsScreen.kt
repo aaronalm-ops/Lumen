@@ -379,22 +379,34 @@ fun SettingsScreen(
                         Modifier.fillMaxWidth().heightIn(min = RowHeight).padding(start = 14.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
+                        // 0.10.0: a backup matches its places and playlists to scanned files, so an empty
+                        // library asks once more before restoring.
+                        val libraryEmpty = folderCounts.values.sum() == 0
+                        var confirmRestore by remember { mutableStateOf(false) }
                         Column(Modifier.weight(1f)) {
                             Text("Restore", style = Lumen.type.bodyStrong, color = c.text)
                             Text(
-                                if (settings.driveConnected) {
+                                if (confirmRestore) {
+                                    "Your library is empty, so saved places and playlists cannot find their files yet. Scan the phone and connect Drive first, or restore anyway"
+                                } else if (settings.driveConnected) {
                                     "Merges a backup file; nothing is deleted. Drive keeps a copy in its Lumen folder" +
                                         (if (settings.backupDriveAt > 0L) ", last ${relativeTime(settings.backupDriveAt)}" else "")
                                 } else {
                                     "Merges a backup file; nothing is deleted"
                                 },
                                 style = Lumen.type.bodyS,
-                                color = c.text2,
-                                maxLines = 2,
+                                color = if (confirmRestore) c.danger else c.text2,
+                                maxLines = if (confirmRestore) 4 else 2,
                                 overflow = TextOverflow.Ellipsis,
                             )
                         }
-                        TextAction("Restore", enabled = !backupBusy, onClick = actions.restoreBackup)
+                        TextAction(if (confirmRestore) "Restore anyway" else "Restore", enabled = !backupBusy, onClick = {
+                            if (libraryEmpty && !confirmRestore) confirmRestore = true
+                            else {
+                                confirmRestore = false
+                                actions.restoreBackup()
+                            }
+                        })
                     }
                 }
             }

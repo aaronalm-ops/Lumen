@@ -59,6 +59,7 @@ import app.lumen.player.playback.driveRowReachable
 import app.lumen.player.remote.RemoteController
 import app.lumen.player.remote.YoutubeApi
 import app.lumen.player.remote.YoutubeMirror
+import app.lumen.player.data.NaturalOrder
 import app.lumen.player.remote.YtmLink
 import app.lumen.player.remote.YtmWatch
 import app.lumen.player.remote.isYtm
@@ -482,7 +483,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val picked = folders.filter { !it.isMediaStore && !it.isDrive && !it.isYtm }.sortedBy { it.addedAt }
         val cloud = folders.filter { it.isDrive }
         val youTubeMusic = folders.filter { it.isYtm }
-        val buckets = folders.filter { it.isMediaStore }.sortedBy { it.name.lowercase() }
+        val buckets = folders.filter { it.isMediaStore }.sortedWith(compareBy(NaturalOrder) { it.name })
         return picked + cloud + youTubeMusic + buckets
     }
 
@@ -856,6 +857,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         val item = continueItem.value
         if (item != null) play(item) else withController { playOrResume(it) }
+    }
+
+    /** 0.10.0: the picture-in-picture window was closed: a playing video pauses. */
+    fun pauseVideo() {
+        val c = _controller.value ?: return
+        if (_player.value.isVideo && c.isPlaying) c.pause()
+        videoFull.value = false
     }
 
     fun playPause() {

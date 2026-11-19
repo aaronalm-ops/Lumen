@@ -395,7 +395,7 @@ fun filterItems(items: List<LibraryItem>, labels: List<LabelEntity>, search: Str
     }
     // 0.4.0: the WhatsApp voice notes folder always lists newest first, whatever the sort chip says.
     val newestFirst = !byName || folder == MediaRepository.VOICE_NOTES_FOLDER
-    return if (newestFirst) filtered.sortedByDescending { it.media.dateAdded } else filtered.sortedBy { it.media.title.lowercase() }
+    return if (newestFirst) filtered.sortedByDescending { it.media.dateAdded } else filtered.sortedWith(compareBy(app.lumen.player.data.NaturalOrder) { it.media.title })
 }
 
 private data class DriveFolderRow(val key: String, val name: String, val count: Int)
@@ -405,7 +405,7 @@ private fun driveFolderRows(items: List<LibraryItem>): List<DriveFolderRow> {
     val groups = items.groupingBy { driveSubfolder(it) }.eachCount()
     val named = groups.filterKeys { it != null }
         .map { (name, n) -> DriveFolderRow(key = name!!, name = name, count = n) }
-        .sortedBy { it.name.lowercase() }
+        .sortedWith(compareBy(app.lumen.player.data.NaturalOrder) { it.name })
     val loose = groups[null] ?: 0
     return if (loose > 0 && named.isNotEmpty()) named + DriveFolderRow(DRIVE_TOP_LEVEL, "Top of the folder", loose) else named
 }

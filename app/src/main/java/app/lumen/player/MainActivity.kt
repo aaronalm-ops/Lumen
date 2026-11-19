@@ -432,6 +432,8 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onStop() {
+        // 0.10.0: closing the picture-in-picture window stops the video, as people expect.
+        if (android.os.Build.VERSION.SDK_INT >= 24 && isInPictureInPictureMode) vm.pauseVideo()
         vm.disconnect()
         super.onStop()
     }

@@ -104,7 +104,7 @@ object DriveApi {
             }
             pageToken = json.optString("nextPageToken", "").takeIf { it.isNotBlank() }
         } while (pageToken != null)
-        return out.sortedBy { it.name.lowercase() }
+        return out.sortedWith(compareBy(app.lumen.player.data.NaturalOrder) { it.name })
     }
 
     /**

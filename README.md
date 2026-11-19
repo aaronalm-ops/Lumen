@@ -1,5 +1,30 @@
 # Lumen
 
+## 0.10.0: YouTube Music in the car, a queue, Library in the car, a real video player
+
+### YouTube Music in the car (Send to YouTube Music)
+- YouTube Music songs cannot play inside Lumen: Lumen hands them to the YouTube Music app, and an unofficial player is ruled out (Aaron's 19 Oct ruling and YouTube's terms). So a playlist's page now has "YouTube Music in the car": Send to YouTube Music copies its YouTube Music songs, in Lumen's order, to a private playlist with the same name on Aaron's YouTube account. In the car he plays it from YouTube Music's own Android Auto app (Library, Playlists). Phone, Drive and Suno items stay in Lumen.
+- Update brings the copy back in step (songs added, moved or removed; a renamed playlist is renamed there). The card says when the Lumen playlist has changed since the last send. Lumen owns the copy: songs added to it inside YouTube Music are removed on the next update, as its description says.
+- Official YouTube Data API v3 only, with a separate grant to manage playlists (scope `youtube`), asked only when Send is tapped. Reading playlists keeps its narrower grant. Each song added, moved or removed costs 50 of the 10,000 daily units, so a first copy of more than about 190 songs finishes the next day (Lumen says how far it got). A song YouTube no longer has is skipped and counted.
+
+### Queue
+- Play next and Add to queue on every item's long-press sheet and in each playlist row's menu. "Plays next: ..." confirms it above the bottom bar.
+- The Queue sheet in Now Playing lets you drag rows to reorder and remove anything except the item playing. With Shuffle on, the sheet says play jumps around the list.
+- YouTube Music songs can be renamed in Lumen (long press, Rename).
+
+### Android Auto
+- The fourth tab is Library: Recent, Folders (each phone folder, in natural order, with Play all and Shuffle) and Drive (newest first, with played markers). Android Auto shows at most four tabs, so Recent moved inside Library.
+- Settings, In the car explains how YouTube Music songs reach the car.
+
+### Video
+- Tap a video (or its corner button) for the full-screen player; turning the phone sideways opens it too. Tap shows or hides the controls; they hide after three seconds of playing. Double-tap the left or right half to skip back or forward. Pinch, or the Zoom button, fills the screen; pinch back to fit.
+- Subtitles lists the video's own subtitle tracks (in MKV and MP4 files) by label or language, with Off. Separate .srt files beside a video are not read yet.
+- Picture in picture: the button, or leaving the app while a video plays (Android 12 and later do it themselves), keeps the video in a small window. Closing that window pauses the video. "Audio only when you leave" still wins when it is on.
+
+### Small fixes
+- Titles, folders and Drive folders sort in natural order: Part 2 before Part 10.
+- Restore only ever merges. When the library is still empty it now asks once more, since saved places and playlists cannot find their files until the phone is scanned and Drive is connected.
+
 ## 0.9.1: Repeat and Loop a section
 
 - Repeat in Now Playing opens a short list in plain words: Off, Repeat queue, Repeat this one, Loop a section. The Repeat icon and the line under the transport show the current mode ("Repeating the queue", "Repeating this one", "Looping 12:30 to 14:05").

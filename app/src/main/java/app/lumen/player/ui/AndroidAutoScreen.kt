@@ -46,7 +46,7 @@ fun AndroidAutoScreen(back: () -> Unit, shareDiagnostics: () -> Unit) {
             item {
                 Text("Listen in the car", style = Lumen.type.displayS, color = c.text)
                 Spacer(Modifier.height(8.dp))
-                Text("Lumen offers Carry on, Sermons, Playlists and Recent in Android Auto, with search by title or by what was said. Sermons show what is new, what you have started and what you have finished; a sermon has Speed, Mark this moment and Sleep at the end in the car. Phone files and connected Drive recordings play through Lumen. YouTube Music plays through its own Android Auto app.", style = Lumen.type.body, color = c.text2)
+                Text("Lumen offers Carry on, Sermons, Playlists and Recent in Android Auto, with search by title or by what was said. Sermons show what is new, what you have started and what you have finished; a sermon has Speed, Mark this moment and Sleep at the end in the car. Phone files and connected Drive recordings play through Lumen. YouTube Music songs play in YouTube Music's own Android Auto app: open a playlist in Lumen and tap Send to YouTube Music, and the same playlist, in the same order, is waiting there.", style = Lumen.type.body, color = c.text2)
             }
             item {
                 ListCard {

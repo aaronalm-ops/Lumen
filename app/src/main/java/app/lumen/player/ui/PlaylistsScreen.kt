@@ -64,6 +64,10 @@ class PlaylistActions(
     val back: () -> Unit,
     /** 0.8.1: pick songs from a YouTube Music playlist. */
     val importYouTube: () -> Unit = {},
+    /** 0.10.0: Send to YouTube Music (the playlist id), open the copy there, and close the result line. */
+    val sendToYouTube: (Long) -> Unit = {},
+    val openOnYouTube: (String) -> Unit = {},
+    val dismissMirror: () -> Unit = {},
 )
 
 /**
@@ -81,6 +85,8 @@ fun PlaylistsScreen(
     openId: Long?,
     picker: Boolean,
     actions: PlaylistActions,
+    mirrorLinks: Map<Long, MainViewModel.MirrorLink> = emptyMap(),
+    mirrorUi: MainViewModel.MirrorUi? = null,
 ) {
     val c = Lumen.colours
     val open = labels.firstOrNull { it.id == openId }
@@ -88,7 +94,7 @@ fun PlaylistsScreen(
     Column(Modifier.fillMaxSize().background(c.base).statusBarsPadding()) {
         when {
             open != null && picker -> Picker(open, entries[open.id].orEmpty(), items, labels, actions)
-            open != null -> Detail(open, entries[open.id].orEmpty(), player, labels, actions)
+            open != null -> Detail(open, entries[open.id].orEmpty(), player, labels, actions, mirrorLinks[open.id], mirrorUi?.takeIf { it.labelId == open.id })
             else -> Overview(labels, entries, actions)
         }
     }
@@ -165,7 +171,15 @@ private val PlaylistRowHeight = 64.dp
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun Detail(label: LabelEntity, members: List<PlaylistEntry>, player: PlayerState, labels: List<LabelEntity>, actions: PlaylistActions) {
+private fun Detail(
+    label: LabelEntity,
+    members: List<PlaylistEntry>,
+    player: PlayerState,
+    labels: List<LabelEntity>,
+    actions: PlaylistActions,
+    mirror: MainViewModel.MirrorLink? = null,
+    mirrorUi: MainViewModel.MirrorUi? = null,
+) {
     val c = Lumen.colours
     Row(Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
         IconTap(LumenIcons.ChevronLeft, "All playlists", c.text, onClick = actions.back)
@@ -185,6 +199,7 @@ private fun Detail(label: LabelEntity, members: List<PlaylistEntry>, player: Pla
             SecondaryPill("From YouTube", icon = LumenIcons.Music, onClick = actions.importYouTube)
         }
         Spacer(Modifier.height(12.dp))
+        YouTubeCarCard(label, members, mirror, mirrorUi, actions)
     }
     if (members.isEmpty()) {
         Box(Modifier.padding(horizontal = Gutter)) {
@@ -199,6 +214,62 @@ private fun Detail(label: LabelEntity, members: List<PlaylistEntry>, player: Pla
     }
     ReorderableList(label, members, player, labels, actions)
 }
+
+/**
+ * 0.10.0: YouTube Music songs cannot play inside Lumen, in the car or anywhere. This card copies
+ * them, in order, to a private playlist on the owner's YouTube account for YouTube Music's own
+ * car app, and keeps that copy in step when the owner taps Update.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun YouTubeCarCard(
+    label: LabelEntity,
+    members: List<PlaylistEntry>,
+    mirror: MainViewModel.MirrorLink?,
+    ui: MainViewModel.MirrorUi?,
+    actions: PlaylistActions,
+) {
+    val ids = mirrorIdsOf(members)
+    if (ids.isEmpty() && mirror == null) return
+    val c = Lumen.colours
+    val others = members.size - members.count { it.item.media.isYtm }
+    val changed = mirror != null && mirror.sent != mirrorSignatureOf(ids)
+    ListCard {
+        Column(Modifier.fillMaxWidth().padding(14.dp)) {
+            Text("YouTube Music in the car", style = Lumen.type.bodyStrong, color = c.text)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                when {
+                    mirror == null -> "Send the ${ids.size} YouTube Music ${if (ids.size == 1) "song" else "songs"} to a private playlist on your YouTube account, in this order. In the car, play it from YouTube Music." +
+                        if (others > 0) " The other $others ${if (others == 1) "item plays" else "items play"} in Lumen." else ""
+                    changed -> "On YouTube Music since ${dateWords(mirror.at)}. This playlist has changed since then; tap Update to bring it in step."
+                    else -> "On YouTube Music with ${mirror.songs} ${if (mirror.songs == 1) "song" else "songs"}, updated ${dateWords(mirror.at)}. In the car: YouTube Music, Library, Playlists, ${label.name}."
+                },
+                style = Lumen.type.bodyS,
+                color = c.text2,
+            )
+            if (ui != null) {
+                Spacer(Modifier.height(6.dp))
+                Text(ui.message, style = Lumen.type.bodyS, color = if (ui.error) c.danger else c.accentInk, modifier = Modifier.clickable(enabled = !ui.busy, onClick = actions.dismissMirror))
+            }
+            Spacer(Modifier.height(10.dp))
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                SecondaryPill(
+                    if (mirror == null) "Send to YouTube Music" else "Update",
+                    icon = LumenIcons.Music,
+                    enabled = ids.isNotEmpty() && ui?.busy != true,
+                ) { actions.sendToYouTube(label.id) }
+                if (mirror != null && mirror.playlistId.isNotBlank()) {
+                    SecondaryPill("Open in YouTube Music", enabled = ui?.busy != true) { actions.openOnYouTube(mirror.playlistId) }
+                }
+            }
+        }
+    }
+    Spacer(Modifier.height(12.dp))
+}
+
+private fun dateWords(at: Long): String =
+    java.text.SimpleDateFormat("d MMM", java.util.Locale.UK).format(java.util.Date(at))
 
 /**
  * The members in order. Drag the handle on the right to move one; the new order is saved when the

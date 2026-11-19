@@ -212,6 +212,10 @@ class SettingsRepository(private val dao: ProgressDao) {
 
     suspend fun get(key: String): String? = dao.kv(key)
 
+    /** 0.10.0: every stored value whose key starts with [prefix] (playlists sent to YouTube Music). */
+    fun withPrefix(prefix: String): Flow<Map<String, String>> =
+        dao.allKvFlow().map { rows -> rows.filter { it.k.startsWith(prefix) }.associate { it.k.removePrefix(prefix) to it.v } }.distinctUntilChanged()
+
     suspend fun setSpeed(speed: Float) = put(KEY_SPEED, speed.toString())
 
     /** User-chosen preset: becomes both the active one and the remembered default. */

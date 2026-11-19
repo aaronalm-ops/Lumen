@@ -58,6 +58,7 @@ import app.lumen.player.playback.PlaybackService
 import app.lumen.player.playback.driveRowReachable
 import app.lumen.player.remote.RemoteController
 import app.lumen.player.remote.YoutubeApi
+import app.lumen.player.remote.YoutubeMirror
 import app.lumen.player.remote.YtmLink
 import app.lumen.player.remote.YtmWatch
 import app.lumen.player.remote.isYtm
@@ -194,6 +195,16 @@ data class TimelineMark(
 
 /** 0.8.0: one member of a playlist, with the uri its link is stored under. */
 data class PlaylistEntry(val item: LibraryItem, val linkUri: String)
+
+/** 0.10.0: stored key for the YouTube playlist a Lumen playlist was sent to, plus the label id. */
+private const val MIRROR_PREFIX = "yt_mirror:"
+
+/** 0.10.0: the YouTube Music songs of a playlist, in order, as video ids (what Send to YouTube Music carries). */
+internal fun mirrorIdsOf(members: List<PlaylistEntry>): List<String> =
+    members.mapNotNull { e -> YtmLink.fromUri(e.item.uri)?.takeIf { !it.isList }?.id }.distinct()
+
+/** 0.10.0: a short fingerprint of those songs, so the page can say the playlist changed since it was sent. */
+internal fun mirrorSignatureOf(ids: List<String>): String = ids.joinToString(",").hashCode().toString()
 
 /** 0.7.0: one row of the Queue sheet. */
 data class QueueEntry(val index: Int, val title: String, val current: Boolean)
@@ -1757,6 +1768,91 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+
+    // 0.10.0: Send to YouTube Music. The YouTube Music songs of a Lumen playlist are copied, in
+    // order, to a private playlist on the owner's account, for YouTube Music's own car app.
+
+    /** The YouTube playlist a Lumen playlist was sent to, when, how many songs, and what was sent. */
+    data class MirrorLink(val playlistId: String, val at: Long, val songs: Int, val sent: String)
+
+    /** A send in progress or its outcome, shown on that playlist's page. */
+    data class MirrorUi(val labelId: Long, val busy: Boolean, val message: String, val error: Boolean = false)
+
+    val mirrorLinks: StateFlow<Map<Long, MirrorLink>> = settingsRepo.withPrefix(MIRROR_PREFIX).map { rows ->
+        rows.mapNotNull { (key, value) ->
+            val id = key.toLongOrNull() ?: return@mapNotNull null
+            val json = runCatching { org.json.JSONObject(value) }.getOrNull() ?: return@mapNotNull null
+            id to MirrorLink(json.optString("id"), json.optLong("at"), json.optInt("songs"), json.optString("sent"))
+        }.toMap()
+    }.state(emptyMap())
+
+    val mirrorUi = MutableStateFlow<MirrorUi?>(null)
+    private var mirrorJob: Job? = null
+
+    /** The YouTube Music songs of a playlist, in Lumen's order, as video ids. */
+    fun mirrorVideoIds(labelId: Long): List<String> = mirrorIdsOf(playlistEntries.value[labelId].orEmpty())
+
+    /** What a send would carry, so the page can say when the playlist changed since. */
+    fun mirrorSignature(labelId: Long): String = mirrorSignatureOf(mirrorVideoIds(labelId))
+
+    fun mirrorStarting(labelId: Long) {
+        mirrorJob?.cancel()
+        mirrorUi.value = MirrorUi(labelId, busy = true, message = "Asking Google to let Lumen manage your YouTube playlists")
+    }
+
+    fun mirrorSignInFailed(labelId: Long, error: Throwable? = null) {
+        RingLog.w("youtube", "mirror sign-in failed: ${error?.javaClass?.simpleName ?: "dismissed"}")
+        mirrorUi.value = MirrorUi(labelId, busy = false, error = true, message = when {
+            error == null -> "Lumen needs permission to manage your YouTube playlists to send this one. Try again and allow it"
+            else -> YoutubeApi.connectionError(error)
+        })
+    }
+
+    fun dismissMirrorMessage() {
+        if (mirrorUi.value?.busy == false) mirrorUi.value = null
+    }
+
+    /** Sends (or updates) the playlist. Call after the activity has the managing grant. */
+    fun mirrorPlaylist(labelId: Long) {
+        val label = labels.value.firstOrNull { it.id == labelId } ?: return
+        val ids = mirrorVideoIds(labelId)
+        if (ids.isEmpty()) {
+            mirrorUi.value = MirrorUi(labelId, busy = false, error = true, message = "There are no YouTube Music songs in ${label.name} to send")
+            return
+        }
+        val link = mirrorLinks.value[labelId]
+        val signature = mirrorSignature(labelId)
+        mirrorJob?.cancel()
+        mirrorUi.value = MirrorUi(labelId, busy = true, message = "Sending ${ids.size} songs to YouTube Music")
+        mirrorJob = viewModelScope.launch {
+            suspend fun keep(playlistId: String, songs: Int, sent: String) = settingsRepo.put(
+                MIRROR_PREFIX + labelId,
+                org.json.JSONObject().put("id", playlistId).put("at", System.currentTimeMillis()).put("songs", songs).put("sent", sent).toString(),
+            )
+            try {
+                val result = withContext(Dispatchers.IO) {
+                    YoutubeMirror(token = { youtube.writeTokenBlocking() }).mirror(link?.playlistId, label.name, ids) { done, total ->
+                        mirrorUi.value = MirrorUi(labelId, busy = true, message = "Updating YouTube Music: $done of $total changes")
+                    }
+                }
+                keep(result.playlistId, result.songs, signature)
+                val skipped = if (result.skipped > 0) " ${result.skipped} could not be added (removed from YouTube or not allowed in playlists)." else ""
+                mirrorUi.value = MirrorUi(labelId, busy = false, message = (if (result.created) "Made" else "Updated") +
+                    " \"${label.name}\" on YouTube Music with ${result.songs} songs.$skipped In the car, open YouTube Music, then Library, then Playlists")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: YoutubeMirror.QuotaUsed) {
+                keep(e.playlistId, 0, "")
+                mirrorUi.value = MirrorUi(labelId, busy = false, error = true, message = e.message.orEmpty())
+            } catch (e: YoutubeApi.NeedsSignIn) {
+                youtube.forgetWriteToken()
+                mirrorUi.value = MirrorUi(labelId, busy = false, error = true, message = "Google asked again for permission to manage your YouTube playlists. Tap Send again and allow it")
+            } catch (e: Exception) {
+                RingLog.w("youtube", "mirror failed: ${e.javaClass.simpleName}")
+                mirrorUi.value = MirrorUi(labelId, busy = false, error = true, message = YoutubeApi.connectionError(e))
+            }
+        }
+    }
 
     // 0.8.1: pick songs from a YouTube or YouTube Music playlist.
 

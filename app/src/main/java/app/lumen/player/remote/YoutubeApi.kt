@@ -87,6 +87,53 @@ class YoutubeApi(private val context: Context) {
         return accept(result) ?: throw NeedsSignIn()
     }
 
+    // 0.10.0: managing playlists (scope youtube) is asked for separately, and only when the owner
+    // sends a Lumen playlist to YouTube Music. Reading keeps its narrower grant.
+
+    @Volatile
+    private var cachedWriteToken: String? = null
+
+    @Volatile
+    private var cachedWriteAt = 0L
+
+    private fun writeRequest(): AuthorizationRequest {
+        val builder = AuthorizationRequest.builder()
+            .setRequestedScopes(listOf(Scope(WRITE_SCOPE)))
+            .setOptOutIncludingGrantedScopes(true)
+        selectedAccount?.let { builder.setAccount(it) } ?: builder.setPrompt(AuthorizationRequest.Prompt.SELECT_ACCOUNT)
+        return builder.build()
+    }
+
+    fun authorizeWriteTask(): Task<AuthorizationResult> =
+        Identity.getAuthorizationClient(context).authorize(writeRequest())
+
+    /** Keeps the managing token; null when Google gave none. */
+    fun acceptWrite(result: AuthorizationResult): String? {
+        if (!result.grantedScopes.orEmpty().contains(WRITE_SCOPE)) throw NeedsSignIn()
+        val token = result.accessToken?.takeIf { it.isNotBlank() } ?: return null
+        @Suppress("DEPRECATION")
+        val account = result.toGoogleSignInAccount()?.account
+        if (account != null && selectedAccount == null) {
+            selectedAccount = account
+            preferences.edit().putString("account", account.name).apply()
+        }
+        cachedWriteToken = token
+        cachedWriteAt = System.currentTimeMillis()
+        return token
+    }
+
+    /** A managing token without any UI, or [NeedsSignIn]. Never on the main thread. */
+    fun writeTokenBlocking(): String {
+        cachedWriteToken?.let { if (System.currentTimeMillis() - cachedWriteAt < TOKEN_REUSE_MS) return it }
+        val result = Tasks.await(authorizeWriteTask(), 20, TimeUnit.SECONDS)
+        if (result.hasResolution()) throw NeedsSignIn()
+        return acceptWrite(result) ?: throw NeedsSignIn()
+    }
+
+    fun forgetWriteToken() {
+        cachedWriteToken = null
+    }
+
     /** Owned playlists, including private ones. Saved playlists and generated mixes need a link. */
     fun fetchMyPlaylists(): List<PlaylistSummary> = withAccount { it.playlists() }
 
@@ -168,6 +215,9 @@ class YoutubeApi(private val context: Context) {
 
     companion object {
         const val SCOPE = "https://www.googleapis.com/auth/youtube.readonly"
+
+        /** 0.10.0: create and update playlists on the owner's account (Send to YouTube Music). */
+        const val WRITE_SCOPE = "https://www.googleapis.com/auth/youtube"
         private const val API = "https://www.googleapis.com/youtube/v3"
         private const val TOKEN_REUSE_MS = 45L * 60 * 1000
 

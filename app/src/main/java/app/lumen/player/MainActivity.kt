@@ -101,6 +101,49 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /** 0.10.0: the playlist waiting on the "manage your YouTube playlists" sheet. */
+    private var mirrorLabelId: Long? = null
+
+    private val youtubeWrite = registerForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
+        val labelId = mirrorLabelId ?: return@registerForActivityResult
+        mirrorLabelId = null
+        if (result.resultCode != Activity.RESULT_OK) {
+            vm.mirrorSignInFailed(labelId)
+            return@registerForActivityResult
+        }
+        try {
+            val yt = LumenApp.from(this).youtube
+            if (yt.acceptWrite(yt.resultFromIntent(result.data)) != null) vm.mirrorPlaylist(labelId) else vm.mirrorSignInFailed(labelId)
+        } catch (error: Exception) {
+            vm.mirrorSignInFailed(labelId, error)
+        }
+    }
+
+    /** 0.10.0: Send to YouTube Music. The managing grant first (a sheet only when it is missing), then the send. */
+    private fun startYoutubeMirror(labelId: Long) {
+        vm.mirrorStarting(labelId)
+        val yt = LumenApp.from(this).youtube
+        try {
+            yt.authorizeWriteTask()
+                .addOnSuccessListener { result ->
+                    try {
+                        if (result.hasResolution()) {
+                            val pending = result.pendingIntent ?: run { vm.mirrorSignInFailed(labelId); return@addOnSuccessListener }
+                            mirrorLabelId = labelId
+                            youtubeWrite.launch(IntentSenderRequest.Builder(pending.intentSender).build())
+                        } else if (yt.acceptWrite(result) != null) {
+                            vm.mirrorPlaylist(labelId)
+                        } else vm.mirrorSignInFailed(labelId)
+                    } catch (error: Exception) {
+                        vm.mirrorSignInFailed(labelId, error)
+                    }
+                }
+                .addOnFailureListener { error -> vm.mirrorSignInFailed(labelId, error) }
+        } catch (error: Exception) {
+            vm.mirrorSignInFailed(labelId, error)
+        }
+    }
+
     private fun youtubeAuthorisationFailed(error: Exception) {
         RingLog.w("youtube", "authorisation failed: ${error.javaClass.simpleName}")
         vm.youtubeSignInFailed(error)
@@ -204,6 +247,7 @@ class MainActivity : ComponentActivity() {
                 }
             },
             youtubeSignIn = { startYoutubeAuthorisation() },
+            youtubeMirror = { startYoutubeMirror(it) },
             requestNotifications = {
                 if (!notificationsAsked && NotesService.isPermissionNeeded(this)) {
                     notificationsAsked = true

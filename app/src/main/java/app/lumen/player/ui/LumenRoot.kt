@@ -89,6 +89,8 @@ class RootActions(
     val requestNotifications: () -> Unit,
     /** 0.8.1: the Google sheet for reading YouTube playlists. */
     val youtubeSignIn: () -> Unit = {},
+    /** 0.10.0: Send to YouTube Music: the managing grant, then the copy of that playlist. */
+    val youtubeMirror: (Long) -> Unit = {},
 )
 
 /**
@@ -164,6 +166,9 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
     val lastRemoved by vm.lastRemoved.collectAsState()
     val geminiKeyHint by vm.geminiKeyHint.collectAsState()
     val claudeKeyHint by vm.claudeKeyHint.collectAsState()
+    val mirrorLinks by vm.mirrorLinks.collectAsState()
+    val mirrorUi by vm.mirrorUi.collectAsState()
+    val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
     val transcriptHits by vm.transcriptHits.collectAsState()
 
     // Kids lock forces Now Playing open; nothing else can be reached until the corner is held.
@@ -385,7 +390,12 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
                         toggleMember = vm::togglePlaylistMember,
                         back = { vm.playlistBack() },
                         importYouTube = { vm.openYtImport() },
+                        sendToYouTube = actions.youtubeMirror,
+                        openOnYouTube = { id -> runCatching { uriHandler.openUri("https://music.youtube.com/playlist?list=$id") } },
+                        dismissMirror = vm::dismissMirrorMessage,
                     ),
+                    mirrorLinks = mirrorLinks,
+                    mirrorUi = mirrorUi,
                 )
                 Screen.Settings -> SettingsScreen(
                     settings = settings,

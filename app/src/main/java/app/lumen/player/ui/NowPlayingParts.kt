@@ -45,6 +45,11 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.zIndex
+import kotlin.math.roundToInt
 import androidx.media3.common.Player
 import app.lumen.player.data.EqPreset
 import app.lumen.player.data.NotesEntity
@@ -444,19 +449,7 @@ fun NowPlayingSheet(
                 }
                 NowSheet.QUEUE -> {
                     SheetTitle("Queue")
-                    val entries = remember { actions.queue() }
-                    if (entries.isEmpty()) Text("Nothing queued", style = Lumen.type.bodyS, color = c.text2)
-                    val listState = androidx.compose.foundation.lazy.rememberLazyListState(
-                        initialFirstVisibleItemIndex = (entries.indexOfFirst { it.current } - 2).coerceAtLeast(0),
-                    )
-                    LazyColumn(Modifier.fillMaxWidth().heightIn(max = 480.dp), state = listState) {
-                        itemsIndexed(entries, key = { _, e -> e.index }) { _, e ->
-                            ChoiceRow(e.title, selected = e.current) {
-                                actions.jumpToQueue(e.index)
-                                onSheet(null)
-                            }
-                        }
-                    }
+                    QueueList(actions, player.shuffle) { onSheet(null) }
                 }
                 NowSheet.REPEAT -> {
                     // 0.9.1: one list in plain words; the chosen row has the check.
@@ -574,6 +567,102 @@ fun NowPlayingSheet(
                         Text("Casting: sound settings apply on the phone only", style = Lumen.type.bodyS, color = c.ice, modifier = Modifier.padding(top = 8.dp))
                     }
                 }
+            }
+        }
+    }
+}
+
+/**
+ * 0.10.0: the queue screen. Tap a row to play it; drag the handle to move it; the cross takes it
+ * out (the item playing stays: skip it instead). Moves and removals go to the player at once.
+ */
+@Composable
+private fun QueueList(actions: NowPlayingActions, shuffle: Boolean, close: () -> Unit) {
+    val c = Lumen.colours
+    // Keys stay stable while rows move: each row keeps the key it had when the sheet opened.
+    var rows by remember { mutableStateOf(actions.queue().mapIndexed { i, e -> i.toLong() to e }) }
+    if (rows.isEmpty()) {
+        Text("Nothing queued", style = Lumen.type.bodyS, color = c.text2)
+        return
+    }
+    Text(
+        if (shuffle) "Shuffle is on, so this list is the order you set, and play jumps around it. Drag to reorder."
+        else "Drag to reorder. Play next and Add to queue are on any song's long press.",
+        style = Lumen.type.bodyS, color = c.text2, modifier = Modifier.padding(bottom = 6.dp),
+    )
+    val rowPx = with(androidx.compose.ui.platform.LocalDensity.current) { 56.dp.toPx() }
+    var dragging by remember { mutableStateOf<Long?>(null) }
+    var dragFrom by remember { mutableStateOf(-1) }
+    var dragOffset by remember { mutableStateOf(0f) }
+    val listState = androidx.compose.foundation.lazy.rememberLazyListState(
+        initialFirstVisibleItemIndex = (rows.indexOfFirst { it.second.current } - 2).coerceAtLeast(0),
+    )
+    LazyColumn(Modifier.fillMaxWidth().heightIn(max = 480.dp), state = listState) {
+        itemsIndexed(rows, key = { _, r -> r.first }) { index, (key, e) ->
+            val isDragging = dragging == key
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .height(56.dp)
+                    .zIndex(if (isDragging) 1f else 0f)
+                    .graphicsLayer { translationY = if (isDragging) dragOffset else 0f }
+                    .background(if (isDragging) c.surface else Color.Transparent, RoundedCornerShape(10.dp))
+                    .clip(RoundedCornerShape(10.dp))
+                    .clickable {
+                        actions.jumpToQueue(index)
+                        close()
+                    }
+                    .padding(start = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(e.title, style = Lumen.type.body, color = if (e.current) c.accentInk else c.text, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                if (e.current) {
+                    Text("Playing", style = Lumen.type.labelS, color = c.accentInk, modifier = Modifier.padding(horizontal = 8.dp))
+                } else {
+                    IconTap(LumenIcons.Close, "Remove ${e.title} from the queue", c.text2, size = 18.dp) {
+                        actions.removeFromQueue(index)
+                        rows = rows.filterIndexed { i, _ -> i != index }
+                    }
+                }
+                Icon(
+                    LumenIcons.Handle,
+                    contentDescription = "Drag to move ${e.title}",
+                    tint = c.text2,
+                    modifier = Modifier
+                        .size(44.dp)
+                        .padding(10.dp)
+                        .pointerInput(key) {
+                            detectDragGestures(
+                                onDragStart = {
+                                    dragging = key
+                                    dragFrom = rows.indexOfFirst { it.first == key }
+                                    dragOffset = 0f
+                                },
+                                onDrag = { change, amount ->
+                                    change.consume()
+                                    dragOffset += amount.y
+                                    val from = rows.indexOfFirst { it.first == key }
+                                    if (from >= 0) {
+                                        val to = (from + (dragOffset / rowPx).roundToInt()).coerceIn(0, rows.lastIndex)
+                                        if (to != from) {
+                                            rows = QueueOrder.moved(rows, from, to)
+                                            dragOffset -= (to - from) * rowPx
+                                        }
+                                    }
+                                },
+                                onDragEnd = {
+                                    val to = rows.indexOfFirst { it.first == key }
+                                    if (dragFrom >= 0 && to >= 0 && to != dragFrom) actions.moveInQueue(dragFrom, to)
+                                    dragging = null
+                                    dragOffset = 0f
+                                },
+                                onDragCancel = {
+                                    dragging = null
+                                    dragOffset = 0f
+                                },
+                            )
+                        },
+                )
             }
         }
     }

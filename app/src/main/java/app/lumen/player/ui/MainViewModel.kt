@@ -1695,6 +1695,59 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    // 0.10.0: the queue screen. Play next and Add to queue from any item; reorder and remove here.
+
+    /** One line about the last queue change ("Plays next: ..."); cleared after a few seconds. */
+    val queueNotice = MutableStateFlow<String?>(null)
+    private var queueNoticeJob: Job? = null
+
+    private fun noticeQueue(text: String) {
+        queueNotice.value = text
+        queueNoticeJob?.cancel()
+        queueNoticeJob = viewModelScope.launch {
+            delay(3_000)
+            queueNotice.value = null
+        }
+    }
+
+    /** Right after the item playing now; with nothing playing it simply plays. */
+    fun playNext(item: LibraryItem) = enqueue(item, next = true)
+
+    /** At the end of the queue; with nothing playing it simply plays. */
+    fun addToQueue(item: LibraryItem) = enqueue(item, next = false)
+
+    private fun enqueue(item: LibraryItem, next: Boolean) {
+        val c = _controller.value
+        if (c == null || c.currentMediaItem == null || c.mediaItemCount == 0) {
+            play(item)
+            return
+        }
+        // While casting, YouTube Music songs stay off the receiver's queue (as in play()).
+        if (_player.value.casting && item.media.isYtm) {
+            noticeQueue("YouTube Music songs cannot join the queue while casting")
+            return
+        }
+        val at = if (next) QueueOrder.nextIndex(c.currentMediaItemIndex, c.mediaItemCount) else c.mediaItemCount
+        c.addMediaItem(at, mediaItemFor(item))
+        RingLog.i("ui", "queue: ${if (next) "next" else "end"} at $at")
+        noticeQueue((if (next) "Plays next: " else "Added to the queue: ") + item.media.title)
+    }
+
+    /** 0.10.0: a YouTube Music song's title, in Lumen only. */
+    fun renameItem(item: LibraryItem, title: String) {
+        viewModelScope.launch { mediaRepo.renameYouTubeMusic(item.uri, title) }
+    }
+
+    /** Drag in the queue: the item at [from] goes to [to]. */
+    fun moveInQueue(from: Int, to: Int) = withController { c ->
+        if (from in 0 until c.mediaItemCount && to in 0 until c.mediaItemCount && from != to) c.moveMediaItem(from, to)
+    }
+
+    /** Takes one item out of the queue; the one playing stays (skip it instead). */
+    fun removeFromQueue(index: Int) = withController { c ->
+        if (index in 0 until c.mediaItemCount && index != c.currentMediaItemIndex) c.removeMediaItem(index)
+    }
+
     fun jumpToQueue(index: Int) {
         withController { c ->
             if (index in 0 until c.mediaItemCount) {

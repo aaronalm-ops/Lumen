@@ -61,6 +61,12 @@ fun LabelSheet(
     onDismiss: () -> Unit,
     /** 0.8.2: mark an item played or unplayed. */
     onTogglePlayed: (LibraryItem) -> Unit = {},
+    /** 0.10.0: something is playing, so Play next and Add to queue join its queue. */
+    queueActive: Boolean = false,
+    onPlayNext: (LibraryItem) -> Unit = {},
+    onAddToQueue: (LibraryItem) -> Unit = {},
+    /** 0.10.0: rename a YouTube Music song (its shared title is often long or untidy). */
+    onRename: (LibraryItem, String) -> Unit = { _, _ -> },
 ) {
     val c = Lumen.colours
     val state = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -108,8 +114,55 @@ fun LabelSheet(
                     onNew = { editing = newLabel(); creating = true },
                     onToggleOffline = { onToggleOffline(target.item) },
                     onTogglePlayed = { onTogglePlayed(target.item) },
+                    queueActive = queueActive,
+                    onPlayNext = { onPlayNext(target.item) },
+                    onAddToQueue = { onAddToQueue(target.item) },
+                    onRename = { onRename(target.item, it) },
                 )
             }
+        }
+    }
+}
+
+/** 0.10.0: one tappable row with an icon, a title and a plain explanation. */
+@Composable
+private fun SheetAction(icon: androidx.compose.ui.graphics.vector.ImageVector, title: String, detail: String, onClick: () -> Unit) {
+    val c = Lumen.colours
+    Row(
+        Modifier.fillMaxWidth().height(56.dp).clip(RoundedCornerShape(8.dp)).clickable(onClick = onClick),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(icon, contentDescription = null, tint = c.text2, modifier = Modifier.size(20.dp))
+        Spacer(Modifier.width(14.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, style = Lumen.type.body, color = c.text)
+            Text(detail, style = Lumen.type.bodyS, color = c.text2, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+    }
+}
+
+/** 0.10.0: the title as an editable line, Save and Cancel. */
+@Composable
+private fun RenameField(current: String, onSave: (String) -> Unit, onCancel: () -> Unit) {
+    val c = Lumen.colours
+    var value by remember(current) { mutableStateOf(current) }
+    Column(Modifier.fillMaxWidth()) {
+        Box(
+            Modifier.fillMaxWidth().height(48.dp).clip(RoundedCornerShape(10.dp)).background(c.thumb).padding(horizontal = 12.dp),
+            contentAlignment = Alignment.CenterStart,
+        ) {
+            androidx.compose.foundation.text.BasicTextField(
+                value = value,
+                onValueChange = { value = it.take(200) },
+                singleLine = true,
+                textStyle = Lumen.type.body.copy(color = c.text),
+                cursorBrush = androidx.compose.ui.graphics.SolidColor(c.accentInk),
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+        Row(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.End) {
+            TextAction("Cancel", onClick = onCancel)
+            TextAction("Save", enabled = value.isNotBlank() && value.trim() != current) { onSave(value.trim()) }
         }
     }
 }
@@ -126,11 +179,28 @@ private fun ItemLabelsBody(
     onNew: () -> Unit,
     onToggleOffline: () -> Unit,
     onTogglePlayed: () -> Unit,
+    queueActive: Boolean = false,
+    onPlayNext: () -> Unit = {},
+    onAddToQueue: () -> Unit = {},
+    onRename: (String) -> Unit = {},
 ) {
     val c = Lumen.colours
     val view = LocalView.current
+    var renaming by remember(item.uri) { mutableStateOf(false) }
     Spacer(Modifier.height(12.dp))
-    Text(item.media.title, style = Lumen.type.displayS, color = c.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
+    if (renaming) {
+        RenameField(item.media.title, onSave = { onRename(it); renaming = false }, onCancel = { renaming = false })
+    } else {
+        Text(item.media.title, style = Lumen.type.displayS, color = c.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
+    }
+    // 0.10.0: the queue, in plain words; with nothing playing both simply play.
+    Spacer(Modifier.height(8.dp))
+    SheetAction(LumenIcons.Play, "Play next", if (queueActive) "Right after what is playing now" else "Nothing is playing, so it plays now", onPlayNext)
+    SheetAction(LumenIcons.Queue, "Add to queue", if (queueActive) "At the end of the queue" else "Nothing is playing, so it plays now", onAddToQueue)
+    if (item.media.isYtm && !renaming) {
+        SheetAction(LumenIcons.Edit, "Rename", "A shorter or tidier title, in Lumen only", { renaming = true })
+    }
+    HorizontalDivider(color = c.divider, thickness = 1.dp, modifier = Modifier.padding(vertical = 8.dp))
     Spacer(Modifier.height(4.dp))
     Text("Playlists", style = Lumen.type.label, color = c.text2)
     Spacer(Modifier.height(8.dp))

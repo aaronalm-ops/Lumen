@@ -205,6 +205,12 @@ class MediaRepository(
 
     suspend fun deleteBookmark(bookmark: BookmarkEntity) = dao.deleteBookmark(bookmark)
 
+    /** 0.10.0: renames a YouTube Music song in Lumen (files keep the name the scanner reads). */
+    suspend fun renameYouTubeMusic(uri: String, title: String) {
+        if (!app.lumen.player.remote.YtmLink.isYtm(uri) || title.isBlank()) return
+        dao.renameMedia(uri, title.trim().take(200))
+    }
+
     fun chapters(uri: String): Flow<List<ChapterEntity>> = dao.chaptersFlow(uri)
 
     suspend fun addChapter(uri: String, positionMs: Long, title: String) {

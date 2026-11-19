@@ -68,6 +68,9 @@ class PlaylistActions(
     val sendToYouTube: (Long) -> Unit = {},
     val openOnYouTube: (String) -> Unit = {},
     val dismissMirror: () -> Unit = {},
+    /** 0.10.0: from a row's menu. */
+    val playNext: (LibraryItem) -> Unit = {},
+    val addToQueue: (LibraryItem) -> Unit = {},
 )
 
 /**
@@ -321,6 +324,14 @@ private fun ReorderableList(label: LabelEntity, members: List<PlaylistEntry>, pl
                             shadowElevation = 0.dp,
                             border = BorderStroke(1.dp, c.line),
                         ) {
+                            DropdownMenuItem(text = { Text("Play next", style = Lumen.type.body, color = c.text) }, onClick = {
+                                menu = false
+                                actions.playNext(entry.item)
+                            })
+                            DropdownMenuItem(text = { Text("Add to queue", style = Lumen.type.body, color = c.text) }, onClick = {
+                                menu = false
+                                actions.addToQueue(entry.item)
+                            })
                             DropdownMenuItem(text = { Text("Remove from ${label.name}", style = Lumen.type.body, color = c.danger) }, onClick = {
                                 menu = false
                                 actions.remove(label.id, entry)

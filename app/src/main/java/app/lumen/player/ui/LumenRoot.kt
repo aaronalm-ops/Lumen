@@ -168,6 +168,7 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
     val claudeKeyHint by vm.claudeKeyHint.collectAsState()
     val mirrorLinks by vm.mirrorLinks.collectAsState()
     val mirrorUi by vm.mirrorUi.collectAsState()
+    val queueNotice by vm.queueNotice.collectAsState()
     val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
     val transcriptHits by vm.transcriptHits.collectAsState()
 
@@ -248,6 +249,8 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
         loopStart = vm::loopStart,
         loopEnd = vm::loopEnd,
         loopClear = vm::loopClear,
+        moveInQueue = vm::moveInQueue,
+        removeFromQueue = vm::removeFromQueue,
     )
 
     val nowPlaying: @Composable (Boolean) -> Unit = { paned ->
@@ -393,6 +396,8 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
                         sendToYouTube = actions.youtubeMirror,
                         openOnYouTube = { id -> runCatching { uriHandler.openUri("https://music.youtube.com/playlist?list=$id") } },
                         dismissMirror = vm::dismissMirrorMessage,
+                        playNext = { vm.playNext(it) },
+                        addToQueue = { vm.addToQueue(it) },
                     ),
                     mirrorLinks = mirrorLinks,
                     mirrorUi = mirrorUi,
@@ -552,6 +557,23 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
             }
         }
 
+        // 0.10.0: "Plays next: ..." after Play next or Add to queue, above the bottom bar.
+        queueNotice?.let { text ->
+            LumenTheme(dark = true) {
+                val c = Lumen.colours
+                Box(Modifier.fillMaxSize().navigationBarsPadding().padding(bottom = 132.dp, start = Gutter, end = Gutter), contentAlignment = Alignment.BottomCenter) {
+                    Text(
+                        text,
+                        style = Lumen.type.bodyS,
+                        color = c.text,
+                        maxLines = 2,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                        modifier = Modifier.clip(RoundedCornerShape(50)).background(c.elevated).padding(horizontal = 16.dp, vertical = 10.dp),
+                    )
+                }
+            }
+        }
+
         labelSheet?.let { target ->
             // Re-resolve the item so the ticks follow the live label links.
             val live = when (target) {
@@ -569,6 +591,10 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
                     onToggleOffline = vm::toggleOffline,
                     onDismiss = vm::closeLabelSheet,
                     onTogglePlayed = vm::togglePlayed,
+                    queueActive = player.hasItem,
+                    onPlayNext = { vm.playNext(it); vm.closeLabelSheet() },
+                    onAddToQueue = { vm.addToQueue(it); vm.closeLabelSheet() },
+                    onRename = vm::renameItem,
                 )
             }
         }

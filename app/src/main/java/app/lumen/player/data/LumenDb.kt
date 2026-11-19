@@ -204,6 +204,10 @@ interface MediaDao {
     @Query("UPDATE media SET duration_ms = :durationMs, fingerprint = :fingerprint WHERE uri = :uri")
     suspend fun setDuration(uri: String, durationMs: Long, fingerprint: String)
 
+    /** 0.10.0: the owner's own title for a YouTube Music song. */
+    @Query("UPDATE media SET title = :title WHERE uri = :uri")
+    suspend fun renameMedia(uri: String, title: String)
+
     @Query("SELECT * FROM media WHERE folder_uri = :folderUri")
     suspend fun mediaInFolder(folderUri: String): List<MediaEntity>
 

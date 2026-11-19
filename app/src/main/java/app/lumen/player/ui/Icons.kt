@@ -170,6 +170,14 @@ object LumenIcons {
         }
     }
 
+    /** 0.10.0: Rename: a pencil. */
+    val Edit: ImageVector by lazy {
+        icon("edit") {
+            stroke { moveTo(4f, 20f); lineTo(4.5f, 16.5f); lineTo(15.5f, 5.5f); lineTo(18.5f, 8.5f); lineTo(7.5f, 19.5f); close() }
+            stroke { moveTo(13.5f, 7.5f); lineTo(16.5f, 10.5f) }
+        }
+    }
+
     /** 0.9.1: Repeat this one: the repeat arrows around a small 1. */
     val RepeatOne: ImageVector by lazy {
         icon("repeat-one") {

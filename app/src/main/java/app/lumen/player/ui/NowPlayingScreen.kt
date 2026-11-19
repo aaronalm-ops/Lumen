@@ -146,6 +146,9 @@ class NowPlayingActions(
     val loopStart: () -> Unit = {},
     val loopEnd: () -> Unit = {},
     val loopClear: () -> Unit = {},
+    // 0.10.0: the queue screen.
+    val moveInQueue: (Int, Int) -> Unit = { _, _ -> },
+    val removeFromQueue: (Int) -> Unit = {},
 )
 
 /** The tabletop split, in this screen's own coordinates: the height above the hinge and the hinge itself. */

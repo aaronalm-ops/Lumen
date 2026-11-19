@@ -14,6 +14,10 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.OptIn
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.launch
 import androidx.media3.common.util.UnstableApi
 import app.lumen.player.data.MediaPermissions
 import app.lumen.player.data.backup.BackupManager
@@ -193,6 +197,16 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         RingLog.i("ui", "activity onCreate")
         vm = ViewModelProvider(this)[MainViewModel::class.java]
+        // 0.10.0: Android 12 and later enter picture in picture on their own when these say so.
+        if (android.os.Build.VERSION.SDK_INT >= 31) {
+            lifecycleScope.launch {
+                combine(vm.player, vm.audioOnly, vm.nowPlayingOpen, vm.videoFull) { p, audioOnly, open, full ->
+                    p.isVideo && p.isPlaying && !audioOnly && (open || full)
+                }.distinctUntilChanged().collect {
+                    pipParams()?.let { params -> runCatching { setPictureInPictureParams(params) } }
+                }
+            }
+        }
 
         val app = LumenApp.from(this)
         // The branded Compose screen shows once per process, on a cold start only.
@@ -386,6 +400,35 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         vm.connect(this)
+    }
+
+    /**
+     * 0.10.0: picture in picture. With a video playing in Now Playing or full screen, leaving the
+     * app keeps it in a small window (Android 12 and later enter on their own; older ones here).
+     * "Audio only when you leave" wins: then the sound carries on without the picture.
+     */
+    private fun pipWanted(): Boolean {
+        val p = vm.player.value
+        return p.isVideo && p.isPlaying && !vm.audioOnly.value && (vm.nowPlayingOpen.value || vm.videoFull.value)
+    }
+
+    private fun pipParams(): android.app.PictureInPictureParams? {
+        if (android.os.Build.VERSION.SDK_INT < 26) return null
+        val size = vm.controller.value?.videoSize
+        return app.lumen.player.ui.VideoRules.pipParams(size?.width ?: 0, size?.height ?: 0, pipWanted())
+    }
+
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        if (android.os.Build.VERSION.SDK_INT in 26..30 && pipWanted()) {
+            pipParams()?.let { runCatching { enterPictureInPictureMode(it) } }
+        }
+    }
+
+    override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: android.content.res.Configuration) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        vm.inPictureInPicture.value = isInPictureInPictureMode
+        RingLog.i("ui", "picture in picture ${if (isInPictureInPictureMode) "on" else "off"}")
     }
 
     override fun onStop() {

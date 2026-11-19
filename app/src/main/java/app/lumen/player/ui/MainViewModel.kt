@@ -325,6 +325,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
     val labelSheet = MutableStateFlow<LabelSheetTarget?>(null)
     val audioOnly = MutableStateFlow(false)
+
+    /** 0.10.0: the full-screen video player is open. */
+    val videoFull = MutableStateFlow(false)
+
+    /** 0.10.0: the activity is in picture in picture; only the picture is drawn. */
+    val inPictureInPicture = MutableStateFlow(false)
     val kidsUnlocked = MutableStateFlow(false)
     val update = MutableStateFlow<UpdateInfo?>(null)
     val lastSaved: StateFlow<String> = store.lastSaved

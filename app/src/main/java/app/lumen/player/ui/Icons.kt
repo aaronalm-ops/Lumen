@@ -170,6 +170,60 @@ object LumenIcons {
         }
     }
 
+    /** 0.10.0: Subtitles: a screen with two lines of text. */
+    val Subtitles: ImageVector by lazy {
+        icon("subtitles") {
+            stroke { moveTo(4f, 5f); lineTo(20f, 5f); lineTo(20f, 19f); lineTo(4f, 19f); close() }
+            stroke { moveTo(7f, 12.5f); lineTo(11f, 12.5f) }
+            stroke { moveTo(13f, 12.5f); lineTo(17f, 12.5f) }
+            stroke { moveTo(7f, 15.5f); lineTo(14f, 15.5f) }
+        }
+    }
+
+    /** 0.10.0: Fill the screen: four corners pointing out. */
+    val ZoomIn: ImageVector by lazy {
+        icon("zoom-in") {
+            stroke { moveTo(4f, 9f); lineTo(4f, 4f); lineTo(9f, 4f) }
+            stroke { moveTo(15f, 4f); lineTo(20f, 4f); lineTo(20f, 9f) }
+            stroke { moveTo(20f, 15f); lineTo(20f, 20f); lineTo(15f, 20f) }
+            stroke { moveTo(9f, 20f); lineTo(4f, 20f); lineTo(4f, 15f) }
+        }
+    }
+
+    /** 0.10.0: Fit the whole picture: four corners pointing in. */
+    val ZoomOut: ImageVector by lazy {
+        icon("zoom-out") {
+            stroke { moveTo(4f, 9f); lineTo(9f, 9f); lineTo(9f, 4f) }
+            stroke { moveTo(15f, 4f); lineTo(15f, 9f); lineTo(20f, 9f) }
+            stroke { moveTo(20f, 15f); lineTo(15f, 15f); lineTo(15f, 20f) }
+            stroke { moveTo(9f, 20f); lineTo(9f, 15f); lineTo(4f, 15f) }
+        }
+    }
+
+    /** 0.10.0: Picture in picture: a small window in the corner of a large one. */
+    val PictureInPicture: ImageVector by lazy {
+        icon("picture-in-picture") {
+            stroke { moveTo(3f, 5f); lineTo(21f, 5f); lineTo(21f, 19f); lineTo(3f, 19f); close() }
+            fill { moveTo(12f, 12f); lineTo(19f, 12f); lineTo(19f, 17f); lineTo(12f, 17f); close() }
+        }
+    }
+
+    /** 0.10.0: Back a few seconds: an arrow turning back. */
+    val SkipBack: ImageVector by lazy {
+        icon("skip-back") {
+            stroke { moveTo(5f, 12f); arcTo(7f, 7f, 0f, true, false, 8f, 6.3f) }
+            stroke { moveTo(4.5f, 4f); lineTo(8f, 6.3f); lineTo(5.6f, 9.6f) }
+        }
+    }
+
+    /** 0.10.0: Forward a few seconds: an arrow turning forward. */
+    val SkipForward: ImageVector by lazy {
+        icon("skip-forward") {
+            stroke { moveTo(19f, 12f); arcTo(7f, 7f, 0f, true, true, 16f, 6.3f) }
+            stroke { moveTo(19.5f, 4f); lineTo(16f, 6.3f); lineTo(18.4f, 9.6f) }
+        }
+    }
+
     /** 0.10.0: Rename: a pencil. */
     val Edit: ImageVector by lazy {
         icon("edit") {

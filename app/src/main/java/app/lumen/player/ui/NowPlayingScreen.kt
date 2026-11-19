@@ -149,6 +149,8 @@ class NowPlayingActions(
     // 0.10.0: the queue screen.
     val moveInQueue: (Int, Int) -> Unit = { _, _ -> },
     val removeFromQueue: (Int) -> Unit = {},
+    /** 0.10.0: the full-screen video player. */
+    val openVideoFull: () -> Unit = {},
 )
 
 /** The tabletop split, in this screen's own coordinates: the height above the hinge and the hinge itself. */
@@ -235,7 +237,11 @@ fun NowPlayingScreen(
         val openSheet: (NowSheet) -> Unit = { sheet = it }
         when {
             split != null && remote == null -> TabletopLayout(split, player, controller, item, labels, settings, speech, timeline, actions, paned, showCast, extras, openSheet)
-            player.isVideo && landscape && controller != null && remote == null -> VideoSurface(controller, Modifier.fillMaxSize().background(c.base))
+            // 0.10.0: turned sideways, a video becomes the full-screen player with its controls.
+            player.isVideo && landscape && controller != null && remote == null -> FullScreenVideo(
+                controller, player, settings.skipBackSeconds, settings.skipForwardSeconds,
+                actions.playPause, actions.seekBack, actions.seekForward, actions.seekTo, onClose = actions.close, lockLandscape = false,
+            )
             remote == null && speech -> SermonScreen(player, controller, item, labels, settings, timeline, actions, paned, showCast, extras, openSheet)
             else -> Column(
                 Modifier
@@ -289,7 +295,7 @@ private fun SermonScreen(
             Header(labels, true, item, paned, actions, showCast = showCast, casting = player.casting)
             player.error?.let { message -> PlaybackErrorLine(message, actions.retry) }
             if (player.isVideo && controller != null) {
-                VideoSurface(controller, Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(CardRadius)))
+                VideoSurface(controller, Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(CardRadius)), actions.openVideoFull)
                 Spacer(Modifier.height(10.dp))
             }
             SpeechTitle(player, compact = player.isVideo || !roomy)
@@ -414,7 +420,7 @@ private fun TabletopLayout(
             Header(labels, speech, item, paned, actions, showCast = showCast, casting = player.casting)
             if (player.isVideo && controller != null) {
                 // A video takes the full width above the hinge.
-                VideoSurface(controller, Modifier.fillMaxWidth().weight(1f).clip(RoundedCornerShape(CardRadius)))
+                VideoSurface(controller, Modifier.fillMaxWidth().weight(1f).clip(RoundedCornerShape(CardRadius)), actions.openVideoFull)
             } else if (speech) {
                 SpeechTitle(player)
                 Spacer(Modifier.weight(1f))
@@ -610,6 +616,7 @@ private fun MusicLayout(
                 .fillMaxWidth()
                 .aspectRatio(16f / 9f)
                 .clip(RoundedCornerShape(CardRadius)),
+            actions.openVideoFull,
         )
     } else {
         // The art keeps a margin so the controls stay within reach.
@@ -808,7 +815,7 @@ private fun UpNext(player: PlayerState) {
 /** PlayerView inline. The surface is attached while this composable is shown and detached after. */
 @androidx.annotation.OptIn(UnstableApi::class)
 @Composable
-private fun VideoSurface(controller: MediaController, modifier: Modifier) {
+private fun VideoSurface(controller: MediaController, modifier: Modifier, onFullScreen: (() -> Unit)? = null) {
     // 0.6.1: the screen stays on while a video plays (the picture itself holds it, so nothing
     // else on the screen has to know), and sleeps again when it pauses.
     val viewRef = remember { arrayOfNulls<PlayerView>(1) }
@@ -821,8 +828,10 @@ private fun VideoSurface(controller: MediaController, modifier: Modifier) {
         controller.addListener(listener)
         onDispose { controller.removeListener(listener) }
     }
+    // 0.10.0: tap the picture, or the corner button, for the full-screen player.
+    Box(modifier) {
     AndroidView(
-        modifier = modifier,
+        modifier = Modifier.fillMaxSize(),
         factory = { context ->
             PlayerView(context).apply {
                 useController = false
@@ -840,6 +849,11 @@ private fun VideoSurface(controller: MediaController, modifier: Modifier) {
             viewRef[0] = null
         },
     )
+    if (onFullScreen != null) {
+        Box(Modifier.fillMaxSize().clickable(onClickLabel = "Full screen", onClick = onFullScreen))
+        IconTap(LumenIcons.Expand, "Full screen", androidx.compose.ui.graphics.Color.White, modifier = Modifier.align(Alignment.BottomEnd), size = 20.dp, onClick = onFullScreen)
+    }
+    }
 }
 
 /** Keeps the screen on, dimmed, for labels marked "no interruptions". */

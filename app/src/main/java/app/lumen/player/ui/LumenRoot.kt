@@ -169,6 +169,8 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
     val mirrorLinks by vm.mirrorLinks.collectAsState()
     val mirrorUi by vm.mirrorUi.collectAsState()
     val queueNotice by vm.queueNotice.collectAsState()
+    val videoFull by vm.videoFull.collectAsState()
+    val inPip by vm.inPictureInPicture.collectAsState()
     val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
     val transcriptHits by vm.transcriptHits.collectAsState()
 
@@ -250,6 +252,7 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
         loopEnd = vm::loopEnd,
         loopClear = vm::loopClear,
         moveInQueue = vm::moveInQueue,
+        openVideoFull = { vm.videoFull.value = true },
         removeFromQueue = vm::removeFromQueue,
     )
 
@@ -473,6 +476,21 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
 
     // The label sheet takes the ground it was opened over: black over a single-pane Now Playing.
     val sheetDark = appearanceDark || (!twoPane && nowPlayingOpen)
+
+    // 0.10.0: the full-screen video player, or the bare picture in picture in picture, takes the
+    // whole window alone: one player view holds the picture at a time.
+    val videoController = controller
+    if (videoController != null && player.isVideo && remote == null && (inPip || videoFull)) {
+        LumenTheme(dark = true) {
+            if (inPip) PictureInPictureVideo(videoController)
+            else FullScreenVideo(
+                videoController, player, settings.skipBackSeconds, settings.skipForwardSeconds,
+                vm::playPause, vm::seekBack, vm::seekForward, vm::seekTo, onClose = { vm.videoFull.value = false },
+            )
+        }
+        return
+    }
+    if (videoFull) LaunchedEffect(Unit) { vm.videoFull.value = false }
 
     Box(Modifier.fillMaxSize()) {
         if (twoPane) {

@@ -53,6 +53,7 @@
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
             android:exported="true"
             android:launchMode="singleTask"
+            android:supportsPictureInPicture="true"
             android:theme="@style/Theme.Lumen.Splash">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

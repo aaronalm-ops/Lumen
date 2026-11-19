@@ -51,8 +51,8 @@ class PlaybackBrowserTest {
             val root = await(browser.getLibraryRoot(null))
             assertEquals("Lumen", root.value!!.mediaMetadata.title)
             val roots = await(browser.getChildren(PlaybackService.ROOT_ID, 0, 10, null)).value!!
-            // 0.9.0: Carry on, Sermons, Playlists, Recent.
-            assertEquals(listOf("Carry on", "Sermons", "Playlists", "Recent"), roots.map { it.mediaMetadata.title.toString() })
+            // 0.10.0: Carry on, Sermons, Playlists, Library (Recent moved inside Library with Folders and Drive).
+            assertEquals(listOf("Carry on", "Sermons", "Playlists", "Library"), roots.map { it.mediaMetadata.title.toString() })
             val parent = PlaybackService.LABEL_PREFIX + labelId
             // Play all and Shuffle head every playlist; YouTube Music rows stay out; order is kept.
             assertEquals("Play all", await(browser.getChildren(parent, 0, 1, null)).value!!.single().mediaMetadata.title)

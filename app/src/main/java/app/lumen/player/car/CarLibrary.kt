@@ -10,13 +10,18 @@ import androidx.media3.session.MediaConstants
 import app.lumen.player.data.LabelRepository
 import app.lumen.player.data.MediaEntity
 import app.lumen.player.data.MediaRepository
+import app.lumen.player.data.NaturalOrder
 import app.lumen.player.data.PositionStore
+import app.lumen.player.data.drive.isDrive
 import app.lumen.player.data.ProgressEntity
 import app.lumen.player.notes.NotesRepository
 import app.lumen.player.playback.MediaItems
 import app.lumen.player.remote.YtmLink
 
 /**
+ * 0.10.0: the fourth tab is Library: Recent, the phone's Folders and Drive (Android Auto shows at
+ * most four tabs). Folders list in natural order (Part 2 before Part 10) with Play all and Shuffle.
+ *
  * 0.9.0: what Lumen shows in Android Auto. Four tabs (Carry on, Sermons, Playlists, Recent),
  * Lumen tiles where there is no cover, played and part-played markers, sermon groups, Play all
  * and Shuffle rows, and search over titles and what was said. YouTube Music rows stay out: they
@@ -47,8 +52,34 @@ internal class CarLibrary(
             folder(CONTINUE_ID, "Carry on", null, null, playableStyle = MediaConstants.EXTRAS_VALUE_CONTENT_STYLE_LIST_ITEM),
             folder(SERMONS_ID, "Sermons", null, null, playableStyle = MediaConstants.EXTRAS_VALUE_CONTENT_STYLE_LIST_ITEM),
             folder(LABELS_ID, "Playlists", null, null, browsableStyle = MediaConstants.EXTRAS_VALUE_CONTENT_STYLE_GRID_ITEM),
-            folder(RECENT_ID, "Recent", null, null, playableStyle = MediaConstants.EXTRAS_VALUE_CONTENT_STYLE_LIST_ITEM),
+            folder(LIBRARY_ID, "Library", null, null, browsableStyle = MediaConstants.EXTRAS_VALUE_CONTENT_STYLE_LIST_ITEM),
         )
+        parentId == LIBRARY_ID -> buildList {
+            add(folder(RECENT_ID, "Recent", "The last things you played", CarArt.tile(context, "Recent", CarArt.Accent.CYAN), playableStyle = MediaConstants.EXTRAS_VALUE_CONTENT_STYLE_LIST_ITEM))
+            val phone = phoneFolders()
+            if (phone.isNotEmpty()) add(folder(FOLDERS_ID, "Folders", "${phone.size} on this phone", CarArt.tile(context, "Folders", CarArt.Accent.CYAN), browsableStyle = MediaConstants.EXTRAS_VALUE_CONTENT_STYLE_LIST_ITEM))
+            val drive = driveRows()
+            if (drive.isNotEmpty()) add(folder(DRIVE_ID, "Drive", "${drive.size} ${if (drive.size == 1) "recording" else "recordings"}", CarArt.tile(context, "Drive", CarArt.Accent.AMBER), playableStyle = MediaConstants.EXTRAS_VALUE_CONTENT_STYLE_LIST_ITEM))
+        }
+        parentId == FOLDERS_ID -> phoneFolders().map { (f, rows) ->
+            folder(FOLDER_PREFIX + f.uri, f.name, "${rows.size} ${if (rows.size == 1) "item" else "items"}", CarArt.tile(context, f.name, CarArt.Accent.CYAN),
+                playableStyle = MediaConstants.EXTRAS_VALUE_CONTENT_STYLE_LIST_ITEM)
+        }
+        parentId.startsWith(FOLDER_PREFIX) -> {
+            val uri = parentId.removePrefix(FOLDER_PREFIX)
+            val rows = folderRows(uri)
+            if (rows.isEmpty()) emptyList() else {
+                val progress = store.latestByUri()
+                listOf(
+                    action(FOLDER_ALL_PREFIX + uri, "Play all", "${rows.size} ${if (rows.size == 1) "item" else "items"}", CarArt.Accent.CYAN),
+                    action(FOLDER_SHUFFLE_PREFIX + uri, "Shuffle", null, CarArt.Accent.AMBER),
+                ) + rows.map { decorate(it, progress[it.uri], null) }
+            }
+        }
+        parentId == DRIVE_ID -> {
+            val progress = store.latestByUri()
+            driveRows().map { decorate(it, progress[it.uri], null) }
+        }
         parentId == CONTINUE_ID -> carryOn(store.latestByUri(), CARRY_ON_LIMIT)
         parentId == SERMONS_ID -> sermons()
         parentId == RECENT_ID -> {
@@ -80,6 +111,12 @@ internal class CarLibrary(
         mediaId == SERMONS_ID -> folder(SERMONS_ID, "Sermons", null, null, null)
         mediaId == LABELS_ID -> folder(LABELS_ID, "Playlists", null, null, null)
         mediaId == RECENT_ID -> folder(RECENT_ID, "Recent", null, null, null)
+        mediaId == LIBRARY_ID -> folder(LIBRARY_ID, "Library", null, null, null)
+        mediaId == FOLDERS_ID -> folder(FOLDERS_ID, "Folders", null, null, null)
+        mediaId == DRIVE_ID -> folder(DRIVE_ID, "Drive", null, null, null)
+        mediaId.startsWith(FOLDER_PREFIX) -> media.folderList().firstOrNull { it.uri == mediaId.removePrefix(FOLDER_PREFIX) }?.let { folder(mediaId, it.name, null, null, null) }
+        mediaId.startsWith(FOLDER_ALL_PREFIX) -> action(mediaId, "Play all", null, CarArt.Accent.CYAN)
+        mediaId.startsWith(FOLDER_SHUFFLE_PREFIX) -> action(mediaId, "Shuffle", null, CarArt.Accent.AMBER)
         mediaId.startsWith(LABEL_PREFIX) -> mediaId.removePrefix(LABEL_PREFIX).toLongOrNull()
             ?.let { labels.byId(it) }?.let { folder(mediaId, it.name, null, null, null) }
         mediaId.startsWith(PLAY_ALL_PREFIX) -> action(mediaId, "Play all", null, CarArt.Accent.CYAN)
@@ -101,6 +138,12 @@ internal class CarLibrary(
         }
         mediaId.startsWith(AT_PREFIX) -> parseAt(mediaId)?.let { (ms, uri) ->
             media.byUri(uri)?.let { Expanded(listOf(itemFor(it)), 0, ms) }
+        }
+        mediaId.startsWith(FOLDER_ALL_PREFIX) || mediaId.startsWith(FOLDER_SHUFFLE_PREFIX) -> {
+            val shuffle = mediaId.startsWith(FOLDER_SHUFFLE_PREFIX)
+            val uri = mediaId.removePrefix(if (shuffle) FOLDER_SHUFFLE_PREFIX else FOLDER_ALL_PREFIX)
+            val rows = folderRows(uri).let { if (shuffle) it.shuffled() else it }
+            if (rows.isEmpty()) null else Expanded(rows.map { itemFor(it) }, 0, C.TIME_UNSET)
         }
         else -> null
     }
@@ -186,6 +229,26 @@ internal class CarLibrary(
             older.map { decorate(it, progress[it.uri], "Older") }
     }
 
+    /** Phone folders (picked folders and the phone's own audio folders) that hold something the car can play. */
+    private suspend fun phoneFolders(): List<Pair<app.lumen.player.data.FolderEntity, List<MediaEntity>>> {
+        val byFolder = media.all().filter { carPlayable(it) && !it.isDrive }.groupBy { it.folderUri }
+        return media.folderList()
+            .filter { !it.isDrive && it.uri != YtmLink.FOLDER_URI }
+            .mapNotNull { f -> byFolder[f.uri]?.takeIf { it.isNotEmpty() }?.let { f to sortedForFolder(it) } }
+            .sortedWith(compareBy(NaturalOrder) { it.first.name })
+    }
+
+    private suspend fun folderRows(folderUri: String): List<MediaEntity> =
+        sortedForFolder(media.all().filter { it.folderUri == folderUri && carPlayable(it) })
+
+    /** Drive recordings, newest first (sermons arrive there week by week). */
+    private suspend fun driveRows(): List<MediaEntity> =
+        media.all().filter { it.isDrive && carPlayable(it) }.sortedByDescending { it.dateAdded }.distinctBy { it.fingerprint }
+
+    private fun sortedForFolder(rows: List<MediaEntity>) = rows.distinctBy { it.fingerprint }.sortedWith(compareBy(NaturalOrder) { it.title })
+
+    private fun carPlayable(row: MediaEntity) = !YtmLink.isYtm(row.uri) && !row.isVideo
+
     private suspend fun playlistRows(labelId: Long): List<MediaEntity> =
         labels.mediaUrisFor(labelId).filterNot { YtmLink.isYtm(it) }.mapNotNull { media.byUri(it) }.distinctBy { it.fingerprint }
 
@@ -267,6 +330,12 @@ internal class CarLibrary(
         const val LABELS_ID = "labels"
         const val SERMONS_ID = "sermons"
         const val RECENT_ID = "recent"
+        const val LIBRARY_ID = "library"
+        const val FOLDERS_ID = "folders"
+        const val DRIVE_ID = "drive"
+        const val FOLDER_PREFIX = "folder:"
+        const val FOLDER_ALL_PREFIX = "car:fplay:"
+        const val FOLDER_SHUFFLE_PREFIX = "car:fshuffle:"
         const val LABEL_PREFIX = "label:"
         const val PLAY_ALL_PREFIX = "car:playall:"
         const val SHUFFLE_PREFIX = "car:shuffle:"

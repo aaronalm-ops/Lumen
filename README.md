@@ -1,5 +1,13 @@
 # Lumen
 
+## 0.10.1: tap to skip
+
+- Double-tap the right of a song's cover to go forward 10 seconds, the left to go back; keep tapping the same side and each tap adds another 10 seconds. The running total and where it lands ("+30 s, to 12:40") show on that side, and the seeker marks the landing point. One seek is made when the tapping stops, so a Drive stream buffers once and the saved place is written once.
+- The same works on a sermon's title (a sermon has no cover), on a video in Now Playing (one tap still opens full screen) and in the full-screen video player (one tap still shows the controls). The tabletop layout has it too.
+- Settings, Skip intervals, "Each tap on the cover": 5, 10, 15 or 30 seconds. The back and forward buttons keep their own lengths.
+- A forward skip stops a second before the end, so it never finishes a sermon by accident. While an A to B loop runs, skips stay inside the loop.
+- A one-line hint under the cover or title says where tap to skip lives until it is first used. TalkBack offers "Back 10 seconds" and "Forward 10 seconds" on the same places.
+
 ## 0.10.0: YouTube Music in the car, a queue, Library in the car, a real video player
 
 ### YouTube Music in the car (Send to YouTube Music)
@@ -17,7 +25,7 @@
 - Settings, In the car explains how YouTube Music songs reach the car.
 
 ### Video
-- Tap a video (or its corner button) for the full-screen player; turning the phone sideways opens it too. Tap shows or hides the controls; they hide after three seconds of playing. Double-tap the left or right half to skip back or forward. Pinch, or the Zoom button, fills the screen; pinch back to fit.
+- Tap a video (or its corner button) for the full-screen player; turning the phone sideways opens it too. Tap shows or hides the controls; they hide after three seconds of playing. Double-tap the left or right half to skip back or forward (0.10.1: by the tap step, further with each tap). Pinch, or the Zoom button, fills the screen; pinch back to fit.
 - Subtitles lists the video's own subtitle tracks (in MKV and MP4 files) by label or language, with Off. Separate .srt files beside a video are not read yet.
 - Picture in picture: the button, or leaving the app while a video plays (Android 12 and later do it themselves), keeps the video in a small window. Closing that window pauses the video. "Audio only when you leave" still wins when it is on.
 

@@ -66,6 +66,8 @@ class SettingsActions(
     val setPreset: (String) -> Unit,
     val setCustomBands: (List<Float>) -> Unit,
     val setSkips: (Int, Int) -> Unit,
+    /** 0.10.1: tap to skip, seconds per tap. */
+    val setTapSkip: (Int) -> Unit = {},
     /** 0.4.0: "auto", "light" or "dark", replacing the Night toggle. */
     val setAppearance: (String) -> Unit,
     val shareDiagnostics: () -> Unit,
@@ -440,6 +442,15 @@ fun SettingsScreen(
                     StepperRow("Back", settings.skipBackSeconds, listOf(5, 10, 15, 30)) { actions.setSkips(it, settings.skipForwardSeconds) }
                     HorizontalDivider(color = c.divider, thickness = 1.dp, modifier = Modifier.padding(horizontal = 14.dp))
                     StepperRow("Forward", settings.skipForwardSeconds, listOf(10, 15, 30, 45, 60)) { actions.setSkips(settings.skipBackSeconds, it) }
+                    HorizontalDivider(color = c.divider, thickness = 1.dp, modifier = Modifier.padding(horizontal = 14.dp))
+                    // 0.10.1: tap to skip on a cover, a sermon's title or a video.
+                    StepperRow("Each tap on the cover", settings.tapSkipSeconds, TapSkip.stepChoices) { actions.setTapSkip(it) }
+                    Text(
+                        "Double-tap the left or right of a cover, a sermon's title or a video to go back or forward. Each further tap adds this much",
+                        style = Lumen.type.bodyS,
+                        color = c.text2,
+                        modifier = Modifier.padding(start = 14.dp, end = 14.dp, bottom = 12.dp),
+                    )
                 }
             }
 

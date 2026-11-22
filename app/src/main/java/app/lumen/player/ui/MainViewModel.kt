@@ -1360,6 +1360,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch { settingsRepo.setAppearance(value) }
     }
 
+    /** 0.10.1: tap to skip, seconds per tap. */
+    fun setTapSkip(seconds: Int) {
+        viewModelScope.launch { settingsRepo.setTapSkip(seconds) }
+    }
+
+    /** 0.10.1: the first skip by tapping retires its hint. */
+    fun tapSkipUsed() {
+        if (settings.value.tapSkipUsed) return
+        viewModelScope.launch { settingsRepo.markTapSkipUsed() }
+    }
+
     fun setSkips(back: Int, forward: Int) {
         viewModelScope.launch { settingsRepo.setSkips(back, forward) }
     }

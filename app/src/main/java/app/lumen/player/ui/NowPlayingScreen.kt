@@ -151,6 +151,8 @@ class NowPlayingActions(
     val removeFromQueue: (Int) -> Unit = {},
     /** 0.10.0: the full-screen video player. */
     val openVideoFull: () -> Unit = {},
+    /** 0.10.1: tap to skip was used, so its hint goes. */
+    val tapSkipUsed: () -> Unit = {},
 )
 
 /** The tabletop split, in this screen's own coordinates: the height above the hinge and the hinge itself. */
@@ -235,12 +237,14 @@ fun NowPlayingScreen(
     ) {
         var sheet by remember { mutableStateOf<NowSheet?>(null) }
         val openSheet: (NowSheet) -> Unit = { sheet = it }
+        ProvideTapSkip {
         when {
             split != null && remote == null -> TabletopLayout(split, player, controller, item, labels, settings, speech, timeline, actions, paned, showCast, extras, openSheet)
             // 0.10.0: turned sideways, a video becomes the full-screen player with its controls.
             player.isVideo && landscape && controller != null && remote == null -> FullScreenVideo(
                 controller, player, settings.skipBackSeconds, settings.skipForwardSeconds,
                 actions.playPause, actions.seekBack, actions.seekForward, actions.seekTo, onClose = actions.close, lockLandscape = false,
+                tapSkipSeconds = settings.tapSkipSeconds, onSkipUsed = actions.tapSkipUsed,
             )
             remote == null && speech -> SermonScreen(player, controller, item, labels, settings, timeline, actions, paned, showCast, extras, openSheet)
             else -> Column(
@@ -257,6 +261,7 @@ fun NowPlayingScreen(
                 if (remote != null) RemoteLayout(remote, player, labels, actions)
                 else MusicLayout(player, controller, item, settings, downloadProgress, actions, openSheet, noInterruptions)
             }
+        }
         }
         sheet?.let { current ->
             NowPlayingSheet(current, speech && remote == null, player, item, settings, extras, downloadProgress, audioOnly, actions) { sheet = it }
@@ -295,10 +300,10 @@ private fun SermonScreen(
             Header(labels, true, item, paned, actions, showCast = showCast, casting = player.casting)
             player.error?.let { message -> PlaybackErrorLine(message, actions.retry) }
             if (player.isVideo && controller != null) {
-                VideoSurface(controller, Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(CardRadius)), actions.openVideoFull)
+                VideoSurface(controller, Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(CardRadius)), actions.openVideoFull, settings.tapSkipSeconds, actions.tapSkipUsed)
                 Spacer(Modifier.height(10.dp))
             }
-            SpeechTitle(player, compact = player.isVideo || !roomy)
+            SpeechTitleZone(player, settings, actions, compact = player.isVideo || !roomy)
             Spacer(Modifier.height(if (roomy) 18.dp else 10.dp))
             // Paused on a speech item, Lumen is holding the place: the head turns to the ember.
             Scrubber(
@@ -420,13 +425,24 @@ private fun TabletopLayout(
             Header(labels, speech, item, paned, actions, showCast = showCast, casting = player.casting)
             if (player.isVideo && controller != null) {
                 // A video takes the full width above the hinge.
-                VideoSurface(controller, Modifier.fillMaxWidth().weight(1f).clip(RoundedCornerShape(CardRadius)), actions.openVideoFull)
+                VideoSurface(controller, Modifier.fillMaxWidth().weight(1f).clip(RoundedCornerShape(CardRadius)), actions.openVideoFull, settings.tapSkipSeconds, actions.tapSkipUsed)
             } else if (speech) {
-                SpeechTitle(player)
+                SpeechTitleZone(player, settings, actions)
                 Spacer(Modifier.weight(1f))
             } else {
                 Row(Modifier.fillMaxWidth().weight(1f).padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    ArtBlock(item, player.title, Modifier.fillMaxHeight().aspectRatio(1f, matchHeightConstraintsFirst = true))
+                    TapSkipZone(
+                        enabled = player.hasItem && player.durationMs > 0,
+                        stepSeconds = settings.tapSkipSeconds,
+                        position = { player.positionMs },
+                        duration = { player.durationMs },
+                        onSeek = actions.seekTo,
+                        loop = player.loopRange(),
+                        modifier = Modifier.fillMaxHeight().aspectRatio(1f, matchHeightConstraintsFirst = true).clip(RoundedCornerShape(CardRadius)),
+                        onFirstUse = actions.tapSkipUsed,
+                    ) {
+                        ArtBlock(item, player.title, Modifier.fillMaxSize())
+                    }
                     Spacer(Modifier.width(16.dp))
                     Column(Modifier.weight(1f)) { MusicTitle(player) }
                 }
@@ -493,6 +509,43 @@ private fun SpeechTitle(player: PlayerState, compact: Boolean = false) {
         Spacer(Modifier.height(6.dp))
         Text(player.artist, style = Lumen.type.body, color = c.text2, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
+}
+
+/**
+ * 0.10.1: a sermon has no cover, so its title is the place to double-tap: left to go back,
+ * right to go forward, by the tap step, and further with each tap.
+ */
+@Composable
+private fun SpeechTitleZone(player: PlayerState, settings: Settings, actions: NowPlayingActions, compact: Boolean = false) {
+    TapSkipZone(
+        enabled = player.hasItem && player.durationMs > 0,
+        stepSeconds = settings.tapSkipSeconds,
+        position = { player.positionMs },
+        duration = { player.durationMs },
+        onSeek = actions.seekTo,
+        loop = player.loopRange(),
+        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(CardRadius)),
+        onFirstUse = actions.tapSkipUsed,
+    ) {
+        Column(Modifier.fillMaxWidth().padding(bottom = 4.dp)) { SpeechTitle(player, compact) }
+    }
+    TapSkipHint(player, settings, "title")
+}
+
+/** 0.10.1: the running A to B loop as a range, for tap to skip; null without one. */
+internal fun PlayerState.loopRange(): LongRange? = loop?.endMs?.let { end -> loop.startMs..end }
+
+/** 0.10.1: says once where tap to skip lives; gone after the first skip. */
+@Composable
+private fun TapSkipHint(player: PlayerState, settings: Settings, where: String) {
+    if (settings.tapSkipUsed || !player.hasItem || player.durationMs <= 0 || player.isVideo) return
+    Text(
+        "Double-tap the left or right of the $where to skip ${settings.tapSkipSeconds} s. Keep tapping to go further",
+        style = Lumen.type.labelS,
+        color = Lumen.colours.text3,
+        textAlign = TextAlign.Center,
+        modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+    )
 }
 
 /** Back, the 80 dp play button, forward. */
@@ -617,13 +670,28 @@ private fun MusicLayout(
                 .aspectRatio(16f / 9f)
                 .clip(RoundedCornerShape(CardRadius)),
             actions.openVideoFull,
+            settings.tapSkipSeconds,
+            actions.tapSkipUsed,
         )
     } else {
         // The art keeps a margin so the controls stay within reach.
         Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-            ArtBlock(item, player.title, Modifier.fillMaxWidth(0.82f).aspectRatio(1f))
+            // 0.10.1: double-tap either side of the cover to skip; keep tapping to go further.
+            TapSkipZone(
+                enabled = player.hasItem && player.durationMs > 0,
+                stepSeconds = settings.tapSkipSeconds,
+                position = { player.positionMs },
+                duration = { player.durationMs },
+                onSeek = actions.seekTo,
+                loop = player.loopRange(),
+                modifier = Modifier.fillMaxWidth(0.82f).aspectRatio(1f).clip(RoundedCornerShape(CardRadius)),
+                onFirstUse = actions.tapSkipUsed,
+            ) {
+                ArtBlock(item, player.title, Modifier.fillMaxSize())
+            }
         }
     }
+    TapSkipHint(player, settings, "cover")
     Spacer(Modifier.height(16.dp))
     MusicTitle(player)
     if (downloadProgress != null) ProgressLine(fraction = downloadProgress, thickness = 1.dp, modifier = Modifier.padding(top = 6.dp))
@@ -815,7 +883,7 @@ private fun UpNext(player: PlayerState) {
 /** PlayerView inline. The surface is attached while this composable is shown and detached after. */
 @androidx.annotation.OptIn(UnstableApi::class)
 @Composable
-private fun VideoSurface(controller: MediaController, modifier: Modifier, onFullScreen: (() -> Unit)? = null) {
+private fun VideoSurface(controller: MediaController, modifier: Modifier, onFullScreen: (() -> Unit)? = null, tapSkipSeconds: Int = 10, onSkipUsed: () -> Unit = {}) {
     // 0.6.1: the screen stays on while a video plays (the picture itself holds it, so nothing
     // else on the screen has to know), and sleeps again when it pauses.
     val viewRef = remember { arrayOfNulls<PlayerView>(1) }
@@ -850,7 +918,18 @@ private fun VideoSurface(controller: MediaController, modifier: Modifier, onFull
         },
     )
     if (onFullScreen != null) {
-        Box(Modifier.fillMaxSize().clickable(onClickLabel = "Full screen", onClick = onFullScreen))
+        // 0.10.1: one tap opens full screen; double-tap either side skips, as on a cover.
+        TapSkipZone(
+            enabled = controller.duration > 0,
+            stepSeconds = tapSkipSeconds,
+            position = { controller.currentPosition },
+            duration = { controller.duration.coerceAtLeast(0L) },
+            onSeek = { controller.seekTo(it) },
+            modifier = Modifier.fillMaxSize(),
+            onSingleTap = onFullScreen,
+            onFirstUse = onSkipUsed,
+            overlayOnDark = true,
+        ) { Box(Modifier.fillMaxSize()) }
         IconTap(LumenIcons.Expand, "Full screen", androidx.compose.ui.graphics.Color.White, modifier = Modifier.align(Alignment.BottomEnd), size = 20.dp, onClick = onFullScreen)
     }
     }

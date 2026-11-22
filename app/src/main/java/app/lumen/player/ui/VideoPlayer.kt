@@ -81,32 +81,27 @@ fun FullScreenVideo(
     onClose: () -> Unit,
     /** Opened on purpose (not by turning the phone): a wide video turns the screen to landscape. */
     lockLandscape: Boolean = true,
+    /** 0.10.1: seconds per tap for tap to skip. */
+    tapSkipSeconds: Int = 10,
+    onSkipUsed: () -> Unit = {},
 ) {
     val c = Lumen.colours
     var controls by remember { mutableStateOf(true) }
     var zoom by remember { mutableStateOf(false) }
     var pinch by remember { mutableFloatStateOf(1f) }
-    var flash by remember { mutableStateOf<String?>(null) }
-    var flashTick by remember { mutableIntStateOf(0) }
     var subtitlesMenu by remember { mutableStateOf(false) }
     val activity = LocalContext.current as? Activity
     BackHandler(onBack = onClose)
     ImmersiveWhileShown(activity, landscape = lockLandscape && VideoRules.isWide(controller.videoSize.width, controller.videoSize.height))
     // Controls hide after three seconds of playing untouched.
-    LaunchedEffect(controls, player.isPlaying, flashTick) {
+    LaunchedEffect(controls, player.isPlaying) {
         if (controls && player.isPlaying) {
             delay(3_000)
             controls = false
         }
     }
-    LaunchedEffect(flashTick) {
-        if (flash != null) {
-            delay(700)
-            flash = null
-        }
-    }
+    ProvideTapSkip {
     BoxWithConstraints(Modifier.fillMaxSize().background(Color.Black)) {
-        val half = constraints.maxWidth / 2f
         AndroidView(
             modifier = Modifier.fillMaxSize(),
             factory = { context ->
@@ -127,40 +122,28 @@ fun FullScreenVideo(
                 view.player = null
             },
         )
-        // Gestures sit over the picture, so the player view never swallows them.
-        Box(
-            Modifier
-                .fillMaxSize()
-                .pointerInput(Unit) {
-                    detectTapGestures(
-                        onTap = { controls = !controls },
-                        onDoubleTap = { at ->
-                            if (at.x < half) {
-                                seekBack()
-                                flash = "Back $backSeconds s"
-                            } else {
-                                seekForward()
-                                flash = "Forward $forwardSeconds s"
-                            }
-                            flashTick++
-                        },
-                    )
-                }
-                .pointerInput(Unit) {
+        // Gestures sit over the picture, so the player view never swallows them. 0.10.1: one tap
+        // shows or hides the controls; double-tap either side skips by the tap step, further with
+        // each tap (the same as a cover); pinch zooms.
+        run {
+            TapSkipZone(
+                enabled = player.hasItem && player.durationMs > 0,
+                stepSeconds = tapSkipSeconds,
+                position = { controller.currentPosition },
+                duration = { controller.duration.coerceAtLeast(0L) },
+                onSeek = seekTo,
+                loop = player.loopRange(),
+                modifier = Modifier.fillMaxSize().pointerInput(Unit) {
                     detectTransformGestures { _, _, scale, _ ->
                         pinch *= scale
                         if (pinch > VideoRules.ZOOM_IN_AT) { zoom = true; pinch = 1f }
                         if (pinch < VideoRules.ZOOM_OUT_AT) { zoom = false; pinch = 1f }
                     }
                 },
-        )
-        flash?.let { text ->
-            Text(
-                text,
-                style = Lumen.type.bodyStrong,
-                color = Color.White,
-                modifier = Modifier.align(Alignment.Center).clip(RoundedCornerShape(50)).background(Color.Black.copy(alpha = 0.55f)).padding(horizontal = 18.dp, vertical = 10.dp),
-            )
+                onSingleTap = { controls = !controls },
+                onFirstUse = onSkipUsed,
+                overlayOnDark = true,
+            ) { Box(Modifier.fillMaxSize()) }
         }
         AnimatedVisibility(visible = controls, enter = fadeIn(), exit = fadeOut(), modifier = Modifier.fillMaxSize()) {
             Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.35f)).safeDrawingPadding()) {
@@ -210,6 +193,7 @@ fun FullScreenVideo(
                 }
             }
         }
+    }
     }
 }
 

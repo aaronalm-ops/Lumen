@@ -65,6 +65,11 @@ data class Settings(
     // 0.9.1.
     /** Off, Repeat queue or Repeat this one (Player.REPEAT_MODE_*), kept across restarts. Loops are never kept. */
     val repeatMode: Int = androidx.media3.common.Player.REPEAT_MODE_OFF,
+    // 0.10.1.
+    /** Tap to skip on the cover, a sermon's title or a video: seconds per tap. */
+    val tapSkipSeconds: Int = 10,
+    /** Tap to skip has been used once, so its hint is no longer shown. */
+    val tapSkipUsed: Boolean = false,
 ) {
     val driveConnected: Boolean get() = driveFolderId.isNotBlank()
 
@@ -131,6 +136,8 @@ class SettingsRepository(private val dao: ProgressDao) {
         const val KEY_LEVEL_OUT = "level_out"
         const val KEY_TRIM_SILENCES = "trim_silences"
         const val KEY_REPEAT = "repeat_mode"
+        const val KEY_TAP_SKIP = "tap_skip_s"
+        const val KEY_TAP_SKIP_USED = "tap_skip_used"
         const val KEY_CROSSFADE = "crossfade_s"
         const val KEY_SKIP_BACK = "skip_back_s"
         const val KEY_SKIP_FORWARD = "skip_fwd_s"
@@ -202,6 +209,8 @@ class SettingsRepository(private val dao: ProgressDao) {
                 sleepHeldMs = map[KEY_SLEEP_HELD]?.toLongOrNull() ?: 0L,
                 driveAutoKeep = map[KEY_DRIVE_AUTO_KEEP] == "1",
                 repeatMode = app.lumen.player.playback.RepeatLoop.parseMode(map[KEY_REPEAT]),
+                tapSkipSeconds = map[KEY_TAP_SKIP]?.toIntOrNull()?.takeIf { it in app.lumen.player.ui.TapSkip.stepChoices } ?: 10,
+                tapSkipUsed = map[KEY_TAP_SKIP_USED] == "1",
             )
         }
     }
@@ -284,6 +293,12 @@ class SettingsRepository(private val dao: ProgressDao) {
     suspend fun setLevelOutVoices(on: Boolean) = put(KEY_LEVEL_OUT, if (on) "1" else "0")
 
     suspend fun setTrimSilences(on: Boolean) = put(KEY_TRIM_SILENCES, if (on) "1" else "0")
+
+    /** 0.10.1: tap to skip, seconds per tap. */
+    suspend fun setTapSkip(seconds: Int) = put(KEY_TAP_SKIP, seconds.coerceIn(5, 30).toString())
+
+    /** 0.10.1: the tap-to-skip hint has done its job. */
+    suspend fun markTapSkipUsed() = put(KEY_TAP_SKIP_USED, "1")
 
     /** 0.9.1: the repeat mode, so it survives a restart. */
     suspend fun setRepeatMode(mode: Int) = put(KEY_REPEAT, app.lumen.player.playback.RepeatLoop.parseMode(mode.toString()).toString())

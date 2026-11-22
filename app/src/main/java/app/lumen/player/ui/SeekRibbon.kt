@@ -86,6 +86,7 @@ fun Scrubber(
     val energy by animateFloatAsState(if (isPlaying && usable && !dragging) 1f else 0f, tween(260), label = "seekEnergy")
     // Removing the transition when paused avoids a perpetual idle frame loop. Compose honours animator scale.
     val loopMarks = rememberTextMeasurer()
+    val tapSkip = LocalTapSkip.current
     val phase = if (isPlaying && usable) {
         val transition = rememberInfiniteTransition(label = "lightRibbon")
         val value by transition.animateFloat(0f, (2 * PI).toFloat(), infiniteRepeatable(tween(2_400, easing = LinearEasing)), label = "ribbonPhase")
@@ -120,6 +121,14 @@ fun Scrubber(
                     val end = size.width * fraction
                     val mid = size.height / 2
                     drawLine(c.line, Offset(0f, mid), Offset(size.width, mid), 2.dp.toPx(), StrokeCap.Round)
+                    // 0.10.1: a skip being tapped shows where it lands: a ring and a faint span.
+                    val skipTarget = tapSkip?.target
+                    if (skipTarget != null && duration > 0 && usable) {
+                        val from = size.width * (fraction)
+                        val to = size.width * (skipTarget.coerceIn(0L, duration).toFloat() / duration)
+                        drawLine(c.accentInk.copy(alpha = 0.35f), Offset(from, mid), Offset(to, mid), 4.dp.toPx(), StrokeCap.Round)
+                        drawCircle(c.accentInk, radius = 6.dp.toPx(), center = Offset(to, mid), style = Stroke(2.dp.toPx()))
+                    }
                     // 0.9.1: the loop band sits under the ribbon; only A shows until the end is set.
                     if (loop != null && duration > 0) {
                         val markStyle = TextStyle(color = c.ice, fontSize = 9.sp)

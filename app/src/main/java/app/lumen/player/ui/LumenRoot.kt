@@ -253,6 +253,7 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
         loopClear = vm::loopClear,
         moveInQueue = vm::moveInQueue,
         openVideoFull = { vm.videoFull.value = true },
+        tapSkipUsed = vm::tapSkipUsed,
         removeFromQueue = vm::removeFromQueue,
     )
 
@@ -431,6 +432,7 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
                         setPreset = vm::setPreset,
                         setCustomBands = vm::setCustomBands,
                         setSkips = vm::setSkips,
+                        setTapSkip = vm::setTapSkip,
                         setAppearance = vm::setAppearance,
                         shareDiagnostics = { vm.shareDiagnostics(context) },
                         openUpdate = { if (update != null) actions.openUpdate() else vm.checkUpdateNow(context) },
@@ -486,6 +488,7 @@ fun LumenRoot(vm: MainViewModel, actions: RootActions, showBrand: Boolean = fals
             else FullScreenVideo(
                 videoController, player, settings.skipBackSeconds, settings.skipForwardSeconds,
                 vm::playPause, vm::seekBack, vm::seekForward, vm::seekTo, onClose = { vm.videoFull.value = false },
+                tapSkipSeconds = settings.tapSkipSeconds, onSkipUsed = vm::tapSkipUsed,
             )
         }
         return
